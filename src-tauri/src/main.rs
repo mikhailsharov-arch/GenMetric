@@ -142,8 +142,11 @@ fn main() {
             let conn = Connection::open(&db_path)?;
             // WAL включается здесь, а не в schema.sql: это настройка соединения,
             // и в файле схемы она ломает сборку на сетевых файловых системах.
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-            conn.pragma_update(None, "foreign_keys", "ON")?;
+            //
+            // Именно execute_batch, а не pragma_update: PRAGMA journal_mode
+            // возвращает строку результата, и pragma_update на этом падает
+            // с «Execute returned results».
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
 
             app.manage(Db {
                 conn: Mutex::new(conn),
