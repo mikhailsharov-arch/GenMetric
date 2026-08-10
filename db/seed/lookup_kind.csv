@@ -1,0 +1,15 @@
+kind,title,editable,autoextend
+archive,Архивы,1,1
+church,Церкви,1,1
+uyezd,Уезды,1,1
+guberniya,Губернии,1,1
+rank_m,Звания мужские,1,1
+rank_f,Звания женские,1,1
+rank_clergy,Звания церковнослужителей,1,1
+confession,Вероисповедания,1,1
+kinship,Родственники,1,0
+surname_end_m,"Окончания фамилий, М",1,0
+surname_end_f,"Окончания фамилий, Ж",1,0
+marriage_order,Каким браком,1,0
+death_cause,Причины смерти,1,1
+np_type,Типы населённых пунктов,1,1
