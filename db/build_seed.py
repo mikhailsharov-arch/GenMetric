@@ -54,6 +54,9 @@ def read_csv(name: str):
 
 
 def build(db_path: Path) -> dict:
+    # Папку создаём сами: git не хранит пустые каталоги, поэтому в свежем
+    # клоне src-tauri/resources/ может отсутствовать.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     if db_path.exists():
         db_path.unlink()
     for suffix in ("-wal", "-shm"):

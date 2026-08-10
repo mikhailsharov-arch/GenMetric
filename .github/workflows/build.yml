@@ -8,6 +8,9 @@
 #
 # Скомпилированные файлы в репозиторий не коммитятся: бинарники не сжимаются
 # в истории git и за полгода еженедельных сборок раздули бы её до гигабайтов.
+#
+# Сначала идёт быстрая проверка на Linux: она ловит ошибки в базе и интерфейсе
+# за пару минут, не тратя десять минут компиляции на Windows и macOS.
 
 name: Сборка приложения
 
@@ -24,8 +27,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check:
+    name: Быстрая проверка
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Собрать базу справочников
+        run: python db/build_seed.py src-tauri/resources/seed.sqlite
+
+      - name: Проверить базу
+        run: python db/verify_seed.py src-tauri/resources/seed.sqlite
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Установить зависимости интерфейса
+        run: npm ci
+
+      - name: Собрать интерфейс
+        run: npm run build
+
   build:
     name: ${{ matrix.title }}
+    needs: check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -41,25 +72,22 @@ jobs:
             bundles: src-tauri/target/universal-apple-darwin/release/bundle
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # --- база справочников ------------------------------------------------
       # Собирается из текстовых файлов db/seed/*.csv и кладётся в ресурсы
       # приложения. В репозитории готовой базы нет.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Собрать базу справочников
         run: python db/build_seed.py src-tauri/resources/seed.sqlite
 
-      - name: Проверить базу
-        run: python db/verify_seed.py src-tauri/resources/seed.sqlite
-
       # --- интерфейс --------------------------------------------------------
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Установить зависимости интерфейса
@@ -81,7 +109,7 @@ jobs:
         shell: bash
         run: find "${{ matrix.bundles }}" -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -print
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: genmetric-${{ matrix.title }}
           if-no-files-found: error
@@ -94,12 +122,11 @@ jobs:
   release:
     name: Выложить сборку для тестирования
     needs: build
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: files
 
@@ -115,12 +142,13 @@ jobs:
         run: |
           # Тег перевыпускается, чтобы ссылка для тестировщиков не менялась.
           gh release delete latest-test --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          NOTES="Собрано автоматически из коммита ${GITHUB_SHA:0:7} — $(date -u '+%d.%m.%Y %H:%M UTC').
+
+          Установщики не подписаны цифровой подписью, поэтому Windows и macOS покажут предупреждение при запуске. Как его пройти — в инструкции: docs/установка.md
+
+          Это сборка для проверки, а не рабочая версия."
           gh release create latest-test out/* \
             --repo "$GITHUB_REPOSITORY" \
             --prerelease \
             --title "Сборка для тестирования" \
-            --notes "Собрано автоматически из коммита \`${GITHUB_SHA:0:7}\` — $(date -u '+%d.%m.%Y %H:%M UTC').
-
-          Установщики не подписаны цифровой подписью, поэтому Windows и macOS покажут предупреждение при запуске. Как его пройти — в [инструкции для тестировщиков](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/установка.md).
-
-          Это сборка для проверки, а не рабочая версия."
+            --notes "$NOTES"
