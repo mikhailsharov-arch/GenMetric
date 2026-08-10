@@ -1,0 +1,126 @@
+# Автоматическая сборка установщиков под Windows и macOS.
+#
+# Запускается после каждого изменения в main и вручную. Готовые файлы
+# складываются в выпуск с постоянным тегом latest-test, чтобы ссылка для
+# тестировщиков не менялась от сборки к сборке:
+#
+#   https://github.com/mikhailsharov-arch/GenMetric/releases/tag/latest-test
+#
+# Скомпилированные файлы в репозиторий не коммитятся: бинарники не сжимаются
+# в истории git и за полгода еженедельных сборок раздули бы её до гигабайтов.
+
+name: Сборка приложения
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.title }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            title: Windows
+            args: ""
+            bundles: src-tauri/target/release/bundle
+          - os: macos-latest
+            title: macOS
+            args: "--target universal-apple-darwin"
+            bundles: src-tauri/target/universal-apple-darwin/release/bundle
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- база справочников ------------------------------------------------
+      # Собирается из текстовых файлов db/seed/*.csv и кладётся в ресурсы
+      # приложения. В репозитории готовой базы нет.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Собрать базу справочников
+        run: python db/build_seed.py src-tauri/resources/seed.sqlite
+
+      - name: Проверить базу
+        run: python db/verify_seed.py src-tauri/resources/seed.sqlite
+
+      # --- интерфейс --------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Установить зависимости интерфейса
+        run: npm ci
+
+      # --- сборка приложения ------------------------------------------------
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Собрать установщик
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Показать, что получилось
+        shell: bash
+        run: find "${{ matrix.bundles }}" -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -print
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genmetric-${{ matrix.title }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ matrix.bundles }}/msi/*.msi
+            ${{ matrix.bundles }}/nsis/*.exe
+            ${{ matrix.bundles }}/dmg/*.dmg
+
+  release:
+    name: Выложить сборку для тестирования
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+
+      - name: Собрать список файлов
+        run: |
+          mkdir -p out
+          find files -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -exec cp {} out/ \;
+          ls -la out
+
+      - name: Обновить выпуск latest-test
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Тег перевыпускается, чтобы ссылка для тестировщиков не менялась.
+          gh release delete latest-test --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create latest-test out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --title "Сборка для тестирования" \
+            --notes "Собрано автоматически из коммита \`${GITHUB_SHA:0:7}\` — $(date -u '+%d.%m.%Y %H:%M UTC').
+
+          Установщики не подписаны цифровой подписью, поэтому Windows и macOS покажут предупреждение при запуске. Как его пройти — в [инструкции для тестировщиков](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/установка.md).
+
+          Это сборка для проверки, а не рабочая версия."

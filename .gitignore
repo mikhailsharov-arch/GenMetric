@@ -34,3 +34,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+
+# Ресурсы, которые собираются автоматически
+src-tauri/resources/*.sqlite
+src-tauri/gen/

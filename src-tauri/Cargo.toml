@@ -1,0 +1,26 @@
+[package]
+name = "genmetric"
+version = "0.1.0"
+description = "Индексатор метрических книг"
+authors = ["GenMetric"]
+license = "GPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# bundled: SQLite компилируется вместе с программой, системная библиотека
+# не нужна ни на Windows, ни на macOS.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
