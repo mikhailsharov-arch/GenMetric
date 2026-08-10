@@ -22,6 +22,10 @@ on:
       - "docs/**"
   workflow_dispatch:
 
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -109,7 +113,7 @@ jobs:
         shell: bash
         run: find "${{ matrix.bundles }}" -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" \) -print
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: genmetric-${{ matrix.title }}
           if-no-files-found: error
@@ -126,7 +130,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           path: files
 

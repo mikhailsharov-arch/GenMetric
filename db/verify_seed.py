@@ -50,7 +50,18 @@ def read_csv(name):
         return list(csv.DictReader(f))
 
 
+def _utf8_stdout() -> None:
+    """Windows запускает Python с кодировкой cp1252, и любой вывод кириллицей
+    роняет скрипт с UnicodeEncodeError. Переключаем потоки на UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _utf8_stdout()
     db_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DB_DIR / "seed.sqlite"
     xlsm_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
 

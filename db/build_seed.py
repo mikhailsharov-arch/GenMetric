@@ -123,7 +123,18 @@ def build(db_path: Path) -> dict:
     return stats
 
 
+def _utf8_stdout() -> None:
+    """Windows запускает Python с кодировкой cp1252, и любой вывод кириллицей
+    роняет скрипт с UnicodeEncodeError. Переключаем потоки на UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _utf8_stdout()
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DB_DIR / "seed.sqlite"
     stats = build(out)
     print(f"Готово: {out}  ({out.stat().st_size / 1024:.0f} КБ)")

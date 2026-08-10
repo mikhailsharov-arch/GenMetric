@@ -84,7 +84,18 @@ def write_csv(path: Path, header, rows) -> int:
     return len(rows)
 
 
+def _utf8_stdout() -> None:
+    """Windows запускает Python с кодировкой cp1252, и любой вывод кириллицей
+    роняет скрипт с UnicodeEncodeError. Переключаем потоки на UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+    _utf8_stdout()
     if len(sys.argv) != 2:
         print(__doc__)
         return 1
