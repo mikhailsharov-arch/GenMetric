@@ -18,7 +18,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_DIR = Path(__file__).resolve().parent
 SEED_DIR = DB_DIR / "seed"
 
@@ -80,6 +80,26 @@ def build(db_path: Path) -> dict:
           nz(r["patr_old_m"]), nz(r["patr_old_f"]), nz(r["patr_m"]), nz(r["patr_f"]),
           nz(r["source"])) for r in rows])
     stats["name_dict"] = len(rows)
+
+    # Все написания одной таблицей: по ним идут разбор строки ИОФ и пословные
+    # подсказки. Заголовочное написание имеет приоритет над вариантом — иначе
+    # «Никита», который есть и сам по себе, и как вариант «Аникиты»,
+    # превращался бы при разборе в «Аникиту».
+    forms = []
+    for i, r in enumerate(rows, start=1):
+        forms.append((i, r["name"].strip(), norm(r["name"]), "name", nz(r["gender"]), 0))
+        if nz(r["variant"]):
+            forms.append((i, r["variant"].strip(), norm(r["variant"]), "variant", nz(r["gender"]), 1))
+        for column, kind, gender in (("patr_old_m", "patr_old_m", "М"),
+                                     ("patr_old_f", "patr_old_f", "Ж"),
+                                     ("patr_m", "patr_m", "М"),
+                                     ("patr_f", "patr_f", "Ж")):
+            if nz(r[column]):
+                forms.append((i, r[column].strip(), norm(r[column]), kind, gender, 0))
+    db.executemany(
+        "INSERT INTO name_form (name_id, form, form_norm, kind, gender, priority) VALUES (?,?,?,?,?,?)",
+        forms)
+    stats["name_form"] = len(forms)
 
     rows = read_csv("lookup_kind.csv")
     db.executemany(

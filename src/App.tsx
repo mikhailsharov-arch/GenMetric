@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
+import IofField from "./IofField";
 
 type DbInfo = {
   names: number;
@@ -23,7 +24,6 @@ export default function App() {
   const [onTop, setOnTop] = useState(false);
   const [rank, setRank] = useState("");
   const [place, setPlace] = useState("");
-  const [name, setName] = useState("");
   const firstField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -76,13 +76,16 @@ export default function App() {
           onChange={setPlace}
           placeholder="например, ста"
         />
-        <Suggest
-          label="Имя"
-          kind="first_name"
-          value={name}
-          onChange={setName}
-          placeholder="например, ив"
-        />
+      </section>
+
+      <section>
+        <h2>Единое поле ИОФ</h2>
+        <p className="hint">
+          Одно поле вместо трёх. Подсказки идут пословно: первое слово —
+          по именам, второе — по отчествам, третье — по фамилиям. Программа
+          сама разбирает набранное на части и предлагает современное написание.
+        </p>
+        <IofField label="ИОФ персоны" />
       </section>
 
       <section>

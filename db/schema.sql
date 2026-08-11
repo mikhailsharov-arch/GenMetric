@@ -51,6 +51,24 @@ CREATE INDEX ix_name_dict_norm   ON name_dict (name_norm);
 CREATE INDEX ix_name_dict_gender ON name_dict (gender, name_norm);
 CREATE INDEX ix_name_dict_base   ON name_dict (base_name);
 
+-- Все написания имён одной таблицей: заголовочные имена, варианты написания
+-- и все формы отчеств. Нужна для двух вещей: разбора строки ИОФ на части
+-- и пословных подсказок при вводе.
+--
+-- Отдельная таблица, а не колонки *_norm в name_dict, потому что искать
+-- приходится по любой из шести форм, и каждая должна быть проиндексирована.
+CREATE TABLE name_form (
+  id         INTEGER PRIMARY KEY,
+  name_id    INTEGER NOT NULL REFERENCES name_dict (id) ON DELETE CASCADE,
+  form       TEXT    NOT NULL,
+  form_norm  TEXT    NOT NULL,
+  kind       TEXT    NOT NULL CHECK (kind IN ('name','variant','patr_old_m','patr_old_f','patr_m','patr_f')),
+  gender     TEXT,
+  priority   INTEGER NOT NULL DEFAULT 0   -- 0 заголовочное написание, 1 вариант
+);
+CREATE INDEX ix_name_form_kind ON name_form (kind, form_norm);
+CREATE INDEX ix_name_form_norm ON name_form (form_norm, priority);
+
 -- Плоские перечни: архивы, церкви, губернии, уезды, звания, вероисповедания,
 -- причины смерти, типы населённых пунктов, окончания фамилий и прочее.
 -- kind — техническое имя перечня, см. таблицу lookup_kind.

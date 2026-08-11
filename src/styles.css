@@ -124,3 +124,11 @@ button.toggle[aria-pressed="true"] { background: var(--accent); border-color: va
 }
 
 footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; text-align: center; }
+
+/* Разбор строки ИОФ на части: что программа поняла и что предлагает.
+   Правая колонка — современный вариант, приглушённый, как подсказка. */
+.parsed { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 0.88rem; }
+.parsed td { padding: 3px 0; border-bottom: 1px solid #eef2f7; }
+.parsed .pk { color: var(--muted); width: 34%; font-size: 0.82rem; }
+.parsed .modern { color: var(--muted); text-align: right; font-style: italic; }
+.fieldhint { margin-top: 4px; font-size: 0.78rem; color: var(--muted); }

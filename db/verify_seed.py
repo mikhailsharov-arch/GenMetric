@@ -73,7 +73,7 @@ def main() -> int:
     print("\n1. Целостность базы")
     check("integrity_check", one("PRAGMA integrity_check") == "ok")
     check("foreign_key_check", len(q("PRAGMA foreign_key_check")) == 0)
-    check("версия схемы записана", one("SELECT version FROM schema_version") == 1)
+    check("версия схемы записана", one("SELECT version FROM schema_version") == 2)
 
     print("\n2. Сверка с текстовыми справочниками")
     for csv_name, table in [("name_dict.csv", "name_dict"), ("lookup.csv", "lookup"),
@@ -155,7 +155,30 @@ def main() -> int:
           len(order) > 2 and order[-1] not in ("крестьянин", "крестьянский сын"))
     check("«купец» не попал в выдачу по префиксу «кр»", "купец" not in order)
 
-    print("\n6. Словарь имён на живых примерах")
+    print("\n6. Формы имён и разбор строки ИОФ")
+    n_forms = one("SELECT count(*) FROM name_form")
+    check("таблица форм заполнена", n_forms > 12000, f"{n_forms} написаний")
+    check("у каждой формы есть имя-владелец",
+          one("SELECT count(*) FROM name_form f LEFT JOIN name_dict d ON d.id=f.name_id WHERE d.id IS NULL") == 0)
+    # Ключевая тонкость разбора: «Никита» есть и как самостоятельное имя,
+    # и как вариант «Аникиты». Приоритет обязан быть у самостоятельного,
+    # иначе разбор молча портит имена.
+    head = db.execute(
+        "SELECT d.name FROM name_form f JOIN name_dict d ON d.id=f.name_id "
+        "WHERE f.kind IN ('name','variant') AND f.form_norm='никита' ORDER BY f.priority LIMIT 1"
+    ).fetchone()[0]
+    check("«Никита» не подменяется «Аникитой»", head == "Никита", f"получилось {head!r}")
+    # Отчество должно опознаваться и в старой форме, и в современной.
+    for form, expect in [("алексеев", "Алексеевич"), ("алексеевич", "Алексеевич"),
+                         ("васильева", "Васильевна")]:
+        got = db.execute(
+            "SELECT CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END "
+            "FROM name_form f JOIN name_dict d ON d.id=f.name_id "
+            "WHERE f.kind LIKE 'patr%' AND f.form_norm=? ORDER BY f.priority LIMIT 1", (form,)).fetchone()
+        check(f"отчество «{form}» → «{expect}»", got and got[0] == expect,
+              f"получилось {got[0] if got else None!r}")
+
+    print("\n7. Словарь имён на живых примерах")
     check("пол имени Иван определяется",
           one("SELECT gender FROM name_dict WHERE name_norm='иван' LIMIT 1") == "М")
     row = db.execute("SELECT patr_m, patr_f, patr_old_m FROM name_dict WHERE name_norm='михаил' LIMIT 1").fetchone()
@@ -164,7 +187,7 @@ def main() -> int:
     check("варианты написания сохранены",
           one("SELECT count(*) FROM name_dict WHERE variant IS NOT NULL") > 400)
 
-    print("\n7. Настройки по умолчанию")
+    print("\n8. Настройки по умолчанию")
     check("оба варианта имени сохраняются",
           one("SELECT value FROM setting WHERE key='keep_original_names'") == "1")
     check("автопополнение справочников включено",
