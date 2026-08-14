@@ -5,10 +5,13 @@ import IofField from "./IofField";
 
 type DbInfo = {
   names: number;
+  name_forms: number;
   lookups: number;
   roles: number;
   db_path: string;
   app_version: string;
+  schema_version: number;
+  seed_stamp: string;
 };
 
 /**
@@ -102,6 +105,10 @@ export default function App() {
       {info && (
         <section>
           <h2>Что внутри сборки</h2>
+          <p className="hint">
+            Если эти числа не изменились после установки новой версии — значит
+            обновление до базы не доехало, и об этом надо сказать.
+          </p>
           <table className="facts">
             <tbody>
               <tr>
@@ -113,8 +120,20 @@ export default function App() {
                 <td>{info.lookups.toLocaleString("ru-RU")}</td>
               </tr>
               <tr>
+                <td>Написаний имён и отчеств</td>
+                <td>{info.name_forms.toLocaleString("ru-RU")}</td>
+              </tr>
+              <tr>
                 <td>Ролей персон</td>
                 <td>{info.roles}</td>
+              </tr>
+              <tr>
+                <td>Версия базы</td>
+                <td>{info.schema_version}</td>
+              </tr>
+              <tr>
+                <td>Отпечаток справочников</td>
+                <td>{info.seed_stamp}</td>
               </tr>
             </tbody>
           </table>

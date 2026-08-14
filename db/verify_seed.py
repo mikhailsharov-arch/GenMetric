@@ -80,8 +80,10 @@ def main() -> int:
                             ("lookup_kind.csv", "lookup_kind"), ("role.csv", "role"),
                             ("place.csv", "place"), ("setting.csv", "setting")]:
         n_csv = len(read_csv(csv_name))
+        # к настройкам сборщик добавляет отпечаток поставки — его в CSV нет
+        expected = n_csv + 1 if table == "setting" else n_csv
         n_db = one(f"SELECT count(*) FROM {table}")
-        check(f"{table} перенесена полностью", n_csv == n_db, f"CSV {n_csv}, база {n_db}")
+        check(f"{table} перенесена полностью", expected == n_db, f"ожидалось {expected}, в базе {n_db}")
 
     kinds_csv = {r["kind"] for r in read_csv("lookup.csv")}
     kinds_db = {r["kind"] for r in q("SELECT DISTINCT kind FROM lookup")}
@@ -188,6 +190,8 @@ def main() -> int:
           one("SELECT count(*) FROM name_dict WHERE variant IS NOT NULL") > 400)
 
     print("\n8. Настройки по умолчанию")
+    stamp = one("SELECT value FROM setting WHERE key='seed_stamp'")
+    check("отпечаток поставки записан", bool(stamp) and len(stamp) == 12, stamp)
     check("оба варианта имени сохраняются",
           one("SELECT value FROM setting WHERE key='keep_original_names'") == "1")
     check("автопополнение справочников включено",

@@ -12,6 +12,7 @@
 """
 
 import csv
+import hashlib
 import re
 import sqlite3
 import sys
@@ -43,6 +44,20 @@ def nz(value):
         return None
     v = str(value).strip()
     return v or None
+
+
+def seed_stamp() -> str:
+    """Отпечаток поставки: меняется при любой правке схемы или справочников.
+
+    По нему программа понимает, что база пользователя отстала от установленной
+    версии, и подмешивает свежие справочники. Без отпечатка обновления просто
+    не доезжают: база копируется только при первой установке.
+    """
+    h = hashlib.sha256()
+    for path in sorted(SEED_DIR.glob("*.csv")) + [DB_DIR / "schema.sql", DB_DIR / "migrate.sql"]:
+        if path.exists():
+            h.update(path.read_bytes())
+    return h.hexdigest()[:12]
 
 
 def read_csv(name: str):
@@ -135,7 +150,8 @@ def build(db_path: Path) -> dict:
     rows = read_csv("setting.csv")
     db.executemany("INSERT INTO setting (key, value) VALUES (?,?)",
                    [(r["key"], r["value"]) for r in rows])
-    stats["setting"] = len(rows)
+    db.execute("INSERT INTO setting (key, value) VALUES ('seed_stamp', ?)", (seed_stamp(),))
+    stats["setting"] = len(rows) + 1
 
     db.commit()
     db.execute("VACUUM")

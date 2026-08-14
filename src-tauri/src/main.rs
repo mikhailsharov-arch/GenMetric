@@ -3,7 +3,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::Path;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -15,13 +17,24 @@ struct Db {
     path: String,
 }
 
+/// Версия схемы, которую понимает эта сборка.
+const SCHEMA_VERSION: i64 = 2;
+
+/// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
+/// поэтому логика обновления проверена, хотя сам этот код в песочнице
+/// не собирается.
+const MIGRATE_SQL: &str = include_str!("../../db/migrate.sql");
+
 #[derive(Serialize)]
 struct DbInfo {
     names: i64,
+    name_forms: i64,
     lookups: i64,
     roles: i64,
     db_path: String,
     app_version: String,
+    schema_version: i64,
+    seed_stamp: String,
 }
 
 #[derive(Serialize)]
@@ -70,10 +83,17 @@ fn db_info(app: tauri::AppHandle, db: State<Db>) -> Result<DbInfo, String> {
     };
     Ok(DbInfo {
         names: count("SELECT count(*) FROM name_dict")?,
+        name_forms: count("SELECT count(*) FROM name_form")?,
         lookups: count("SELECT count(*) FROM lookup")?,
         roles: count("SELECT count(*) FROM role")?,
         db_path: db.path.clone(),
         app_version: app.package_info().version.to_string(),
+        schema_version: count("SELECT coalesce(max(version), 0) FROM schema_version")?,
+        seed_stamp: conn
+            .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "нет".to_string()),
     })
 }
 
@@ -205,6 +225,110 @@ fn set_always_on_top(window: tauri::Window, value: bool) -> Result<(), String> {
     window.set_always_on_top(value).map_err(|e| e.to_string())
 }
 
+/// Открывает базу пользователя, при необходимости обновляя её из поставки.
+///
+/// База копируется в папку пользователя только при первой установке. Если
+/// оставить только копирование, обновления схемы и справочников до человека
+/// не доедут: он ставит новую версию поверх старой, а работает по-прежнему
+/// со старой базой. Именно так вышло 13.08.2026 — у тестировщика не появилась
+/// таблица name_form, и половина сборки молча не работала.
+fn open_database(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
+    if !db_path.exists() {
+        std::fs::copy(bundled, db_path)?;
+        let conn = Connection::open(db_path)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+        return Ok(conn);
+    }
+
+    let conn = Connection::open(db_path)?;
+    // WAL включается здесь, а не в schema.sql: это настройка соединения,
+    // и в файле схемы она ломает сборку на сетевых файловых системах.
+    // Именно execute_batch, а не pragma_update: PRAGMA journal_mode возвращает
+    // строку результата, и pragma_update на этом падает.
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+
+    let version: i64 = conn
+        .query_row("SELECT coalesce(max(version), 0) FROM schema_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    let stamp: String = conn
+        .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
+        .optional()?
+        .unwrap_or_default();
+
+    let bundled_stamp = {
+        let seed = Connection::open(bundled)?;
+        let value: Option<String> = seed
+            .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
+            .optional()?;
+        value.unwrap_or_default()
+    };
+
+    if version >= SCHEMA_VERSION && stamp == bundled_stamp && !stamp.is_empty() {
+        return Ok(conn); // база свежая, делать нечего
+    }
+
+    backup(db_path)?;
+    upgrade(&conn, bundled, version)?;
+    Ok(conn)
+}
+
+/// Копия базы перед обновлением. Дёшево и один раз спасёт.
+fn backup(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let name = format!("genmetric-до-обновления-{seconds}.sqlite");
+    let target = db_path.with_file_name(name);
+    std::fs::copy(db_path, target)?;
+    Ok(())
+}
+
+/// Обновление базы пользователя до текущей версии поставки.
+///
+/// Шаг первый: создаём недостающие таблицы и индексы по образцу из поставки.
+/// Так закрываются миграции вида «добавилась таблица». Изменение состава
+/// колонок в существующей таблице этим способом НЕ покрывается — такие правки
+/// придётся писать отдельным шагом и отдельным тестом.
+///
+/// Шаг второй: обновляем справочники по db/migrate.sql. Тот же файл прогоняет
+/// тест db/test_upgrade.py, поэтому логика обновления проверена по-настоящему.
+fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    conn.execute("ATTACH DATABASE ?1 AS seed", [bundled.to_string_lossy().to_string()])?;
+    let missing: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT name, sql FROM seed.sqlite_master
+              WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
+        )?;
+        let items: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut out = Vec::new();
+        for (name, sql) in items {
+            let exists: i64 = conn.query_row(
+                "SELECT count(*) FROM main.sqlite_master WHERE name = ?1",
+                [&name],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                out.push(sql);
+            }
+        }
+        out
+    };
+    for sql in missing {
+        conn.execute_batch(&sql)?;
+    }
+
+    conn.execute_batch(MIGRATE_SQL)?;
+
+    if from < SCHEMA_VERSION {
+        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
+    }
+
+    conn.execute("DETACH DATABASE seed", [])?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -217,18 +341,8 @@ fn main() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("genmetric.sqlite");
-            if !db_path.exists() {
-                std::fs::copy(&bundled, &db_path)?;
-            }
 
-            let conn = Connection::open(&db_path)?;
-            // WAL включается здесь, а не в schema.sql: это настройка соединения,
-            // и в файле схемы она ломает сборку на сетевых файловых системах.
-            //
-            // Именно execute_batch, а не pragma_update: PRAGMA journal_mode
-            // возвращает строку результата, и pragma_update на этом падает
-            // с «Execute returned results».
-            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+            let conn = open_database(&bundled, &db_path)?;
 
             app.manage(Db {
                 conn: Mutex::new(conn),

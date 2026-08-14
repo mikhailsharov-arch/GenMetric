@@ -47,6 +47,9 @@ jobs:
       - name: Проверить базу
         run: python db/verify_seed.py src-tauri/resources/seed.sqlite
 
+      - name: Проверить обновление базы у пользователя
+        run: python db/test_upgrade.py
+
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
