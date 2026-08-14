@@ -50,6 +50,12 @@ jobs:
       - name: Проверить обновление базы у пользователя
         run: python db/test_upgrade.py
 
+      - name: Проверить хранение настроек
+        run: python db/test_settings.py
+
+      - name: Проверить стили
+        run: python scripts/check_styles.py
+
       - uses: actions/setup-node@v5
         with:
           node-version: "22"

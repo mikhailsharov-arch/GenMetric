@@ -10,7 +10,13 @@
   --accent: #1f4e79;
   --field: #eaf2fb;
   --field-focus: #ffffff;
-  font-size: 17px;
+
+  /* Единственное место, где задан размер текста. Всё остальное считается
+     от него в rem и em, поэтому одна эта строка масштабирует весь интерфейс.
+     --ui-scale приходит из настройки ui_font_scale в базе. */
+  --ui-scale: 1;
+  font-size: calc(15px * var(--ui-scale));
+  line-height: 1.35;
 }
 
 * { box-sizing: border-box; }
@@ -23,36 +29,36 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.app { padding: 16px 18px 28px; max-width: 640px; margin: 0 auto; }
+.app { padding: 1em 1.125em 1.75em; max-width: 40em; margin: 0 auto; }
 
-header { margin-bottom: 18px; }
-h1 { margin: 0; font-size: 1.5rem; letter-spacing: 0.2px; color: var(--accent); }
-.sub { margin: 2px 0 0; color: var(--muted); font-size: 0.85rem; }
+header { margin-bottom: 1.125em; }
+h1 { margin: 0; font-size: 1.5rem; letter-spacing: 0.013em; color: var(--accent); }
+.sub { margin: 0.125em 0 0; color: var(--muted); font-size: 0.85rem; }
 
 section {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 14px 14px 16px;
-  margin-bottom: 14px;
+  padding: 0.875em 0.875em 1em;
+  margin-bottom: 0.875em;
 }
-h2 { margin: 0 0 6px; font-size: 1rem; }
-.hint { margin: 0 0 12px; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+h2 { margin: 0 0 0.375em; font-size: 1rem; }
+.hint { margin: 0 0 0.75em; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
 
 /* Поле ввода должно быть очевидно отличимо от подписи — требование В-5. */
-.field { position: relative; margin-bottom: 14px; }
+.field { position: relative; margin-bottom: 0.875em; }
 .field label {
   display: flex;
   justify-content: space-between;
   font-size: 0.82rem;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: 0.25em;
 }
 .ms { font-variant-numeric: tabular-nums; opacity: 0.7; }
 
 input {
   width: 100%;
-  padding: 10px 12px;
+  padding: 0.625em 0.75em;
   font-size: 1.05rem;
   font-family: inherit;
   color: var(--ink);
@@ -72,8 +78,8 @@ input:focus {
   z-index: 20;
   left: 0;
   right: 0;
-  margin: 4px 0 0;
-  padding: 4px;
+  margin: 0.25em 0 0;
+  padding: 0.25em;
   list-style: none;
   background: #fff;
   border: 1px solid var(--line);
@@ -84,8 +90,8 @@ input:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
-  padding: 7px 9px;
+  gap: 0.625em;
+  padding: 0.438em 0.562em;
   border-radius: 5px;
   cursor: default;
 }
@@ -96,7 +102,7 @@ input:focus {
 
 button.toggle {
   width: 100%;
-  padding: 10px;
+  padding: 0.625em;
   font-size: 0.95rem;
   font-family: inherit;
   color: var(--ink);
@@ -108,30 +114,30 @@ button.toggle {
 button.toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .facts { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.facts td { padding: 4px 0; border-bottom: 1px solid #eef2f7; }
+.facts td { padding: 0.25em 0; border-bottom: 0.0625em solid #eef2f7; }
 .facts td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 
 .mono { font-family: ui-monospace, Consolas, "SF Mono", monospace; font-size: 0.74rem; }
-.path { color: var(--muted); margin: 10px 0 0; word-break: break-all; }
+.path { color: var(--muted); margin: 0.625em 0 0; word-break: break-all; }
 
 .error {
   background: #fdecec;
   border: 1px solid #f0b4b4;
   color: #7a1f1f;
   border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 14px;
+  padding: 0.75em;
+  margin-bottom: 0.875em;
 }
 
-footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; text-align: center; }
+footer { color: var(--muted); font-size: 0.8rem; line-height: 1.4; text-align: center; }
 
 /* Разбор строки ИОФ на части: что программа поняла и что предлагает.
    Правая колонка — современный вариант, приглушённый, как подсказка. */
-.parsed { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 0.88rem; }
-.parsed td { padding: 3px 0; border-bottom: 1px solid #eef2f7; }
+.parsed { width: 100%; margin-top: 0.625em; border-collapse: collapse; font-size: 0.88rem; }
+.parsed td { padding: 0.1875em 0; border-bottom: 0.0625em solid #eef2f7; }
 .parsed .pk { color: var(--muted); width: 34%; font-size: 0.82rem; }
 .parsed .modern { color: var(--muted); text-align: right; font-style: italic; }
-.fieldhint { margin-top: 4px; font-size: 0.78rem; color: var(--muted); }
+.fieldhint { margin-top: 0.25em; font-size: 0.78rem; color: var(--muted); }
 
 /* Полоса ошибки вверху окна. Появляется только когда что-то пошло не так:
    пока всё хорошо, её не видно вовсе. */
@@ -139,33 +145,33 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; text-align: c
   background: #fdf1e7;
   border: 1px solid #e5b489;
   border-radius: 9px;
-  padding: 11px 12px;
-  margin-bottom: 14px;
+  padding: 0.688em 0.75em;
+  margin-bottom: 0.875em;
 }
-.errorbar-head { display: flex; justify-content: space-between; gap: 10px; }
-.errorbar-sub { color: #7a5230; font-size: 0.8rem; margin-top: 3px; line-height: 1.4; }
+.errorbar-head { display: flex; justify-content: space-between; gap: 0.625em; }
+.errorbar-sub { color: #7a5230; font-size: 0.8rem; margin-top: 0.188em; line-height: 1.4; }
 .errorbar-close {
   background: none; border: none; cursor: pointer;
-  font-size: 1rem; color: #7a5230; padding: 0 2px; align-self: flex-start;
+  font-size: 1rem; color: #7a5230; padding: 0 0.125em; align-self: flex-start;
 }
-.errorbar-buttons { display: flex; gap: 8px; margin-top: 9px; }
+.errorbar-buttons { display: flex; gap: 0.5em; margin-top: 0.562em; }
 .errorbar-buttons button {
-  font-family: inherit; font-size: 0.82rem; padding: 5px 10px;
-  background: #fff; border: 1px solid #e5b489; border-radius: 6px;
+  font-family: inherit; font-size: 0.82rem; padding: 0.312em 0.625em;
+  background: #fff; border: 0.0625em solid #e5b489; border-radius: 0.375em;
   color: #7a5230; cursor: pointer;
 }
 .errorbar-detail {
-  margin: 9px 0 0;
-  padding: 9px;
+  margin: 0.562em 0 0;
+  padding: 0.562em;
   background: #fff;
   border: 1px solid #eddccb;
   border-radius: 6px;
   font-family: ui-monospace, Consolas, "SF Mono", monospace;
   font-size: 0.72rem;
-  line-height: 1.45;
+  line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 220px;
+  max-height: 13.75em;
   overflow: auto;
   user-select: text;
 }
@@ -173,4 +179,19 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; text-align: c
 /* Экран «база не открылась»: работать нельзя, поэтому занимает всё окно. */
 .fatal { border-color: #f0b4b4; background: #fdf6f6; }
 .fatal h2 { color: #7a1f1f; }
-.fatal p { line-height: 1.5; margin: 0 0 10px; }
+.fatal p { line-height: 1.4; margin: 0 0 0.625em; }
+
+/* Размер шрифта: требование У-3 — человек должен уметь менять его сам.
+   Управляет переменной --ui-scale, значение хранится в базе и переживает
+   перезапуск. */
+.scale { display: flex; align-items: center; gap: 0.375em; }
+.scale button {
+  width: 1.9em; height: 1.9em; padding: 0;
+  font-family: inherit; font-size: 0.95rem; line-height: 1;
+  color: var(--ink); background: var(--field);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.scale button:disabled { opacity: 0.4; cursor: default; }
+.scale-value { font-size: 0.78rem; color: var(--muted); min-width: 3em; text-align: center; }
+
+.apphead { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75em; }

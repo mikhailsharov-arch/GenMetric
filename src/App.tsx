@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import IofField from "./IofField";
 import ErrorBar from "./ErrorBar";
+import FontScale from "./FontScale";
 import { report } from "./errors";
 
 type Startup = {
@@ -102,12 +103,15 @@ export default function App() {
   return (
     <div className="app">
       <ErrorBar />
-      <header>
-        <h1>GenMetric</h1>
-        <p className="sub">
-          Индексатор метрических книг
-          {info ? ` · версия ${info.app_version}` : ""}
-        </p>
+      <header className="apphead">
+        <div>
+          <h1>GenMetric</h1>
+          <p className="sub">
+            Индексатор метрических книг
+            {info ? ` · версия ${info.app_version}` : ""}
+          </p>
+        </div>
+        <FontScale />
       </header>
 
 

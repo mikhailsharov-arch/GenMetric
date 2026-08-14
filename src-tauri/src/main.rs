@@ -364,6 +364,29 @@ fn parse_iof(app: State<App>, text: String) -> Result<ParsedIof, String> {
     })
 }
 
+/// Чтение настройки. Настройки живут в базе, поэтому переживают перезапуск.
+#[tauri::command]
+fn get_setting(app: State<App>, key: String) -> Result<Option<String>, String> {
+    with_conn(&app, &format!("Чтение настройки «{key}»"), |conn| {
+        conn.query_row("SELECT value FROM setting WHERE key = ?1", [&key], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+fn set_setting(app: State<App>, key: String, value: String) -> Result<(), String> {
+    with_conn(&app, &format!("Запись настройки «{key}»"), |conn| {
+        conn.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&key, &value],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    })
+}
+
 #[tauri::command]
 fn set_always_on_top(window: tauri::Window, value: bool) -> Result<(), String> {
     window.set_always_on_top(value).map_err(|e| e.to_string())
@@ -519,6 +542,8 @@ fn main() {
             startup_state,
             read_log,
             db_info,
+            get_setting,
+            set_setting,
             suggest,
             parse_iof,
             set_always_on_top
