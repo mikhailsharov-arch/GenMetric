@@ -53,6 +53,9 @@ jobs:
       - name: Проверить хранение настроек
         run: python db/test_settings.py
 
+      - name: Проверить сохранение записей
+        run: python db/test_entry.py
+
       - name: Проверить стили
         run: python scripts/check_styles.py
 
