@@ -43,7 +43,7 @@ export default function App() {
   const [place, setPlace] = useState("");
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
-  const [screen, setScreen] = useState<"case" | "births" | "checks">("case");
+  const [screen, setScreen] = useState<"case" | "births" | "checks" | "about">("case");
   const firstField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -140,6 +140,9 @@ export default function App() {
         <button className={screen === "checks" ? "on" : ""} onClick={() => setScreen("checks")}>
           Проверка
         </button>
+        <button className={screen === "about" ? "on" : ""} onClick={() => setScreen("about")}>
+          О программе
+        </button>
       </nav>
 
       {screen === "case" && <CaseHeader onSaved={setMkCase} />}
@@ -201,8 +204,10 @@ export default function App() {
           {onTop ? "✓ Поверх других окон" : "Поверх других окон"}
         </button>
       </section>
+        </>
+      )}
 
-      {info && (
+      {screen === "about" && info && (
         <section>
           <h2>Что внутри сборки</h2>
           <p className="hint">
@@ -259,9 +264,6 @@ export default function App() {
             </>
           )}
         </section>
-      )}
-
-        </>
       )}
 
       <footer>

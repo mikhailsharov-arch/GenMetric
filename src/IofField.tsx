@@ -133,7 +133,13 @@ export default function IofField({ label, value, onChange, placeholder, compact 
     <div className="field">
       <label>
         {label}
-        <span className="ms">подсказки: {KIND_TITLE}</span>
+        <span className="ms">
+          {currentWord.length > 0
+            ? `подсказки: ${KIND_TITLE}`
+            : wordIndex === 0
+              ? "начните с имени"
+              : `дальше ${KIND_TITLE}`}
+        </span>
       </label>
       <input
         data-field
@@ -145,6 +151,18 @@ export default function IofField({ label, value, onChange, placeholder, compact 
         onKeyDown={onKeyDown}
         onBlur={() => setOpen(false)}
       />
+      {/* Слова, которые уже приняты. Видно, что программа ждёт следующее,
+          даже когда пробел в конце строки не разглядеть. */}
+      {wordIndex > 0 && (
+        <div className="words">
+          {tokens.slice(0, wordIndex).map((w, i) => (
+            <span key={i} className="word">
+              {["имя", "отчество", "фамилия"][Math.min(i, 2)]}: <b>{w}</b>
+            </span>
+          ))}
+          <span className="word next">ждёт: {KIND_TITLE}</span>
+        </div>
+      )}
       {open && (
         <ul className="suggest">
           {items.map((it, i) => (

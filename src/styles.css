@@ -225,3 +225,16 @@ button.primary {
   border: 1px solid var(--accent); border-radius: 7px; cursor: pointer;
 }
 button.primary:disabled { opacity: 0.6; cursor: default; }
+
+/* Слова, уже принятые в поле ИОФ. После выбора из списка добавляется пробел,
+   но разглядеть его нельзя, и подпись «подсказки: фамилия» при двух словах
+   выглядела как ошибка. Теперь видно, что программа приняла и чего ждёт. */
+.words { display: flex; flex-wrap: wrap; gap: 0.375em; margin-top: 0.375em; }
+.word {
+  font-size: 0.76rem; color: var(--muted);
+  background: var(--field);
+  padding: 0.19em 0.5em;
+  border-radius: 5px;
+}
+.word b { color: var(--ink); font-weight: 600; }
+.word.next { background: transparent; font-style: italic; }
