@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { focusNextField } from "./focus";
 import type { Item } from "./Suggest";
+import { report } from "./errors";
 
 type Parsed = {
   first_name: string | null;
@@ -43,7 +44,12 @@ export default function IofField({ label }: { label: string }) {
   const KIND_TITLE = ["имя", "отчество", "фамилия"][Math.min(wordIndex, 2)];
 
   useEffect(() => {
-    invoke<Parsed>("parse_iof", { text }).then(setParsed).catch(() => setParsed(null));
+    invoke<Parsed>("parse_iof", { text })
+      .then(setParsed)
+      .catch((e) => {
+        setParsed(null);
+        report("Не удалось разобрать имя, отчество и фамилию", e);
+      });
   }, [text]);
 
   useEffect(() => {
@@ -66,7 +72,11 @@ export default function IofField({ label }: { label: string }) {
         setActive(0);
         setOpen(rows.length > 0);
       })
-      .catch(() => setItems([]));
+      .catch((e) => {
+        setItems([]);
+        setOpen(false);
+        report(`Не удалось получить подсказки (${KIND_TITLE})`, e);
+      });
   }, [text, kind, currentWord]);
 
   function pick(item: Item) {

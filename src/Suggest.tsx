@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { focusNextField } from "./focus";
+import { report } from "./errors";
 
 export type Item = { value: string; tier: number; count: number };
 
@@ -66,7 +67,11 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         const exact = rows.length === 1 && rows[0].value.toLowerCase() === query.toLowerCase();
         setOpen(rows.length > 0 && !exact);
       })
-      .catch(() => setItems([]));
+      .catch((e) => {
+        setItems([]);
+        setOpen(false);
+        report(`Не удалось получить подсказки для поля «${label}»`, e);
+      });
   }, [value, kind]);
 
   function pick(item: Item) {

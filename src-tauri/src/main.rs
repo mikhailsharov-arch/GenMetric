@@ -3,7 +3,10 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::Path;
+use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,18 +15,25 @@ use serde::Serialize;
 use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
-struct Db {
-    conn: Mutex<Connection>,
-    path: String,
-}
-
 /// Версия схемы, которую понимает эта сборка.
 const SCHEMA_VERSION: i64 = 2;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
-/// поэтому логика обновления проверена, хотя сам этот код в песочнице
-/// не собирается.
+/// поэтому логика обновления проверена, хотя вызывающий её код на Rust
+/// в песочнице не собирается.
 const MIGRATE_SQL: &str = include_str!("../../db/migrate.sql");
+
+/// Состояние приложения.
+///
+/// Соединение хранится в Option: если база не открылась, программа всё равно
+/// должна запуститься и объяснить человеку, что случилось, а не молча не
+/// показать окно. Причина в этом случае лежит в startup_error.
+struct App {
+    conn: Mutex<Option<Connection>>,
+    db_path: String,
+    log_path: PathBuf,
+    startup_error: Option<String>,
+}
 
 #[derive(Serialize)]
 struct DbInfo {
@@ -32,6 +42,7 @@ struct DbInfo {
     lookups: i64,
     roles: i64,
     db_path: String,
+    log_path: String,
     app_version: String,
     schema_version: i64,
     seed_stamp: String,
@@ -56,6 +67,95 @@ struct Suggestion {
     count: i64,
 }
 
+#[derive(Serialize)]
+struct Startup {
+    error: Option<String>,
+    db_path: String,
+    log_path: String,
+}
+
+// ============================================================================
+//  Журнал
+//
+//  13.08.2026 половина сборки молча не работала: интерфейс глушил ошибку
+//  пустым перехватом, и поломка выглядела как «просто ничего не происходит».
+//  Это стоило тестировщику целого цикла проверки. Теперь каждая неудача
+//  и называется вслух на экране, и остаётся в файле — журнал можно прислать
+//  целиком, не пересказывая.
+// ============================================================================
+
+fn timestamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Без внешних библиотек: простой пересчёт секунд в дату по григорианскому
+    // календарю. Точности до минуты для журнала достаточно.
+    let days = secs / 86_400;
+    let rest = secs % 86_400;
+    let (h, m) = (rest / 3600, (rest % 3600) / 60);
+    let mut year = 1970_i64;
+    let mut d = days as i64;
+    loop {
+        let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+        let len = if leap { 366 } else { 365 };
+        if d < len {
+            break;
+        }
+        d -= len;
+        year += 1;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let months = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    while month < 12 && d >= months[month] {
+        d -= months[month];
+        month += 1;
+    }
+    format!("{:02}.{:02}.{} {:02}:{:02}", d + 1, month + 1, year, h, m)
+}
+
+fn write_log(path: &Path, text: &str) {
+    // Журнал не должен ронять программу: если записать не удалось — молчим,
+    // на экране сообщение всё равно появится.
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}  {}", timestamp(), text);
+    }
+}
+
+/// Оборачивает работу с базой: логирует неудачу и возвращает её наверх.
+fn with_conn<T>(
+    app: &State<App>,
+    what: &str,
+    body: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let guard = match app.conn.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            let msg = format!("{what}: не удалось получить доступ к базе ({e})");
+            write_log(&app.log_path, &msg);
+            return Err(msg);
+        }
+    };
+    let conn = match guard.as_ref() {
+        Some(c) => c,
+        None => {
+            let msg = format!("{what}: база не открыта");
+            write_log(&app.log_path, &msg);
+            return Err(msg);
+        }
+    };
+    body(conn).map_err(|e| {
+        let msg = format!("{what}: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    })
+}
+
+// ============================================================================
+//  Поиск и разбор
+// ============================================================================
+
 /// Ключ для поиска по префиксу.
 ///
 /// Обязан совпадать с norm() в db/build_seed.py, иначе подсказки перестанут
@@ -76,24 +176,59 @@ fn like_prefix(input: &str) -> String {
 }
 
 #[tauri::command]
-fn db_info(app: tauri::AppHandle, db: State<Db>) -> Result<DbInfo, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let count = |sql: &str| -> Result<i64, String> {
-        conn.query_row(sql, [], |r| r.get(0)).map_err(|e| e.to_string())
-    };
-    Ok(DbInfo {
-        names: count("SELECT count(*) FROM name_dict")?,
-        name_forms: count("SELECT count(*) FROM name_form")?,
-        lookups: count("SELECT count(*) FROM lookup")?,
-        roles: count("SELECT count(*) FROM role")?,
-        db_path: db.path.clone(),
-        app_version: app.package_info().version.to_string(),
-        schema_version: count("SELECT coalesce(max(version), 0) FROM schema_version")?,
-        seed_stamp: conn
-            .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
-            .optional()
-            .map_err(|e| e.to_string())?
-            .unwrap_or_else(|| "нет".to_string()),
+fn startup_state(app: State<App>) -> Startup {
+    Startup {
+        error: app.startup_error.clone(),
+        db_path: app.db_path.clone(),
+        log_path: app.log_path.to_string_lossy().to_string(),
+    }
+}
+
+#[tauri::command]
+fn read_log(app: State<App>, lines: Option<usize>) -> String {
+    let take = lines.unwrap_or(200);
+    match std::fs::read_to_string(&app.log_path) {
+        Ok(text) => {
+            let all: Vec<&str> = text.lines().collect();
+            let start = all.len().saturating_sub(take);
+            let mut out = String::new();
+            for line in &all[start..] {
+                let _ = writeln!(out, "{line}");
+            }
+            if out.is_empty() {
+                "Журнал пуст — ошибок не было.".to_string()
+            } else {
+                out
+            }
+        }
+        Err(_) => "Журнал пуст — ошибок не было.".to_string(),
+    }
+}
+
+#[tauri::command]
+fn db_info(handle: tauri::AppHandle, app: State<App>) -> Result<DbInfo, String> {
+    let db_path = app.db_path.clone();
+    let log_path = app.log_path.to_string_lossy().to_string();
+    let version = handle.package_info().version.to_string();
+    with_conn(&app, "Сведения о базе", |conn| {
+        let count = |sql: &str| -> Result<i64, String> {
+            conn.query_row(sql, [], |r| r.get(0)).map_err(|e| e.to_string())
+        };
+        Ok(DbInfo {
+            names: count("SELECT count(*) FROM name_dict")?,
+            name_forms: count("SELECT count(*) FROM name_form")?,
+            lookups: count("SELECT count(*) FROM lookup")?,
+            roles: count("SELECT count(*) FROM role")?,
+            db_path,
+            log_path,
+            app_version: version,
+            schema_version: count("SELECT coalesce(max(version), 0) FROM schema_version")?,
+            seed_stamp: conn
+                .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_else(|| "нет".to_string()),
+        })
     })
 }
 
@@ -103,44 +238,47 @@ fn db_info(app: tauri::AppHandle, db: State<Db>) -> Result<DbInfo, String> {
 /// база, затем словарь; внутри группы — по убыванию частоты. Дела в этой сборке
 /// ещё нет, поэтому работают только уровни «вся база» и «словарь».
 #[tauri::command]
-fn suggest(db: State<Db>, kind: String, prefix: String, limit: Option<i64>) -> Result<Vec<Suggestion>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+fn suggest(
+    app: State<App>,
+    kind: String,
+    prefix: String,
+    limit: Option<i64>,
+) -> Result<Vec<Suggestion>, String> {
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(8).clamp(1, 50);
+    with_conn(&app, &format!("Подсказки «{prefix}»"), |conn| {
+        // Имена и отчества лежат в таблице форм, остальные перечни — в lookup.
+        let dict_source = match kind.as_str() {
+            "first_name" => "SELECT form, 4, 0 FROM name_form WHERE kind IN ('name','variant') AND form_norm LIKE ?2 ESCAPE '\\'",
+            "patronymic" => "SELECT form, 4, 0 FROM name_form WHERE kind LIKE 'patr%' AND form_norm LIKE ?2 ESCAPE '\\'",
+            _ => "SELECT value, 4, 0 FROM lookup WHERE kind = ?1 AND value_norm LIKE ?2 ESCAPE '\\'",
+        };
+        let sql = format!(
+            "WITH ranked AS (
+                 SELECT value,
+                        CASE scope WHEN 'case' THEN 1 WHEN 'parish' THEN 2 ELSE 3 END AS tier,
+                        count
+                   FROM usage_stat
+                  WHERE kind = ?1 AND value_norm LIKE ?2 ESCAPE '\\'
+                 UNION ALL
+                 {dict_source}
+             )
+             SELECT value, min(tier) AS tier, max(count) AS cnt
+               FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT ?3"
+        );
 
-    // Имена лежат в отдельной таблице со словарными формами отчеств,
-    // остальные перечни — в общей таблице lookup.
-    let dict_source = match kind.as_str() {
-        "first_name" => "SELECT form, 4, 0 FROM name_form WHERE kind IN ('name','variant') AND form_norm LIKE ?2 ESCAPE '\\'",
-        "patronymic" => "SELECT form, 4, 0 FROM name_form WHERE kind LIKE 'patr%' AND form_norm LIKE ?2 ESCAPE '\\'",
-        _ => "SELECT value, 4, 0 FROM lookup WHERE kind = ?1 AND value_norm LIKE ?2 ESCAPE '\\'",
-    };
-    let sql = format!(
-        "WITH ranked AS (
-             SELECT value,
-                    CASE scope WHEN 'case' THEN 1 WHEN 'parish' THEN 2 ELSE 3 END AS tier,
-                    count
-               FROM usage_stat
-              WHERE kind = ?1 AND value_norm LIKE ?2 ESCAPE '\\'
-             UNION ALL
-             {dict_source}
-         )
-         SELECT value, min(tier) AS tier, max(count) AS cnt
-           FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT ?3"
-    );
-
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params![kind, pattern, limit], |r| {
-            Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)? })
-        })
-        .map_err(|e| e.to_string())?;
-
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![kind, pattern, limit], |r| {
+                Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)? })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
 }
 
 /// Разбор строки ИОФ на имя, отчество и фамилию.
@@ -156,74 +294,84 @@ fn suggest(db: State<Db>, kind: String, prefix: String, limit: Option<i64>) -> R
 /// случаев, предложенное осовременивание совпадает с выбором индексатора
 /// в 99,9%.
 #[tauri::command]
-fn parse_iof(db: State<Db>, text: String) -> Result<ParsedIof, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    let mut out = ParsedIof {
-        first_name: None, first_name_modern: None,
-        patronymic: None, patronymic_modern: None,
-        surname: None, gender: None, father_name: None, known_name: false,
-    };
-    if tokens.is_empty() {
-        return Ok(out);
-    }
+fn parse_iof(app: State<App>, text: String) -> Result<ParsedIof, String> {
+    with_conn(&app, &format!("Разбор «{text}»"), |conn| {
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        let mut out = ParsedIof {
+            first_name: None,
+            first_name_modern: None,
+            patronymic: None,
+            patronymic_modern: None,
+            surname: None,
+            gender: None,
+            father_name: None,
+            known_name: false,
+        };
+        if tokens.is_empty() {
+            return Ok(out);
+        }
 
-    out.first_name = Some(tokens[0].to_string());
-    // priority 0 — заголовочное написание, 1 — вариант: точное совпадение
-    // с самостоятельным именем важнее совпадения с вариантом другого.
-    let head: Option<(String, Option<String>, Option<String>)> = conn
-        .query_row(
-            "SELECT d.name, d.base_name, d.gender
-               FROM name_form f JOIN name_dict d ON d.id = f.name_id
-              WHERE f.kind IN ('name','variant') AND f.form_norm = ?1
-              ORDER BY f.priority LIMIT 1",
-            [normalize(tokens[0])],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    if let Some((name, base, gender)) = head {
-        out.known_name = true;
-        out.gender = gender;
-        out.first_name_modern = Some(base.unwrap_or(name));
-    }
-
-    let mut rest = &tokens[1..];
-    if let Some(first_rest) = rest.first() {
-        let patr: Option<(String, String, String)> = conn
+        out.first_name = Some(tokens[0].to_string());
+        // priority 0 — заголовочное написание, 1 — вариант: точное совпадение
+        // с самостоятельным именем важнее совпадения с вариантом другого.
+        let head: Option<(String, Option<String>, Option<String>)> = conn
             .query_row(
-                "SELECT d.name,
-                        CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END,
-                        CASE WHEN f.kind LIKE '%_m' THEN 'М' ELSE 'Ж' END
+                "SELECT d.name, d.base_name, d.gender
                    FROM name_form f JOIN name_dict d ON d.id = f.name_id
-                  WHERE f.kind LIKE 'patr%' AND f.form_norm = ?1
+                  WHERE f.kind IN ('name','variant') AND f.form_norm = ?1
                   ORDER BY f.priority LIMIT 1",
-                [normalize(first_rest)],
+                [normalize(tokens[0])],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some((father, modern, sex)) = patr {
-            out.patronymic = Some(first_rest.to_string());
-            out.patronymic_modern = Some(modern);
-            out.father_name = Some(father);
-            if out.gender.is_none() {
-                out.gender = Some(sex);
-            }
-            rest = &rest[1..];
+
+        if let Some((name, base, gender)) = head {
+            out.known_name = true;
+            out.gender = gender;
+            out.first_name_modern = Some(base.unwrap_or(name));
         }
-    }
-    if !rest.is_empty() {
-        out.surname = Some(rest.join(" "));
-    }
-    Ok(out)
+
+        let mut rest = &tokens[1..];
+        if let Some(first_rest) = rest.first() {
+            let patr: Option<(String, String, String)> = conn
+                .query_row(
+                    "SELECT d.name,
+                            CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END,
+                            CASE WHEN f.kind LIKE '%_m' THEN 'М' ELSE 'Ж' END
+                       FROM name_form f JOIN name_dict d ON d.id = f.name_id
+                      WHERE f.kind LIKE 'patr%' AND f.form_norm = ?1
+                      ORDER BY f.priority LIMIT 1",
+                    [normalize(first_rest)],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some((father, modern, sex)) = patr {
+                out.patronymic = Some(first_rest.to_string());
+                out.patronymic_modern = Some(modern);
+                out.father_name = Some(father);
+                if out.gender.is_none() {
+                    out.gender = Some(sex);
+                }
+                rest = &rest[1..];
+            }
+        }
+        if !rest.is_empty() {
+            out.surname = Some(rest.join(" "));
+        }
+        Ok(out)
+    })
 }
 
 #[tauri::command]
 fn set_always_on_top(window: tauri::Window, value: bool) -> Result<(), String> {
     window.set_always_on_top(value).map_err(|e| e.to_string())
 }
+
+// ============================================================================
+//  Открытие и обновление базы
+// ============================================================================
 
 /// Открывает базу пользователя, при необходимости обновляя её из поставки.
 ///
@@ -293,6 +441,7 @@ fn backup(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
     conn.execute("ATTACH DATABASE ?1 AS seed", [bundled.to_string_lossy().to_string()])?;
+
     let missing: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT name, sql FROM seed.sqlite_master
@@ -332,25 +481,48 @@ fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<dyn s
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            // База справочников поставляется внутри установщика и при первом
-            // запуске копируется в папку данных пользователя: там её можно
-            // пополнять, не трогая файлы программы.
-            let bundled = app
-                .path()
-                .resolve("resources/seed.sqlite", BaseDirectory::Resource)?;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("genmetric.sqlite");
+            let log_path = data_dir.join("genmetric-журнал.txt");
 
-            let conn = open_database(&bundled, &db_path)?;
+            // База справочников поставляется внутри установщика и при первом
+            // запуске копируется в папку данных пользователя: там её можно
+            // пополнять, не трогая файлы программы.
+            let opened = app
+                .path()
+                .resolve("resources/seed.sqlite", BaseDirectory::Resource)
+                .map_err(|e| e.to_string())
+                .and_then(|bundled| {
+                    open_database(&bundled, &db_path).map_err(|e| e.to_string())
+                });
 
-            app.manage(Db {
+            let (conn, startup_error) = match opened {
+                Ok(conn) => (Some(conn), None),
+                Err(message) => {
+                    // Программа всё равно запускается: человек должен увидеть
+                    // объяснение, а не отсутствие окна.
+                    write_log(&log_path, &format!("База не открылась: {message}"));
+                    (None, Some(message))
+                }
+            };
+
+            app.manage(App {
                 conn: Mutex::new(conn),
-                path: db_path.to_string_lossy().to_string(),
+                db_path: db_path.to_string_lossy().to_string(),
+                log_path,
+                startup_error,
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![db_info, suggest, parse_iof, set_always_on_top])
+        .invoke_handler(tauri::generate_handler![
+            startup_state,
+            read_log,
+            db_info,
+            suggest,
+            parse_iof,
+            set_always_on_top
+        ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить GenMetric");
 }

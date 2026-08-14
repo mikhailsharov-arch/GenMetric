@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import IofField from "./IofField";
+import ErrorBar from "./ErrorBar";
+import { report } from "./errors";
+
+type Startup = {
+  error: string | null;
+  db_path: string;
+  log_path: string;
+};
 
 type DbInfo = {
   names: number;
@@ -23,25 +31,77 @@ type DbInfo = {
  */
 export default function App() {
   const [info, setInfo] = useState<DbInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [startup, setStartup] = useState<Startup | null>(null);
   const [onTop, setOnTop] = useState(false);
   const [rank, setRank] = useState("");
   const [place, setPlace] = useState("");
   const firstField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    invoke<DbInfo>("db_info").then(setInfo).catch((e) => setError(String(e)));
+    invoke<Startup>("startup_state")
+      .then((state) => {
+        setStartup(state);
+        if (state.error) return; // база не открылась, остальное бессмысленно
+        invoke<DbInfo>("db_info")
+          .then(setInfo)
+          .catch((e) => report("Не удалось прочитать сведения о базе", e));
+      })
+      .catch((e) => report("Программа не смогла сообщить своё состояние", e));
     firstField.current?.focus();
   }, []);
 
   async function toggleOnTop() {
     const next = !onTop;
-    await invoke("set_always_on_top", { value: next });
-    setOnTop(next);
+    try {
+      await invoke("set_always_on_top", { value: next });
+      setOnTop(next);
+    } catch (e) {
+      report("Не удалось закрепить окно поверх других", e);
+    }
+  }
+
+  // База не открылась — показываем объяснение вместо формы: работать всё
+  // равно нельзя, а человек должен понимать, что произошло и что делать.
+  if (startup?.error) {
+    return (
+      <div className="app">
+        <header>
+          <h1>GenMetric</h1>
+          <p className="sub">Индексатор метрических книг</p>
+        </header>
+        <section className="fatal">
+          <h2>База не открылась</h2>
+          <p>
+            Программа запустилась, но не смогла открыть файл со справочниками
+            и вашими записями. Работать в таком виде нельзя.
+          </p>
+          <p className="hint">Что произошло:</p>
+          <pre className="errorbar-detail">{startup.error}</pre>
+          <p className="hint">Что можно сделать:</p>
+          <p>
+            Рядом с базой лежат резервные копии — файлы, в имени которых есть
+            «до-обновления». Закройте программу, переименуйте самый свежий из
+            них в <b>genmetric.sqlite</b>, заменив испорченный файл, и запустите
+            программу снова.
+          </p>
+          <p>
+            Если это не помогло — удалите <b>genmetric.sqlite</b> совсем.
+            Программа создаст его заново из поставки. Набранные записи при этом
+            пропадут, поэтому сначала сохраните копию файла куда-нибудь ещё.
+          </p>
+          <p className="hint">Где лежат файлы:</p>
+          <p className="path mono">{startup.db_path}</p>
+          <p className="hint">Журнал ошибок:</p>
+          <p className="path mono">{startup.log_path}</p>
+          <p>Пришлите Михаилу текст выше — по нему видно причину.</p>
+        </section>
+      </div>
+    );
   }
 
   return (
     <div className="app">
+      <ErrorBar />
       <header>
         <h1>GenMetric</h1>
         <p className="sub">
@@ -50,12 +110,6 @@ export default function App() {
         </p>
       </header>
 
-      {error && (
-        <div className="error">
-          <b>База не открылась.</b>
-          <div className="mono">{error}</div>
-        </div>
-      )}
 
       <section>
         <h2>Проверка ввода</h2>

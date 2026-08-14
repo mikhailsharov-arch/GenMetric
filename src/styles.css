@@ -132,3 +132,45 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.5; text-align: c
 .parsed .pk { color: var(--muted); width: 34%; font-size: 0.82rem; }
 .parsed .modern { color: var(--muted); text-align: right; font-style: italic; }
 .fieldhint { margin-top: 4px; font-size: 0.78rem; color: var(--muted); }
+
+/* Полоса ошибки вверху окна. Появляется только когда что-то пошло не так:
+   пока всё хорошо, её не видно вовсе. */
+.errorbar {
+  background: #fdf1e7;
+  border: 1px solid #e5b489;
+  border-radius: 9px;
+  padding: 11px 12px;
+  margin-bottom: 14px;
+}
+.errorbar-head { display: flex; justify-content: space-between; gap: 10px; }
+.errorbar-sub { color: #7a5230; font-size: 0.8rem; margin-top: 3px; line-height: 1.4; }
+.errorbar-close {
+  background: none; border: none; cursor: pointer;
+  font-size: 1rem; color: #7a5230; padding: 0 2px; align-self: flex-start;
+}
+.errorbar-buttons { display: flex; gap: 8px; margin-top: 9px; }
+.errorbar-buttons button {
+  font-family: inherit; font-size: 0.82rem; padding: 5px 10px;
+  background: #fff; border: 1px solid #e5b489; border-radius: 6px;
+  color: #7a5230; cursor: pointer;
+}
+.errorbar-detail {
+  margin: 9px 0 0;
+  padding: 9px;
+  background: #fff;
+  border: 1px solid #eddccb;
+  border-radius: 6px;
+  font-family: ui-monospace, Consolas, "SF Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+  user-select: text;
+}
+
+/* Экран «база не открылась»: работать нельзя, поэтому занимает всё окно. */
+.fatal { border-color: #f0b4b4; background: #fdf6f6; }
+.fatal h2 { color: #7a1f1f; }
+.fatal p { line-height: 1.5; margin: 0 0 10px; }
