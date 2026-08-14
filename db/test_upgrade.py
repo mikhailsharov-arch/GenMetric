@@ -17,12 +17,14 @@
 приложение. Порядок шагов (создание недостающих таблиц по образцу из поставки,
 затем migrate.sql) повторяет upgrade() в src-tauri/src/main.rs.
 
+Старая схема лежит слепком в db/fixtures/schema-v1.sql. Из истории git её
+брать нельзя: сборка клонирует репозиторий без истории.
+
 Запуск:
     python3 db/test_upgrade.py
 """
 
 import sqlite3
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -53,16 +55,15 @@ def _utf8_stdout() -> None:
 
 
 def old_schema_sql() -> str:
-    """Схема предыдущей версии — берём из истории репозитория.
+    """Схема предыдущей версии — из слепка в db/fixtures.
 
-    Коммит 2c5e53d — последний, где схема была версии 1: без таблицы форм имён
-    и со справочниками до пополнения.
+    Именно из файла, а не из истории git: сборка клонирует репозиторий без
+    истории, и обращение к старому коммиту там падает.
     """
-    result = subprocess.run(["git", "-C", str(REPO), "show", "2c5e53d:db/schema.sql"],
-                            capture_output=True, text=True)
-    if result.returncode != 0:
-        raise SystemExit("Не удалось достать старую схему из git:\n" + result.stderr)
-    return result.stdout
+    path = DB_DIR / "fixtures" / "schema-v1.sql"
+    if not path.exists():
+        raise SystemExit(f"Не найден слепок старой схемы: {path}")
+    return path.read_text(encoding="utf-8")
 
 
 def build_old_database(path: Path) -> None:
