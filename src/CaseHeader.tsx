@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
+import NumberField from "./NumberField";
 import { report } from "./errors";
 
 /**
@@ -54,7 +55,11 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
   const set = (k: keyof Case) => (v: string) =>
     setC((prev) => ({ ...prev, [k]: v === "" ? null : v }));
 
-  const text = (label: string, k: keyof Case, hint?: string) => (
+  // Год — число, а не строка. Текстовое поле отдавало сюда строку, и
+  // сохранение дела падало на разборе: программа ждёт число. Ошибка нашлась
+  // на скриншоте до того, как её увидел тестировщик.
+  const text = (label: string, k: "archive" | "fond" | "opis" | "delo" | "church"
+                | "village" | "uyezd" | "guberniya" | "indexer", hint?: string) => (
     <div className="field">
       <label>{label}</label>
       <input
@@ -104,7 +109,13 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
       <Suggest label="Уезд" kind="uyezd" value={c.uyezd ?? ""} onChange={set("uyezd")} />
       <Suggest label="Губерния" kind="guberniya" value={c.guberniya ?? ""} onChange={set("guberniya")} />
       <div className="row">
-        {text("Год", "year")}
+        <NumberField
+          label="Год"
+          value={c.year}
+          onChange={(v) => setC((prev) => ({ ...prev, year: v }))}
+          min={1700}
+          max={1930}
+        />
         {text("Кто индексирует", "indexer")}
       </div>
 
