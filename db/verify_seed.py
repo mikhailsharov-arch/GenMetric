@@ -120,7 +120,25 @@ def main() -> int:
           one("SELECT count(*) FROM name_dict WHERE name_norm LIKE '%ё%'") == 0,
           f"имён с «ё» в словаре: {n_ye}")
 
-    print("\n5. Ранжирование подсказок по частоте")
+    print("\n5. Звания, которые искал Роман")
+    # 13.08.2026 он искал «крестьянскую жену» в поле мужских званий и решил,
+    # что звания пропали. Проверяем оба перечня и тот самый запрос.
+    for value, kind in [("крестьянская жена", "rank_f"), ("крестьянская вдова", "rank_f"),
+                        ("крестьянка", "rank_f"), ("крестьянин", "rank_m")]:
+        found = one("SELECT count(*) FROM lookup WHERE value=? AND kind=?", value, kind)
+        check(f"«{value}» есть в перечне {kind}", found == 1)
+    n_f = one("SELECT count(*) FROM lookup WHERE kind='rank_f' AND value_norm LIKE 'кресть%'")
+    check("по «кресть» в женских званиях что-то находится", n_f >= 3, f"{n_f} значений")
+
+    # Запрос состава справочников — тот же, что выполняет команда lookup_summary.
+    summary = q("""SELECT k.kind, k.title, count(l.id)
+                     FROM lookup_kind k LEFT JOIN lookup l ON l.kind = k.kind
+                    GROUP BY k.kind, k.title
+                    ORDER BY count(l.id) DESC, k.title""")
+    check("состав справочников считается", len(summary) == 14, f"{len(summary)} перечней")
+    check("в сводке нет перечней без названия", all(r[1] for r in summary))
+
+    print("\n6. Ранжирование подсказок по частоте")
     # Требование А-1: текущее дело → приход → вся база → словарь,
     # внутри группы по убыванию частоты.
     db.execute("INSERT INTO mk_case (id, church, village, parish_key, year) "
@@ -157,7 +175,7 @@ def main() -> int:
           len(order) > 2 and order[-1] not in ("крестьянин", "крестьянский сын"))
     check("«купец» не попал в выдачу по префиксу «кр»", "купец" not in order)
 
-    print("\n6. Формы имён и разбор строки ИОФ")
+    print("\n7. Формы имён и разбор строки ИОФ")
     n_forms = one("SELECT count(*) FROM name_form")
     check("таблица форм заполнена", n_forms > 12000, f"{n_forms} написаний")
     check("у каждой формы есть имя-владелец",
@@ -180,7 +198,7 @@ def main() -> int:
         check(f"отчество «{form}» → «{expect}»", got and got[0] == expect,
               f"получилось {got[0] if got else None!r}")
 
-    print("\n7. Словарь имён на живых примерах")
+    print("\n8. Словарь имён на живых примерах")
     check("пол имени Иван определяется",
           one("SELECT gender FROM name_dict WHERE name_norm='иван' LIMIT 1") == "М")
     row = db.execute("SELECT patr_m, patr_f, patr_old_m FROM name_dict WHERE name_norm='михаил' LIMIT 1").fetchone()
@@ -189,7 +207,7 @@ def main() -> int:
     check("варианты написания сохранены",
           one("SELECT count(*) FROM name_dict WHERE variant IS NOT NULL") > 400)
 
-    print("\n8. Настройки по умолчанию")
+    print("\n9. Настройки по умолчанию")
     stamp = one("SELECT value FROM setting WHERE key='seed_stamp'")
     check("отпечаток поставки записан", bool(stamp) and len(stamp) == 12, stamp)
     check("оба варианта имени сохраняются",

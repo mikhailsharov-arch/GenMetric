@@ -12,6 +12,8 @@ type Startup = {
   log_path: string;
 };
 
+type LookupSize = { kind: string; title: string; count: number };
+
 type DbInfo = {
   names: number;
   name_forms: number;
@@ -34,8 +36,10 @@ export default function App() {
   const [info, setInfo] = useState<DbInfo | null>(null);
   const [startup, setStartup] = useState<Startup | null>(null);
   const [onTop, setOnTop] = useState(false);
-  const [rank, setRank] = useState("");
+  const [rankM, setRankM] = useState("");
+  const [rankF, setRankF] = useState("");
   const [place, setPlace] = useState("");
+  const [lookups, setLookups] = useState<LookupSize[]>([]);
   const firstField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -46,6 +50,9 @@ export default function App() {
         invoke<DbInfo>("db_info")
           .then(setInfo)
           .catch((e) => report("Не удалось прочитать сведения о базе", e));
+        invoke<LookupSize[]>("lookup_summary")
+          .then(setLookups)
+          .catch((e) => report("Не удалось прочитать состав справочников", e));
       })
       .catch((e) => report("Программа не смогла сообщить своё состояние", e));
     firstField.current?.focus();
@@ -124,11 +131,20 @@ export default function App() {
 
         <Suggest
           ref={firstField}
-          label="Звание"
+          label="Звание мужское"
           kind="rank_m"
-          value={rank}
-          onChange={setRank}
+          value={rankM}
+          onChange={setRankM}
           placeholder="например, кр"
+          hint="Здесь только мужские звания: крестьянин, солдат, мещанин."
+        />
+        <Suggest
+          label="Звание женское"
+          kind="rank_f"
+          value={rankF}
+          onChange={setRankF}
+          placeholder="например, кресть"
+          hint="А здесь женские: крестьянская жена, крестьянская вдова, крестьянка."
         />
         <Suggest
           label="Причина смерти"
@@ -196,6 +212,26 @@ export default function App() {
             </tbody>
           </table>
           <p className="path mono">{info.db_path}</p>
+
+          {lookups.length > 0 && (
+            <>
+              <h2 className="sub-h2">Что в справочниках</h2>
+              <p className="hint">
+                Если звания, которым вы пользуетесь, здесь не хватает —
+                скажите, каких именно.
+              </p>
+              <table className="facts">
+                <tbody>
+                  {lookups.map((l) => (
+                    <tr key={l.kind}>
+                      <td>{l.title}</td>
+                      <td>{l.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </section>
       )}
 

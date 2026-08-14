@@ -68,6 +68,13 @@ struct Suggestion {
 }
 
 #[derive(Serialize)]
+struct LookupSize {
+    kind: String,
+    title: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
 struct Startup {
     error: Option<String>,
     db_path: String,
@@ -203,6 +210,35 @@ fn read_log(app: State<App>, lines: Option<usize>) -> String {
         }
         Err(_) => "Журнал пуст — ошибок не было.".to_string(),
     }
+}
+
+/// Сколько значений в каждом перечне.
+///
+/// Роман искал «крестьянскую жену» в поле мужских званий и решил, что звания
+/// пропали. Теперь состав всех перечней виден целиком и проверяется глазами,
+/// а не по поведению одного поля.
+#[tauri::command]
+fn lookup_summary(app: State<App>) -> Result<Vec<LookupSize>, String> {
+    with_conn(&app, "Состав справочников", |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT k.kind, k.title, count(l.id)
+                   FROM lookup_kind k LEFT JOIN lookup l ON l.kind = k.kind
+                  GROUP BY k.kind, k.title
+                  ORDER BY count(l.id) DESC, k.title",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(LookupSize { kind: r.get(0)?, title: r.get(1)?, count: r.get(2)? })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
 }
 
 #[tauri::command]
@@ -542,6 +578,7 @@ fn main() {
             startup_state,
             read_log,
             db_info,
+            lookup_summary,
             get_setting,
             set_setting,
             suggest,
