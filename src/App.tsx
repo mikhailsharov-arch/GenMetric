@@ -4,6 +4,8 @@ import Suggest from "./Suggest";
 import IofField from "./IofField";
 import ErrorBar from "./ErrorBar";
 import FontScale from "./FontScale";
+import CaseHeader, { type Case } from "./CaseHeader";
+import BirthForm from "./BirthForm";
 import { report } from "./errors";
 
 type Startup = {
@@ -40,6 +42,8 @@ export default function App() {
   const [rankF, setRankF] = useState("");
   const [place, setPlace] = useState("");
   const [lookups, setLookups] = useState<LookupSize[]>([]);
+  const [mkCase, setMkCase] = useState<Case | null>(null);
+  const [screen, setScreen] = useState<"case" | "births" | "checks">("case");
   const firstField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -120,6 +124,28 @@ export default function App() {
         </div>
         <FontScale />
       </header>
+
+      <nav className="tabs">
+        <button className={screen === "case" ? "on" : ""} onClick={() => setScreen("case")}>
+          Дело
+        </button>
+        <button
+          className={screen === "births" ? "on" : ""}
+          onClick={() => setScreen("births")}
+          disabled={!mkCase || !mkCase.id}
+          title={mkCase && mkCase.id ? "" : "Сначала заполните дело"}
+        >
+          Рождения
+        </button>
+        <button className={screen === "checks" ? "on" : ""} onClick={() => setScreen("checks")}>
+          Проверка
+        </button>
+      </nav>
+
+      {screen === "case" && <CaseHeader onSaved={setMkCase} />}
+      {screen === "births" && mkCase && mkCase.id > 0 && <BirthForm mkCase={mkCase} />}
+      {screen === "checks" && (
+        <>
 
 
       <section>
@@ -235,9 +261,12 @@ export default function App() {
         </section>
       )}
 
+        </>
+      )}
+
       <footer>
-        Это сборка для проверки, а не рабочая версия. Форма ввода записей
-        появится на следующем этапе.
+        Записи сохраняются в базу на вашем компьютере. Выгрузка в Familio
+        и Excel появится на следующем этапе.
       </footer>
     </div>
   );

@@ -27,14 +27,30 @@ type Parsed = {
  * Под полем показывается разбор: что программа считает именем, отчеством
  * и фамилией, и какой современный вариант она предлагает.
  */
-export default function IofField({ label }: { label: string }) {
-  const [text, setText] = useState("");
+type IofProps = {
+  label: string;
+  value?: string;
+  onChange?: (text: string, parsed: Parsed | null) => void;
+  placeholder?: string;
+  compact?: boolean;
+};
+
+export default function IofField({ label, value, onChange, placeholder, compact }: IofProps) {
+  const [own, setOwn] = useState("");
+  const text = value ?? own;
+  const setText = (next: string) => {
+    setOwn(next);
+    onChange?.(next, parsed);
+  };
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const seq = useRef(0);
   const justPicked = useRef(false);
+  // Ссылка, чтобы разбор не пересоздавал подписку на каждый набранный символ.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   // какое слово сейчас набирается и по какому справочнику подсказывать
   const tokens = text.split(/\s+/);
@@ -45,7 +61,10 @@ export default function IofField({ label }: { label: string }) {
 
   useEffect(() => {
     invoke<Parsed>("parse_iof", { text })
-      .then(setParsed)
+      .then((result) => {
+        setParsed(result);
+        onChangeRef.current?.(text, result);
+      })
       .catch((e) => {
         setParsed(null);
         report("Не удалось разобрать имя, отчество и фамилию", e);
@@ -119,7 +138,7 @@ export default function IofField({ label }: { label: string }) {
       <input
         data-field
         value={text}
-        placeholder="например, Иван Семенов Карсаков"
+        placeholder={placeholder ?? "например, Иван Семенов Карсаков"}
         autoComplete="off"
         spellCheck={false}
         onChange={(e) => setText(e.target.value)}
@@ -146,7 +165,7 @@ export default function IofField({ label }: { label: string }) {
         </ul>
       )}
 
-      {hasParse && (
+      {hasParse && !compact && (
         <table className="parsed">
           <tbody>
             <tr>

@@ -197,3 +197,31 @@ footer { color: var(--muted); font-size: 0.8rem; line-height: 1.4; text-align: c
 .apphead { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75em; }
 
 .sub-h2 { margin-top: 1.125em; }
+
+/* Переключение между делом, записями и проверкой */
+.tabs { display: flex; gap: 0.375em; margin-bottom: 0.875em; }
+.tabs button {
+  flex: 1; padding: 0.5em 0.25em; font-family: inherit; font-size: 0.88rem;
+  color: var(--ink); background: var(--field);
+  border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+}
+.tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tabs button:disabled { opacity: 0.45; cursor: default; }
+
+/* Несколько узких полей в строку — даты и счётчики */
+.row { display: flex; gap: 0.5em; }
+.row .field { flex: 1; min-width: 0; }
+.numrow { display: flex; align-items: stretch; gap: 0.25em; }
+.numrow input { text-align: center; min-width: 0; }
+.numrow button {
+  width: 1.9em; font-family: inherit; font-size: 1rem; line-height: 1;
+  color: var(--ink); background: var(--field);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+
+button.primary {
+  width: 100%; padding: 0.7em; font-family: inherit; font-size: 1rem;
+  color: #fff; background: var(--accent);
+  border: 1px solid var(--accent); border-radius: 7px; cursor: pointer;
+}
+button.primary:disabled { opacity: 0.6; cursor: default; }

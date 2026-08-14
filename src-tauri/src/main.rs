@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
@@ -22,6 +22,33 @@ const SCHEMA_VERSION: i64 = 2;
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
 /// в песочнице не собирается.
 const MIGRATE_SQL: &str = include_str!("../../db/migrate.sql");
+
+/// Запросы записи и чтения. Тот же файл читает тест db/test_entry.py —
+/// значит проверяется именно то, что работает у человека, а не похожая копия.
+const STATEMENTS_SQL: &str = include_str!("../../db/statements.sql");
+
+/// Разбирает statements.sql на именованные блоки, разделённые «-- @имя».
+/// Такой же разбор делает тест: формат намеренно простейший.
+fn statement(name: &str) -> Result<String, String> {
+    let mut current: Option<&str> = None;
+    let mut buf: Vec<&str> = Vec::new();
+    for line in STATEMENTS_SQL.lines() {
+        let marker = line.trim();
+        if let Some(rest) = marker.strip_prefix("-- @") {
+            if current == Some(name) {
+                return Ok(buf.join("\n"));
+            }
+            current = Some(rest.trim());
+            buf.clear();
+        } else if current == Some(name) {
+            buf.push(line);
+        }
+    }
+    if current == Some(name) {
+        return Ok(buf.join("\n"));
+    }
+    Err(format!("в statements.sql нет блока «{name}»"))
+}
 
 /// Состояние приложения.
 ///
@@ -537,6 +564,278 @@ fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<dyn s
     Ok(())
 }
 
+// ============================================================================
+//  Дело и записи
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Case {
+    id: i64,
+    archive: Option<String>,
+    fond: Option<String>,
+    opis: Option<String>,
+    delo: Option<String>,
+    church: Option<String>,
+    village: Option<String>,
+    uyezd: Option<String>,
+    guberniya: Option<String>,
+    year: Option<i64>,
+    indexer: Option<String>,
+}
+
+impl Case {
+    /// Ключ прихода связывает годы одного прихода: по нему переносится
+    /// накопленная статистика подсказок. Индексируют именно приходами,
+    /// год за годом, поэтому на второй год подсказки уже почти всегда попадают.
+    fn parish_key(&self) -> String {
+        let part = |v: &Option<String>| v.clone().unwrap_or_default();
+        format!("{}|{}|{}|{}", part(&self.church), part(&self.village),
+                part(&self.uyezd), part(&self.guberniya))
+    }
+}
+
+#[derive(Deserialize)]
+struct PersonInput {
+    role_code: String,
+    sort_order: i64,
+    surname: Option<String>,
+    first_name: Option<String>,
+    patronymic: Option<String>,
+    surname_modern: Option<String>,
+    first_name_modern: Option<String>,
+    patronymic_modern: Option<String>,
+    maiden_surname: Option<String>,
+    gender: Option<String>,
+    rank: Option<String>,
+    confession: Option<String>,
+    place: Option<String>,
+    note: Option<String>,
+    uncertain: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EntryInput {
+    id: Option<i64>,
+    case_id: i64,
+    section: i64,
+    page: Option<String>,
+    no_male: Option<i64>,
+    no_female: Option<i64>,
+    event_day: Option<i64>,
+    event_month: Option<i64>,
+    event_year: Option<i64>,
+    rite_day: Option<i64>,
+    rite_month: Option<i64>,
+    rite_year: Option<i64>,
+    note: Option<String>,
+    uncertain: Option<String>,
+    persons: Vec<PersonInput>,
+}
+
+#[derive(Serialize)]
+struct EntryBrief {
+    id: i64,
+    page: Option<String>,
+    no_male: Option<i64>,
+    no_female: Option<i64>,
+    event_day: Option<i64>,
+    event_month: Option<i64>,
+    event_year: Option<i64>,
+    child: Option<String>,
+}
+
+#[tauri::command]
+fn case_load(app: State<App>) -> Result<Option<Case>, String> {
+    with_conn(&app, "Чтение дела", |conn| {
+        conn.query_row(
+            "SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya,
+                    year, indexer FROM mk_case ORDER BY updated_at DESC, id DESC LIMIT 1",
+            [],
+            |r| Ok(Case {
+                id: r.get(0)?, archive: r.get(1)?, fond: r.get(2)?, opis: r.get(3)?,
+                delo: r.get(4)?, church: r.get(5)?, village: r.get(6)?, uyezd: r.get(7)?,
+                guberniya: r.get(8)?, year: r.get(9)?, indexer: r.get(10)?,
+            }),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+fn case_save(app: State<App>, case: Case) -> Result<i64, String> {
+    with_conn(&app, "Сохранение дела", |conn| {
+        let id = if case.id > 0 { case.id } else { 1 };
+        let sql = statement("case_upsert")?;
+        conn.execute(&sql, rusqlite::named_params! {
+            ":id": id, ":archive": case.archive, ":fond": case.fond, ":opis": case.opis,
+            ":delo": case.delo, ":church": case.church, ":village": case.village,
+            ":uyezd": case.uyezd, ":guberniya": case.guberniya, ":year": case.year,
+            ":parish_key": case.parish_key(), ":indexer": case.indexer,
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(id)
+    })
+}
+
+/// Сохранение записи со всеми упомянутыми персонами.
+///
+/// Попутно происходит три вещи, ради которых всё и затевалось: населённые
+/// пункты заводятся по первому упоминанию, введённые вручную звания попадают
+/// в справочник, а частота использования растёт — на ней держится порядок
+/// подсказок.
+#[tauri::command]
+fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
+    with_conn(&app, "Сохранение записи", |conn| {
+        let parish: String = conn
+            .query_row("SELECT parish_key FROM mk_case WHERE id = ?1", [entry.case_id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+
+        conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+        let result = (|| -> Result<i64, String> {
+            let entry_id = match entry.id {
+                Some(id) => {
+                    conn.execute(&statement("entry_update")?, rusqlite::named_params! {
+                        ":id": id, ":page": entry.page, ":no_male": entry.no_male,
+                        ":no_female": entry.no_female, ":event_day": entry.event_day,
+                        ":event_month": entry.event_month, ":event_year": entry.event_year,
+                        ":rite_day": entry.rite_day, ":rite_month": entry.rite_month,
+                        ":rite_year": entry.rite_year, ":note": entry.note,
+                        ":uncertain": entry.uncertain,
+                    }).map_err(|e| e.to_string())?;
+                    id
+                }
+                None => {
+                    conn.execute(&statement("entry_insert")?, rusqlite::named_params! {
+                        ":case_id": entry.case_id, ":section": entry.section, ":page": entry.page,
+                        ":no_male": entry.no_male, ":no_female": entry.no_female,
+                        ":event_day": entry.event_day, ":event_month": entry.event_month,
+                        ":event_year": entry.event_year, ":rite_day": entry.rite_day,
+                        ":rite_month": entry.rite_month, ":rite_year": entry.rite_year,
+                        ":note": entry.note, ":uncertain": entry.uncertain,
+                        ":created_by": Option::<String>::None,
+                    }).map_err(|e| e.to_string())?;
+                    conn.last_insert_rowid()
+                }
+            };
+
+            conn.execute(&statement("mentions_clear")?,
+                         rusqlite::named_params! { ":entry_id": entry_id })
+                .map_err(|e| e.to_string())?;
+
+            for person in &entry.persons {
+                let place_id = match person.place.as_deref().map(str::trim) {
+                    Some(name) if !name.is_empty() => Some(place_id_for(conn, name)?),
+                    _ => None,
+                };
+
+                conn.execute(&statement("mention_insert")?, rusqlite::named_params! {
+                    ":entry_id": entry_id, ":role_code": person.role_code,
+                    ":sort_order": person.sort_order, ":surname": person.surname,
+                    ":first_name": person.first_name, ":patronymic": person.patronymic,
+                    ":surname_modern": person.surname_modern,
+                    ":first_name_modern": person.first_name_modern,
+                    ":patronymic_modern": person.patronymic_modern,
+                    ":maiden_surname": person.maiden_surname, ":gender": person.gender,
+                    ":rank": person.rank, ":confession": person.confession,
+                    ":place_id": place_id, ":note": person.note, ":uncertain": person.uncertain,
+                    ":birth_year_from": Option::<i64>::None, ":birth_year_to": Option::<i64>::None,
+                }).map_err(|e| e.to_string())?;
+
+                // Звание — в справочник и в статистику. Перечень выбирается
+                // по полу: у женщин свой список, это разные перечни.
+                if let Some(rank) = person.rank.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    let kind = if person.gender.as_deref() == Some("Ж") { "rank_f" } else { "rank_m" };
+                    remember(conn, kind, rank, entry.case_id, &parish)?;
+                }
+                if let Some(place) = person.place.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    remember(conn, "place", place, entry.case_id, &parish)?;
+                }
+                if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    remember(conn, "first_name", name, entry.case_id, &parish)?;
+                }
+                if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    remember(conn, "patronymic", patr, entry.case_id, &parish)?;
+                }
+            }
+            Ok(entry_id)
+        })();
+
+        match result {
+            Ok(id) => {
+                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                Ok(id)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+/// Находит населённый пункт по названию или заводит новый.
+fn place_id_for(conn: &Connection, name: &str) -> Result<i64, String> {
+    let norm = normalize(name);
+    if let Some(id) = conn
+        .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
+                   |r| r.get::<_, i64>(0))
+        .optional()
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(id);
+    }
+    conn.execute(&statement("place_insert")?,
+                 rusqlite::named_params! { ":name": name, ":name_norm": norm })
+        .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Запоминает введённое значение: пополняет справочник и наращивает частоту
+/// в трёх охватах — дело, приход, вся база. Именно в таком порядке потом
+/// выдаются подсказки.
+fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &str)
+    -> Result<(), String>
+{
+    let norm = normalize(value);
+    conn.execute(&statement("lookup_extend")?, rusqlite::named_params! {
+        ":kind": kind, ":value": value, ":value_norm": norm,
+    }).map_err(|e| e.to_string())?;
+
+    let bump = statement("usage_bump")?;
+    for (scope, key) in [("case", case_id.to_string()), ("parish", parish.to_string()),
+                         ("global", String::new())] {
+        conn.execute(&bump, rusqlite::named_params! {
+            ":kind": kind, ":scope": scope, ":scope_key": key,
+            ":value": value, ":value_norm": norm,
+        }).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBrief>, String> {
+    with_conn(&app, "Список записей", |conn| {
+        let mut stmt = conn.prepare(&statement("entry_list")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! { ":case_id": case_id, ":section": section }, |r| {
+                Ok(EntryBrief {
+                    id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
+                    event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
+                    child: r.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -579,6 +878,10 @@ fn main() {
             read_log,
             db_info,
             lookup_summary,
+            case_load,
+            case_save,
+            entry_save,
+            entry_list,
             get_setting,
             set_setting,
             suggest,
