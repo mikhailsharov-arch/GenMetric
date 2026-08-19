@@ -36,7 +36,6 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
   const [items, setItems] = useState<Item[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [ms, setMs] = useState<number | null>(null);
   const seq = useRef(0);
   // После подстановки поле меняется программно, и запрос подсказок не должен
   // открывать список заново — иначе он «залипает» открытым (баг 1 из отчёта).
@@ -56,11 +55,9 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
       return;
     }
     const mine = ++seq.current;
-    const started = performance.now();
     invoke<Item[]>("suggest", { kind, prefix: query, limit: 8 })
       .then((rows) => {
         if (mine !== seq.current) return; // ответ на устаревший запрос
-        setMs(Math.round(performance.now() - started));
         setItems(rows);
         setActive(0);
         // Единственный вариант, совпадающий с набранным, показывать незачем.
@@ -109,10 +106,8 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
 
   return (
     <div className="field">
-      <label>
-        {label}
-        {ms !== null && <span className="ms">{ms} мс</span>}
-      </label>
+      <label>{label}</label>
+      <div className="fieldbody">
       <input
         ref={ref}
         data-field
@@ -142,6 +137,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           ))}
         </ul>
       )}
+      </div>
     </div>
   );
 });

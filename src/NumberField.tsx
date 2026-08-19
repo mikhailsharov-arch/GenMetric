@@ -45,7 +45,7 @@ export default function NumberField({ label, value, onChange, min = 0, max = 999
   return (
     <div className="field num" style={width ? { width } : undefined}>
       <label>{label}</label>
-      <div className="numrow">
+      <div className="fieldbody numrow">
         <button type="button" onClick={() => step(-1)} tabIndex={-1} aria-label="Меньше">
           −
         </button>

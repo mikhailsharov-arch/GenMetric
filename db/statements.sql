@@ -104,3 +104,39 @@ SELECT role_code, sort_order, surname, first_name, patronymic,
   FROM person_mention
  WHERE entry_id = :entry_id
  ORDER BY sort_order;
+
+-- @person_remember
+-- Запоминает персону целиком: ИОФ вместе с населённым пунктом и званием.
+-- Ради этого всё и делается — выбор строки заполняет три поля разом.
+INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses, last_used_at)
+VALUES (:iof, :iof_norm, :place, :rank, :gender, 1, datetime('now'))
+ON CONFLICT(iof, place, rank) DO UPDATE SET
+    uses = uses + 1, last_used_at = datetime('now'),
+    gender = coalesce(excluded.gender, gender);
+
+-- @person_suggest
+-- Подсказка персонами. Сначала те, кого вводили чаще: заказчик работает
+-- приходами, и одни и те же люди возвращаются в записях год за годом.
+SELECT iof, place, rank, gender, uses
+  FROM person_index
+ WHERE iof_norm LIKE :prefix ESCAPE '\'
+ ORDER BY uses DESC, iof
+ LIMIT :limit;
+
+-- @spouse_remember
+-- Кто чья жена. Заполняется, когда в записи о рождении есть и отец, и мать.
+INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, wife_rank, uses, last_used_at)
+VALUES (:husband_norm, :wife_iof, :wife_place, :wife_rank, 1, datetime('now'))
+ON CONFLICT(husband_norm, wife_iof) DO UPDATE SET
+    uses = uses + 1, last_used_at = datetime('now'),
+    wife_place = coalesce(excluded.wife_place, wife_place),
+    wife_rank = coalesce(excluded.wife_rank, wife_rank);
+
+-- @spouse_lookup
+-- Жена по мужу. Заказчик: «как только ты выбираешь существующую персону,
+-- то и НП, и его звание, и все данные его жены тут же должны быть заполнены».
+SELECT wife_iof, wife_place, wife_rank, uses
+  FROM spouse_index
+ WHERE husband_norm = :husband_norm
+ ORDER BY uses DESC
+ LIMIT 1;

@@ -4,7 +4,7 @@ import { focusNextField } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
 
-type Parsed = {
+export type Parsed = {
   first_name: string | null;
   first_name_modern: string | null;
   patronymic: string | null;
@@ -15,206 +15,231 @@ type Parsed = {
   known_name: boolean;
 };
 
-/**
- * Единое поле ИОФ вместо трёх отдельных.
- *
- * Подсказки даются пословно: пока набирается первое слово — по именам,
- * второе — по отчествам, третье — по фамилиям. Это принципиально: на
- * настоящих данных подсказка по строке целиком экономит 18% нажатий,
- * а пословная — 64%, потому что сочетание имени с отчеством почти всегда
- * уникально, а сами имена и отчества повторяются постоянно.
- *
- * Под полем показывается разбор: что программа считает именем, отчеством
- * и фамилией, и какой современный вариант она предлагает.
- */
-type IofProps = {
-  label: string;
-  value?: string;
-  onChange?: (text: string, parsed: Parsed | null) => void;
-  placeholder?: string;
-  compact?: boolean;
+export type PersonHint = {
+  iof: string;
+  place: string | null;
+  rank: string | null;
+  gender: string | null;
+  uses: number;
 };
 
-export default function IofField({ label, value, onChange, placeholder, compact }: IofProps) {
-  const [own, setOwn] = useState("");
-  const text = value ?? own;
-  const setText = (next: string) => {
-    setOwn(next);
-    onChange?.(next, parsed);
-  };
+/**
+ * Поле ИОФ.
+ *
+ * Показывает два вида подсказок сразу, и порядок здесь принципиален.
+ *
+ * СВЕРХУ — персоны, уже занесённые в базу, вместе с населённым пунктом
+ * и званием. Заказчик 17.08.2026: «я хочу чтобы во всех полях ИОФ индексатор
+ * предугадывал уже занесённого в базу человека, а не отдельно имя, отчество
+ * и фамилию». Выбор такой строки заполняет три поля разом, а для отца ещё
+ * и данные жены. На его работе по одному приходу 36% вводимых строк ИОФ
+ * уже встречались раньше.
+ *
+ * НИЖЕ — пословные подсказки по словарю: имя, потом отчество, потом фамилия.
+ * Они нужны для людей, которых в базе ещё нет, а таких большинство при первом
+ * проходе по приходу.
+ *
+ * Разбор набранного на части идёт всегда: и для новых, и для выбранных.
+ */
+
+type Props = {
+  label: string;
+  value: string;
+  onChange: (text: string, parsed: Parsed | null) => void;
+  onPickPerson?: (hint: PersonHint) => void;
+  placeholder?: string;
+  inputRef?: React.RefObject<HTMLInputElement>;
+};
+
+export default function IofField({
+  label, value, onChange, onPickPerson, placeholder, inputRef,
+}: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
+  const [words, setWords] = useState<Item[]>([]);
+  const [persons, setPersons] = useState<PersonHint[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const seq = useRef(0);
   const justPicked = useRef(false);
-  // Ссылка, чтобы разбор не пересоздавал подписку на каждый набранный символ.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  // какое слово сейчас набирается и по какому справочнику подсказывать
-  const tokens = text.split(/\s+/);
+  const tokens = value.split(/\s+/);
   const wordIndex = tokens.length - 1;
   const currentWord = tokens[wordIndex] ?? "";
   const kind = wordIndex === 0 ? "first_name" : wordIndex === 1 ? "patronymic" : "surname";
   const KIND_TITLE = ["имя", "отчество", "фамилия"][Math.min(wordIndex, 2)];
 
+  // Разбор на имя, отчество и фамилию — на каждое изменение.
   useEffect(() => {
-    invoke<Parsed>("parse_iof", { text })
+    invoke<Parsed>("parse_iof", { text: value })
       .then((result) => {
         setParsed(result);
-        onChangeRef.current?.(text, result);
+        onChangeRef.current?.(value, result);
       })
       .catch((e) => {
         setParsed(null);
         report("Не удалось разобрать имя, отчество и фамилию", e);
       });
-  }, [text]);
+  }, [value]);
 
+  // Подсказки: персоны по всей строке и слова по текущему слову.
   useEffect(() => {
-    if (currentWord.length < 1) {
-      setItems([]);
+    if (justPicked.current) {
+      justPicked.current = false;
+      setWords([]);
+      setPersons([]);
       setOpen(false);
       return;
     }
-    if (justPicked.current) {
-      justPicked.current = false;
-      setItems([]);
+    const query = value.trim();
+    if (query.length < 1) {
+      setWords([]);
+      setPersons([]);
       setOpen(false);
       return;
     }
     const mine = ++seq.current;
-    invoke<Item[]>("suggest", { kind, prefix: currentWord, limit: 8 })
-      .then((rows) => {
+    const wantPersons = Boolean(onPickPerson);
+
+    Promise.all([
+      wantPersons
+        ? invoke<PersonHint[]>("suggest_person", { prefix: query, limit: 6 })
+        : Promise.resolve([] as PersonHint[]),
+      currentWord.length > 0
+        ? invoke<Item[]>("suggest", { kind, prefix: currentWord, limit: 6 })
+        : Promise.resolve([] as Item[]),
+    ])
+      .then(([foundPersons, foundWords]) => {
         if (mine !== seq.current) return;
-        setItems(rows);
+        setPersons(foundPersons);
+        setWords(foundWords);
         setActive(0);
-        setOpen(rows.length > 0);
+        setOpen(foundPersons.length + foundWords.length > 0);
       })
       .catch((e) => {
-        setItems([]);
+        setPersons([]);
+        setWords([]);
         setOpen(false);
-        report(`Не удалось получить подсказки (${KIND_TITLE})`, e);
+        report("Не удалось получить подсказки к ИОФ", e);
       });
-  }, [text, kind, currentWord]);
+  }, [value, kind, currentWord, onPickPerson]);
 
-  function pick(item: Item) {
+  const total = persons.length + words.length;
+
+  function pickPerson(hint: PersonHint) {
+    justPicked.current = true;
+    setOpen(false);
+    setPersons([]);
+    setWords([]);
+    onChange(hint.iof, parsed);
+    onPickPerson?.(hint);
+  }
+
+  function pickWord(item: Item) {
     justPicked.current = true;
     const head = tokens.slice(0, wordIndex);
-    // после подстановки сразу пробел: следующее слово можно набирать без пауз
-    setText([...head, item.value].join(" ") + " ");
-    setItems([]);
+    // Пробел сразу после подстановки: следующее слово набирается без пауз.
+    onChange([...head, item.value].join(" ") + " ", parsed);
     setOpen(false);
+    setPersons([]);
+    setWords([]);
+  }
+
+  function pickActive() {
+    if (active < persons.length) pickPerson(persons[active]);
+    else pickWord(words[active - persons.length]);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    const listOpen = open && items.length > 0;
+    const listOpen = open && total > 0;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      if (listOpen) setActive((i) => (i + 1) % items.length);
+      if (listOpen) setActive((i) => (i + 1) % total);
       else focusNextField(e.currentTarget);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      if (listOpen) setActive((i) => (i - 1 + items.length) % items.length);
+      if (listOpen) setActive((i) => (i - 1 + total) % total);
       else focusNextField(e.currentTarget, -1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (listOpen) pick(items[active]);
+      if (listOpen) pickActive();
       else focusNextField(e.currentTarget);
     } else if (e.key === "Escape") {
       setOpen(false);
     }
   }
 
-  const hasParse =
-    parsed && (parsed.first_name || parsed.patronymic || parsed.surname);
+  const modern = [
+    parsed?.first_name_modern !== parsed?.first_name ? parsed?.first_name_modern : null,
+    parsed?.patronymic_modern !== parsed?.patronymic ? parsed?.patronymic_modern : null,
+  ].filter(Boolean).join(" ");
 
   return (
     <div className="field">
-      <label>
-        {label}
-        <span className="ms">
-          {currentWord.length > 0
-            ? `подсказки: ${KIND_TITLE}`
-            : wordIndex === 0
-              ? "начните с имени"
-              : `дальше ${KIND_TITLE}`}
-        </span>
-      </label>
-      <input
-        data-field
-        value={text}
-        placeholder={placeholder ?? "например, Иван Семенов Карсаков"}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={onKeyDown}
-        onBlur={() => setOpen(false)}
-      />
-      {/* Слова, которые уже приняты. Видно, что программа ждёт следующее,
-          даже когда пробел в конце строки не разглядеть. */}
-      {wordIndex > 0 && (
-        <div className="words">
-          {tokens.slice(0, wordIndex).map((w, i) => (
-            <span key={i} className="word">
-              {["имя", "отчество", "фамилия"][Math.min(i, 2)]}: <b>{w}</b>
-            </span>
-          ))}
-          <span className="word next">ждёт: {KIND_TITLE}</span>
-        </div>
-      )}
-      {open && (
-        <ul className="suggest">
-          {items.map((it, i) => (
-            <li
-              key={it.value}
-              className={i === active ? "active" : ""}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pick(it);
-              }}
-            >
-              <span className="val">{it.value}</span>
-              <span className={`tier t${it.tier}`}>
-                {it.tier === 4 ? "словарь" : "в базе"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {hasParse && !compact && (
-        <table className="parsed">
-          <tbody>
-            <tr>
-              <td className="pk">Имя</td>
-              <td>{parsed!.first_name}</td>
-              <td className="modern">
-                {parsed!.first_name_modern !== parsed!.first_name ? parsed!.first_name_modern : ""}
-              </td>
-            </tr>
-            <tr>
-              <td className="pk">Отчество</td>
-              <td>{parsed!.patronymic ?? "—"}</td>
-              <td className="modern">
-                {parsed!.patronymic_modern !== parsed!.patronymic ? parsed!.patronymic_modern : ""}
-              </td>
-            </tr>
-            <tr>
-              <td className="pk">Фамилия</td>
-              <td>{parsed!.surname ?? "—"}</td>
-              <td className="modern" />
-            </tr>
-            <tr>
-              <td className="pk">Пол</td>
-              <td>{parsed!.gender ?? "—"}</td>
-              <td className="modern">
-                {parsed!.father_name ? `отец: ${parsed!.father_name}` : ""}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      )}
+      <label>{label}</label>
+      <div className="fieldbody">
+        <input
+          ref={inputRef}
+          data-field
+          value={value}
+          placeholder={placeholder ?? "имя, отчество, фамилия"}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => onChange(e.target.value, parsed)}
+          onKeyDown={onKeyDown}
+          onBlur={() => setOpen(false)}
+        />
+        {/* Что программа поняла: современное написание и пол. Строка появляется
+            только когда есть что сказать, чтобы не занимать высоту зря. */}
+        {(modern || parsed?.gender) && (
+          <div className="parsedline">
+            {modern && <span className="modern">{modern}</span>}
+            {parsed?.gender && <span className="tag">{parsed.gender}</span>}
+            {parsed?.father_name && <span className="tag">отец: {parsed.father_name}</span>}
+            {value.trim() && !parsed?.known_name && (
+              <span className="tag warn">имени нет в словаре</span>
+            )}
+          </div>
+        )}
+        {open && total > 0 && (
+          <ul className="suggest">
+            {persons.map((p, i) => (
+              <li
+                key={`p${i}`}
+                className={i === active ? "active person" : "person"}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickPerson(p);
+                }}
+              >
+                <span className="val">
+                  {p.iof}
+                  {(p.place || p.rank) && (
+                    <span className="sub">
+                      {[p.rank, p.place].filter(Boolean).join(", ")}
+                    </span>
+                  )}
+                </span>
+                <span className="tier t1">персона</span>
+              </li>
+            ))}
+            {words.map((w, i) => (
+              <li
+                key={`w${i}`}
+                className={persons.length + i === active ? "active" : ""}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickWord(w);
+                }}
+              >
+                <span className="val">{w.value}</span>
+                <span className={`tier t${w.tier}`}>{KIND_TITLE}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

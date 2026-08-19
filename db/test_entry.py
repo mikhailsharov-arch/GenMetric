@@ -83,7 +83,8 @@ def main() -> int:
     sql = load_statements()
     print(f"\n0. Запросы из statements.sql: {len(sql)} блоков")
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
-                     "usage_bump", "entry_list", "place_insert"):
+                     "usage_bump", "entry_list", "place_insert",
+                     "person_remember", "person_suggest", "spouse_remember", "spouse_lookup"):
         check(f"блок {required} на месте", required in sql)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -196,7 +197,49 @@ def main() -> int:
         check("запись видна в списке", len(rows) == 1)
         check("в списке имя ребёнка", rows[0][7] == "Татьяна Никитична", rows[0][7])
 
-        print("\n8. Целостность")
+        print("\n8. Память о персонах: выбор заполняет три поля разом")
+        # Главное требование заказчика от 17.08.2026. Раньше он набирал ИОФ,
+        # населённый пункт и звание по отдельности для каждой персоны.
+        for iof, place_name, rank, gender in [
+            ("Никита Алексеев", "Чертеж Малый", "крестьянин", "М"),
+            ("Никита Алексеев", "Чертеж Малый", "крестьянин", "М"),
+            ("Никита Алексеев", "Кнышево", "крестьянин", "М"),
+            ("Никифор Иванов", "Чертеж Малый", "солдат", "М"),
+        ]:
+            db.execute(sql["person_remember"], {"iof": iof, "iof_norm": norm(iof),
+                                                "place": place_name, "rank": rank, "gender": gender})
+        check("персоны запомнены без задвоения",
+              one("SELECT count(*) FROM person_index")[0] == 3, "три разные связки ИОФ+НП+звание")
+        check("повторный ввод увеличил счётчик",
+              one("SELECT uses FROM person_index WHERE place='Чертеж Малый' AND iof='Никита Алексеев'")[0] == 2)
+
+        rows = db.execute(sql["person_suggest"],
+                          {"prefix": norm("Ник") + "%", "limit": 8}).fetchall()
+        check("подсказка находит персон по началу строки", len(rows) == 3, f"{len(rows)} персон")
+        check("первым идёт тот, кого вводили чаще", rows[0][0] == "Никита Алексеев" and rows[0][4] == 2,
+              f"{rows[0][0]}, {rows[0][1]}, {rows[0][4]} раз")
+        check("вместе с ИОФ приходят населённый пункт и звание",
+              rows[0][1] == "Чертеж Малый" and rows[0][2] == "крестьянин")
+        check("однофамильцы из разных мест различимы",
+              {r[1] for r in rows} == {"Чертеж Малый", "Кнышево"})
+
+        print("\n9. Память о супругах: выбор отца заполняет мать")
+        db.execute(sql["spouse_remember"], {
+            "husband_norm": norm("Никита Алексеев"), "wife_iof": "Евлампия Васильева",
+            "wife_place": "Чертеж Малый", "wife_rank": "законная жена его"})
+        db.execute(sql["spouse_remember"], {
+            "husband_norm": norm("Никита Алексеев"), "wife_iof": "Евлампия Васильева",
+            "wife_place": "Чертеж Малый", "wife_rank": "законная жена его"})
+        wife = db.execute(sql["spouse_lookup"],
+                          {"husband_norm": norm("Никита Алексеев")}).fetchone()
+        check("жена находится по мужу", wife is not None and wife[0] == "Евлампия Васильева")
+        check("с ней приходят её населённый пункт и звание",
+              wife[1] == "Чертеж Малый" and wife[2] == "законная жена его")
+        check("пара не задвоилась", one("SELECT count(*) FROM spouse_index")[0] == 1)
+        check("у незнакомого мужа жены нет",
+              db.execute(sql["spouse_lookup"], {"husband_norm": norm("Иван Петров")}).fetchone() is None)
+
+        print("\n10. Целостность")
         check("integrity_check", one("PRAGMA integrity_check")[0] == "ok")
         check("foreign_key_check", len(db.execute("PRAGMA foreign_key_check").fetchall()) == 0)
         db.commit()

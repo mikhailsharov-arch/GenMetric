@@ -29,31 +29,26 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.app { padding: 1em 1.125em 1.75em; max-width: 40em; margin: 0 auto; }
+.app { padding: 0.625em 0.75em 1.25em; max-width: 40em; margin: 0 auto; }
 
 header { margin-bottom: 1.125em; }
 h1 { margin: 0; font-size: 1.5rem; letter-spacing: 0.013em; color: var(--accent); }
 .sub { margin: 0.125em 0 0; color: var(--muted); font-size: 0.85rem; }
 
+/* Заказчик 17.08.2026: «очень много воздуха, большие промежутки между
+   блоками и полями, необходимо сделать компактнее, но чтобы не слипалось».
+   Форма не помещалась по высоте даже на минимальном размере шрифта. */
 section {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.875em 0.875em 1em;
-  margin-bottom: 0.875em;
+  border-radius: 8px;
+  padding: 0.5em 0.625em 0.625em;
+  margin-bottom: 0.5em;
 }
-h2 { margin: 0 0 0.375em; font-size: 1rem; }
+h2 { margin: 0 0 0.3em; font-size: 0.92rem; }
+section.person h2 { color: var(--accent); }
 .hint { margin: 0 0 0.75em; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
 
-/* Поле ввода должно быть очевидно отличимо от подписи — требование В-5. */
-.field { position: relative; margin-bottom: 0.875em; }
-.field label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.82rem;
-  color: var(--muted);
-  margin-bottom: 0.25em;
-}
 .ms { font-variant-numeric: tabular-nums; opacity: 0.7; }
 
 input {
@@ -238,3 +233,63 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 }
 .word b { color: var(--ink); font-weight: 600; }
 .word.next { background: transparent; font-style: italic; }
+
+
+/* ============================================================================
+   Компактная двухколоночная разметка полей: подпись слева, поле справа.
+   Так устроена и форма ввода в Excel — подписи в одной колонке, значения
+   в соседней. Экономит примерно половину высоты против подписи сверху,
+   а высота здесь дороже всего: заказчику нужно видеть запись целиком,
+   пока справа открыт скан книги.
+   ============================================================================ */
+.field {
+  display: grid;
+  grid-template-columns: 7.5em 1fr;
+  align-items: start;
+  gap: 0.4em;
+  margin-bottom: 0.25em;
+  position: relative;
+}
+.field > label {
+  display: block;
+  text-align: right;
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding-top: 0.35em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fieldbody { position: relative; min-width: 0; }
+.fieldbody input { width: 100%; padding: 0.3em 0.5em; }
+
+/* Строка разбора под полем ИОФ: современное написание, пол, имя отца. */
+.parsedline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375em;
+  margin-top: 0.19em;
+  font-size: 0.74rem;
+}
+.parsedline .modern { color: var(--muted); font-style: italic; }
+.tag {
+  color: var(--muted);
+  background: var(--field);
+  padding: 0.06em 0.4em;
+  border-radius: 4px;
+}
+.tag.warn { background: #fdf1e7; color: #8a5a2b; }
+
+/* Персона в списке подсказок: с населённым пунктом и званием — их выбор
+   заполняет сразу. */
+.suggest li.person { background: #eef4fa; }
+.suggest li.person.active { background: var(--accent); }
+.suggest .sub { display: block; font-size: 0.72rem; color: var(--muted); }
+.suggest li.active .sub { color: rgba(255, 255, 255, 0.8); }
+.tier.t1 { font-weight: 600; }
+
+/* Числовые поля в строке: две пары «день / месяц» рядом. */
+.row { display: flex; gap: 0.5em; align-items: start; }
+.row .field { flex: 1; grid-template-columns: 5.5em 1fr; }
+.numrow input { text-align: center; }
+.numrow button { width: 1.7em; }

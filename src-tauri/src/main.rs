@@ -16,7 +16,7 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
 /// Версия схемы, которую понимает эта сборка.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
@@ -633,6 +633,22 @@ struct EntryInput {
 }
 
 #[derive(Serialize)]
+struct PersonHint {
+    iof: String,
+    place: Option<String>,
+    rank: Option<String>,
+    gender: Option<String>,
+    uses: i64,
+}
+
+#[derive(Serialize)]
+struct SpouseHint {
+    iof: String,
+    place: Option<String>,
+    rank: Option<String>,
+}
+
+#[derive(Serialize)]
 struct EntryBrief {
     id: i64,
     page: Option<String>,
@@ -759,6 +775,31 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                 if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                     remember(conn, "patronymic", patr, entry.case_id, &parish)?;
                 }
+
+                // Персона целиком — вместе с населённым пунктом и званием.
+                // Заказчик 17.08.2026: выбор персоны должен заполнять все три
+                // поля разом, а не заставлять набирать каждое.
+                let iof = person_iof(person);
+                if !iof.is_empty() {
+                    conn.execute(&statement("person_remember")?, rusqlite::named_params! {
+                        ":iof": iof, ":iof_norm": normalize(&iof),
+                        ":place": person.place, ":rank": person.rank, ":gender": person.gender,
+                    }).map_err(|e| e.to_string())?;
+                }
+            }
+
+            // Кто чья жена: чтобы выбор отца заполнял мать.
+            let father = entry.persons.iter().find(|p| p.role_code == "father");
+            let mother = entry.persons.iter().find(|p| p.role_code == "mother");
+            if let (Some(f), Some(m)) = (father, mother) {
+                let husband = person_iof(f);
+                let wife = person_iof(m);
+                if !husband.is_empty() && !wife.is_empty() {
+                    conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
+                        ":husband_norm": normalize(&husband), ":wife_iof": wife,
+                        ":wife_place": m.place, ":wife_rank": m.rank,
+                    }).map_err(|e| e.to_string())?;
+                }
             }
             Ok(entry_id)
         })();
@@ -773,6 +814,58 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                 Err(e)
             }
         }
+    })
+}
+
+/// Собирает ИОФ из частей — в том порядке, в каком он записан в книге.
+fn person_iof(p: &PersonInput) -> String {
+    [&p.first_name, &p.patronymic, &p.surname]
+        .iter()
+        .filter_map(|v| v.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Подсказка персонами: ИОФ вместе с населённым пунктом и званием.
+///
+/// Главное требование заказчика от 17.08.2026. Раньше подсказки шли пословно —
+/// отдельно имя, отдельно отчество, отдельно фамилия, — и населённый пункт
+/// со званием приходилось набирать руками для каждой персоны.
+#[tauri::command]
+fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>)
+    -> Result<Vec<PersonHint>, String>
+{
+    let pattern = like_prefix(&prefix);
+    let limit = limit.unwrap_or(8).clamp(1, 50);
+    with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
+        let mut stmt = conn.prepare(&statement("person_suggest")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! { ":prefix": pattern, ":limit": limit }, |r| {
+                Ok(PersonHint {
+                    iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?,
+                    gender: r.get(3)?, uses: r.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
+}
+
+/// Жена по мужу: выбор отца заполняет мать.
+#[tauri::command]
+fn suggest_spouse(app: State<App>, husband: String) -> Result<Option<SpouseHint>, String> {
+    with_conn(&app, "Поиск жены", |conn| {
+        conn.query_row(
+            &statement("spouse_lookup")?,
+            rusqlite::named_params! { ":husband_norm": normalize(&husband) },
+            |r| Ok(SpouseHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)? }),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
     })
 }
 
@@ -882,6 +975,8 @@ fn main() {
             case_save,
             entry_save,
             entry_list,
+            suggest_person,
+            suggest_spouse,
             get_setting,
             set_setting,
             suggest,

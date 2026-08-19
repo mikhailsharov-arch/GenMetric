@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import Suggest from "./Suggest";
-import IofField from "./IofField";
 import ErrorBar from "./ErrorBar";
 import FontScale from "./FontScale";
 import CaseHeader, { type Case } from "./CaseHeader";
@@ -37,14 +35,9 @@ type DbInfo = {
 export default function App() {
   const [info, setInfo] = useState<DbInfo | null>(null);
   const [startup, setStartup] = useState<Startup | null>(null);
-  const [onTop, setOnTop] = useState(false);
-  const [rankM, setRankM] = useState("");
-  const [rankF, setRankF] = useState("");
-  const [place, setPlace] = useState("");
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
-  const [screen, setScreen] = useState<"case" | "births" | "checks" | "about">("case");
-  const firstField = useRef<HTMLInputElement>(null);
+  const [screen, setScreen] = useState<"case" | "births" | "about">("case");
 
   useEffect(() => {
     invoke<Startup>("startup_state")
@@ -59,18 +52,8 @@ export default function App() {
           .catch((e) => report("Не удалось прочитать состав справочников", e));
       })
       .catch((e) => report("Программа не смогла сообщить своё состояние", e));
-    firstField.current?.focus();
   }, []);
 
-  async function toggleOnTop() {
-    const next = !onTop;
-    try {
-      await invoke("set_always_on_top", { value: next });
-      setOnTop(next);
-    } catch (e) {
-      report("Не удалось закрепить окно поверх других", e);
-    }
-  }
 
   // База не открылась — показываем объяснение вместо формы: работать всё
   // равно нельзя, а человек должен понимать, что произошло и что делать.
@@ -137,9 +120,6 @@ export default function App() {
         >
           Рождения
         </button>
-        <button className={screen === "checks" ? "on" : ""} onClick={() => setScreen("checks")}>
-          Проверка
-        </button>
         <button className={screen === "about" ? "on" : ""} onClick={() => setScreen("about")}>
           О программе
         </button>
@@ -147,66 +127,6 @@ export default function App() {
 
       {screen === "case" && <CaseHeader onSaved={setMkCase} />}
       {screen === "births" && mkCase && mkCase.id > 0 && <BirthForm mkCase={mkCase} />}
-      {screen === "checks" && (
-        <>
-
-
-      <section>
-        <h2>Проверка ввода</h2>
-        <p className="hint">
-          Наберите несколько букв. Подсказки идут по частоте использования,
-          а не по алфавиту. Выбор — стрелками и клавишей Enter, мышь не нужна.
-        </p>
-
-        <Suggest
-          ref={firstField}
-          label="Звание мужское"
-          kind="rank_m"
-          value={rankM}
-          onChange={setRankM}
-          placeholder="например, кр"
-          hint="Здесь только мужские звания: крестьянин, солдат, мещанин."
-        />
-        <Suggest
-          label="Звание женское"
-          kind="rank_f"
-          value={rankF}
-          onChange={setRankF}
-          placeholder="например, кресть"
-          hint="А здесь женские: крестьянская жена, крестьянская вдова, крестьянка."
-        />
-        <Suggest
-          label="Причина смерти"
-          kind="death_cause"
-          value={place}
-          onChange={setPlace}
-          placeholder="например, ста"
-        />
-      </section>
-
-      <section>
-        <h2>Единое поле ИОФ</h2>
-        <p className="hint">
-          Одно поле вместо трёх. Подсказки идут пословно: первое слово —
-          по именам, второе — по отчествам, третье — по фамилиям. Программа
-          сама разбирает набранное на части и предлагает современное написание.
-        </p>
-        <IofField label="ИОФ персоны" />
-      </section>
-
-      <section>
-        <h2>Окно</h2>
-        <p className="hint">
-          Окно должно быть узким и помещаться по высоте экрана: слева оно,
-          справа скан книги.
-        </p>
-        <button className="toggle" onClick={toggleOnTop} aria-pressed={onTop}>
-          {onTop ? "✓ Поверх других окон" : "Поверх других окон"}
-        </button>
-      </section>
-        </>
-      )}
-
       {screen === "about" && info && (
         <section>
           <h2>Что внутри сборки</h2>

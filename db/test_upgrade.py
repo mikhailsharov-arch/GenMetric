@@ -60,7 +60,7 @@ def old_schema_sql() -> str:
     Именно из файла, а не из истории git: сборка клонирует репозиторий без
     истории, и обращение к старому коммиту там падает.
     """
-    path = DB_DIR / "fixtures" / "schema-v1.sql"
+    path = DB_DIR / "fixtures" / "schema-v2.sql"
     if not path.exists():
         raise SystemExit(f"Не найден слепок старой схемы: {path}")
     return path.read_text(encoding="utf-8")
@@ -70,7 +70,7 @@ def build_old_database(path: Path) -> None:
     """База, какой она была у пользователя после первой сборки, плюс его правки."""
     db = sqlite3.connect(path)
     db.executescript(old_schema_sql())
-    db.execute("INSERT INTO schema_version (version) VALUES (1)")
+    db.execute("INSERT INTO schema_version (version) VALUES (2)")
     db.execute("INSERT INTO lookup_kind (kind, title, editable, autoextend) VALUES ('rank_m','Звания мужские',1,1)")
     db.executemany(
         "INSERT INTO lookup (kind, value, value_norm, sort_order, origin) VALUES (?,?,?,?,?)",
@@ -82,9 +82,14 @@ def build_old_database(path: Path) -> None:
                "VALUES (1,'Христорождественская','Борисоглебское','приход-1',1893)")
     db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
                "VALUES ('rank_m','case','1','крестьянин','крестьянин',42)")
-    db.execute("UPDATE setting SET value='0' WHERE key='modernize_names'") if db.execute(
-        "SELECT count(*) FROM setting WHERE key='modernize_names'").fetchone()[0] else db.execute(
-        "INSERT INTO setting (key, value) VALUES ('modernize_names','0')")
+    db.execute("INSERT INTO setting (key, value) VALUES ('modernize_names','0')")
+    # Набранные записи — их потерять нельзя ни при каких обстоятельствах.
+    # Роль нужна из-за внешнего ключа: у человека справочник ролей заполнен.
+    db.execute("INSERT INTO role (code, title, section, sort_order) VALUES ('child','ребенок',1,10)")
+    db.execute("INSERT INTO entry (id, case_id, section, page, event_day, event_month, event_year) "
+               "VALUES (1, 1, 1, '957', 6, 12, 1896)")
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name) "
+               "VALUES (1, 'child', 10, 'Евграф')")
     db.commit()
     db.close()
 
@@ -111,7 +116,7 @@ def upgrade(user_db: Path, seed_db: Path) -> None:
     # 2. Обновляем справочники.
     conn.executescript((DB_DIR / "migrate.sql").read_text(encoding="utf-8"))
 
-    conn.execute("INSERT INTO schema_version (version) VALUES (2)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (3)")
     conn.execute("DETACH DATABASE seed")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.close()
@@ -131,11 +136,12 @@ def main() -> int:
 
         print("\n1. База до обновления — такая же, как была у тестировщика")
         db = sqlite3.connect(user)
-        check("схема версии 1", db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 1)
-        has_forms = db.execute(
-            "SELECT count(*) FROM sqlite_master WHERE name='name_form'").fetchone()[0]
-        check("таблицы форм имён нет — из-за этого не работало поле ИОФ", has_forms == 0)
-        check("званий всего 2", db.execute("SELECT count(*) FROM lookup WHERE kind='rank_m'").fetchone()[0] == 2)
+        check("схема версии 2", db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 2)
+        has_persons = db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='person_index'").fetchone()[0]
+        check("памяти о персонах ещё нет", has_persons == 0)
+        check("у человека есть набранная запись",
+              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 1)
         db.close()
 
         upgrade(user, seed)
@@ -143,7 +149,11 @@ def main() -> int:
         print("\n2. После обновления появилось новое из поставки")
         db = sqlite3.connect(user)
         one = lambda sql, *a: db.execute(sql, a).fetchone()[0]
-        check("схема поднялась до версии 2", one("SELECT max(version) FROM schema_version") == 2)
+        check("схема поднялась до версии 3", one("SELECT max(version) FROM schema_version") == 3)
+        check("появилась память о персонах",
+              one("SELECT count(*) FROM sqlite_master WHERE name='person_index'") == 1)
+        check("появилась память о супругах",
+              one("SELECT count(*) FROM sqlite_master WHERE name='spouse_index'") == 1)
         n_forms = one("SELECT count(*) FROM name_form")
         check("таблица форм имён заполнена", n_forms > 12000, f"{n_forms} написаний")
         check("имена перенесены", one("SELECT count(*) FROM name_dict") > 3000)
@@ -166,6 +176,9 @@ def main() -> int:
         check("накопленная статистика подсказок цела",
               one("SELECT count FROM usage_stat WHERE value='крестьянин'") == 42)
         check("заведённое дело на месте", one("SELECT count(*) FROM mk_case") == 1)
+        check("набранная запись на месте", one("SELECT count(*) FROM entry") == 1)
+        check("персона записи на месте",
+              one("SELECT first_name FROM person_mention WHERE entry_id=1") == "Евграф")
         check("настройка пользователя не перезаписана",
               one("SELECT value FROM setting WHERE key='modernize_names'") == "0")
 
