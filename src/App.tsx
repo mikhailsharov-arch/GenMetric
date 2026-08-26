@@ -18,6 +18,7 @@ type DbInfo = {
   names: number;
   name_forms: number;
   lookups: number;
+  places: number;
   roles: number;
   db_path: string;
   app_version: string;
@@ -147,6 +148,13 @@ export default function App() {
               <tr>
                 <td>Написаний имён и отчеств</td>
                 <td>{info.name_forms.toLocaleString("ru-RU")}</td>
+              </tr>
+              {/* Справочник населённых пунктов пришёл в поставке впервые.
+                  Если он не появился — обновление не доехало, и увидеть это
+                  надо здесь, а не гадать над молчащим полем НП. */}
+              <tr>
+                <td>Населённых пунктов</td>
+                <td>{info.places.toLocaleString("ru-RU")}</td>
               </tr>
               <tr>
                 <td>Ролей персон</td>

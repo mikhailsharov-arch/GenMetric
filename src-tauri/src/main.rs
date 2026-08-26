@@ -67,6 +67,7 @@ struct DbInfo {
     names: i64,
     name_forms: i64,
     lookups: i64,
+    places: i64,
     roles: i64,
     db_path: String,
     log_path: String,
@@ -281,6 +282,10 @@ fn db_info(handle: tauri::AppHandle, app: State<App>) -> Result<DbInfo, String> 
             names: count("SELECT count(*) FROM name_dict")?,
             name_forms: count("SELECT count(*) FROM name_form")?,
             lookups: count("SELECT count(*) FROM lookup")?,
+            // Населённые пункты — на этом экране человек проверяет, доехало ли
+            // обновление. Справочник НП пришёл в поставке впервые, и если он
+            // не появился, это надо увидеть здесь, а не гадать в форме.
+            places: count("SELECT count(*) FROM place")?,
             roles: count("SELECT count(*) FROM role")?,
             db_path,
             log_path,
