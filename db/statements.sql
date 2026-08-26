@@ -105,6 +105,52 @@ SELECT role_code, sort_order, surname, first_name, patronymic,
  WHERE entry_id = :entry_id
  ORDER BY sort_order;
 
+-- @suggest_ranked
+-- ПОДСКАЗКИ. Раньше эти запросы жили прямо в коде на Rust — и именно там
+-- спрятался пункт 1 отчёта от 24.08.2026: поле НП искало населённые пункты
+-- в перечнях lookup, где их нет и быть не может. Проверка это ловит только
+-- если запрос лежит здесь, поэтому он лежит здесь.
+--
+-- Устроено из двух частей: эта обёртка и один из источников словаря ниже.
+-- Источник подставляется на место фигурных скобок в теле запроса — одинаково
+-- приложением и db/test_suggest.py. Писать это место здесь, в комментарии,
+-- нельзя: подстановка заменит и его, и запрос развалится.
+--
+-- Порядок выдачи по требованию А-1: текущее дело, затем приход, затем вся
+-- база, затем словарь; внутри группы — по убыванию частоты.
+WITH ranked AS (
+    SELECT value,
+           CASE scope WHEN 'case' THEN 1 WHEN 'parish' THEN 2 ELSE 3 END AS tier,
+           count
+      FROM usage_stat
+     WHERE kind = :kind AND value_norm LIKE :prefix ESCAPE '\'
+    UNION ALL
+    {dict}
+)
+SELECT value, min(tier) AS tier, max(count) AS cnt
+  FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT :limit;
+
+-- @suggest_first_name
+SELECT form, 4, 0 FROM name_form
+ WHERE kind IN ('name','variant') AND form_norm LIKE :prefix ESCAPE '\'
+
+-- @suggest_patronymic
+-- Отчество мужчины и отчество женщины — разные формы одного имени. Пол берётся
+-- из роли персоны: отец всегда мужчина, мать всегда женщина. Если пол
+-- неизвестен (ребёнок, восприемник), показываются обе формы.
+SELECT form, 4, 0 FROM name_form
+ WHERE kind LIKE 'patr%' AND form_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender = :gender)
+
+-- @suggest_place
+-- Населённые пункты живут в своей таблице, а не в плоских перечнях: у них
+-- губерния, уезд, волость и ссылка на Familio.
+SELECT name, 4, 0 FROM place WHERE name_norm LIKE :prefix ESCAPE '\'
+
+-- @suggest_lookup
+SELECT value, 4, 0 FROM lookup
+ WHERE kind = :kind AND value_norm LIKE :prefix ESCAPE '\'
+
 -- @person_remember
 -- Запоминает персону целиком: ИОФ вместе с населённым пунктом и званием.
 -- Ради этого всё и делается — выбор строки заполняет три поля разом.

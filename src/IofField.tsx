@@ -49,12 +49,17 @@ type Props = {
   onPickPerson?: (hint: PersonHint) => void;
   placeholder?: string;
   inputRef?: React.RefObject<HTMLInputElement>;
+  /** Пол персоны, известный из её роли: отец всегда М, мать всегда Ж.
+   *  Нужен, чтобы не предлагать мужчине женское отчество. Для ребёнка
+   *  и восприемников роль пола не задаёт — тогда берём из разбора имени. */
+  gender?: "М" | "Ж";
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
+  const parsedRef = useRef<Parsed | null>(null);
   const [words, setWords] = useState<Item[]>([]);
   const [persons, setPersons] = useState<PersonHint[]>([]);
   const [open, setOpen] = useState(false);
@@ -63,6 +68,14 @@ export default function IofField({
   const justPicked = useRef(false);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // onPickPerson приходит из формы новой функцией на каждую перерисовку.
+  // Пока он стоял в зависимостях эффекта ниже, эффект срабатывал второй раз
+  // уже после того, как флаг justPicked был израсходован, и список подсказок
+  // открывался снова сразу после выбора. Заказчик 24.08.2026: «при его выборе
+  // списки не прячутся, а должны». Держим в ссылке, а не в зависимостях.
+  const onPickPersonRef = useRef(onPickPerson);
+  onPickPersonRef.current = onPickPerson;
+  const wantPersons = Boolean(onPickPerson);
 
   const tokens = value.split(/\s+/);
   const wordIndex = tokens.length - 1;
@@ -74,10 +87,12 @@ export default function IofField({
   useEffect(() => {
     invoke<Parsed>("parse_iof", { text: value })
       .then((result) => {
+        parsedRef.current = result;
         setParsed(result);
         onChangeRef.current?.(value, result);
       })
       .catch((e) => {
+        parsedRef.current = null;
         setParsed(null);
         report("Не удалось разобрать имя, отчество и фамилию", e);
       });
@@ -100,14 +115,18 @@ export default function IofField({
       return;
     }
     const mine = ++seq.current;
-    const wantPersons = Boolean(onPickPerson);
 
     Promise.all([
       wantPersons
         ? invoke<PersonHint[]>("suggest_person", { prefix: query, limit: 6 })
         : Promise.resolve([] as PersonHint[]),
       currentWord.length > 0
-        ? invoke<Item[]>("suggest", { kind, prefix: currentWord, limit: 6 })
+        ? invoke<Item[]>("suggest", {
+            kind, prefix: currentWord, limit: 6,
+            // Пол роли важнее пола, угаданного по имени: «Никита» словарь
+            // знает и как мужское, и как основу женских вариантов.
+            gender: gender ?? parsedRef.current?.gender ?? null,
+          })
         : Promise.resolve([] as Item[]),
     ])
       .then(([foundPersons, foundWords]) => {
@@ -123,7 +142,11 @@ export default function IofField({
         setOpen(false);
         report("Не удалось получить подсказки к ИОФ", e);
       });
-  }, [value, kind, currentWord, onPickPerson]);
+    // Пола в зависимостях намеренно нет. Разбор имени приходит асинхронно,
+    // и если бы его результат перезапускал этот эффект, список открывался бы
+    // заново уже после того, как justPicked израсходован — ровно та поломка,
+    // которую здесь и чиним. Поэтому пол читается по месту, из ссылки.
+  }, [value, kind, currentWord, wantPersons, gender]);
 
   const total = persons.length + words.length;
 
@@ -133,7 +156,7 @@ export default function IofField({
     setPersons([]);
     setWords([]);
     onChange(hint.iof, parsed);
-    onPickPerson?.(hint);
+    onPickPersonRef.current?.(hint);
   }
 
   function pickWord(item: Item) {

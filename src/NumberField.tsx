@@ -17,9 +17,12 @@ type Props = {
   min?: number;
   max?: number;
   width?: string;
+  inputRef?: React.RefObject<HTMLInputElement>;
 };
 
-export default function NumberField({ label, value, onChange, min = 0, max = 9999, width }: Props) {
+export default function NumberField({
+  label, value, onChange, min = 0, max = 9999, width, inputRef,
+}: Props) {
   function step(delta: number) {
     const base = value ?? (delta > 0 ? min - 1 : min + 1);
     const next = Math.min(max, Math.max(min, base + delta));
@@ -50,6 +53,7 @@ export default function NumberField({ label, value, onChange, min = 0, max = 999
           −
         </button>
         <input
+          ref={inputRef}
           data-field
           inputMode="numeric"
           value={value ?? ""}

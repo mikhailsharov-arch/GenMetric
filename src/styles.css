@@ -288,6 +288,18 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 .suggest li.active .sub { color: rgba(255, 255, 255, 0.8); }
 .tier.t1 { font-weight: 600; }
 
+/* Причт: три персоны в одной секции, без своих рамок. Каждая рамка — это
+   отступы сверху и снизу, а три лишние рамки в форме, которая только-только
+   стала помещаться по высоте, дороже, чем аккуратность. */
+.person.flat { margin-bottom: 0.35em; }
+.person.flat:last-child { margin-bottom: 0; }
+.person.flat h3 {
+  margin: 0 0 0.2em;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
 /* Числовые поля в строке: две пары «день / месяц» рядом. */
 .row { display: flex; gap: 0.5em; align-items: start; }
 .row .field { flex: 1; grid-template-columns: 5.5em 1fr; }

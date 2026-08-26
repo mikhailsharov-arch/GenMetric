@@ -306,33 +306,34 @@ fn suggest(
     kind: String,
     prefix: String,
     limit: Option<i64>,
+    gender: Option<String>,
 ) -> Result<Vec<Suggestion>, String> {
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(8).clamp(1, 50);
     with_conn(&app, &format!("Подсказки «{prefix}»"), |conn| {
-        // Имена и отчества лежат в таблице форм, остальные перечни — в lookup.
-        let dict_source = match kind.as_str() {
-            "first_name" => "SELECT form, 4, 0 FROM name_form WHERE kind IN ('name','variant') AND form_norm LIKE ?2 ESCAPE '\\'",
-            "patronymic" => "SELECT form, 4, 0 FROM name_form WHERE kind LIKE 'patr%' AND form_norm LIKE ?2 ESCAPE '\\'",
-            _ => "SELECT value, 4, 0 FROM lookup WHERE kind = ?1 AND value_norm LIKE ?2 ESCAPE '\\'",
-        };
-        let sql = format!(
-            "WITH ranked AS (
-                 SELECT value,
-                        CASE scope WHEN 'case' THEN 1 WHEN 'parish' THEN 2 ELSE 3 END AS tier,
-                        count
-                   FROM usage_stat
-                  WHERE kind = ?1 AND value_norm LIKE ?2 ESCAPE '\\'
-                 UNION ALL
-                 {dict_source}
-             )
-             SELECT value, min(tier) AS tier, max(count) AS cnt
-               FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT ?3"
-        );
+        // Имена и отчества лежат в таблице форм, населённые пункты — в place,
+        // остальные перечни — в lookup. Сами запросы в db/statements.sql:
+        // ошибка «НП ищется в lookup» прожила три недели именно потому, что
+        // запрос был в коде и его нечем было проверить.
+        let dict = statement(match kind.as_str() {
+            "first_name" => "suggest_first_name",
+            "patronymic" => "suggest_patronymic",
+            "place" => "suggest_place",
+            _ => "suggest_lookup",
+        })?;
+        let sql = statement("suggest_ranked")?
+            .replace("{dict}", dict.trim().trim_end_matches(';'));
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        // :gender есть только в запросе отчеств — лишний именованный параметр
+        // rusqlite считает ошибкой, поэтому список собирается по месту.
+        let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
+            vec![(":kind", &kind), (":prefix", &pattern), (":limit", &limit)];
+        if kind == "patronymic" {
+            params.push((":gender", &gender));
+        }
         let rows = stmt
-            .query_map(rusqlite::params![kind, pattern, limit], |r| {
+            .query_map(&params[..], |r| {
                 Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)? })
             })
             .map_err(|e| e.to_string())?;

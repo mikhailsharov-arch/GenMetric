@@ -163,6 +163,14 @@ def main() -> int:
               one("SELECT count(*) FROM lookup WHERE kind='rank_f'") == 76)
         check("«крестьянская жена» на месте",
               one("SELECT count(*) FROM lookup WHERE value='крестьянская жена'") == 1)
+        # Справочник населённых пунктов доезжает до уже установленной программы.
+        # Ровно этой проверки не хватало в августе: у Романа не появилась новая
+        # таблица, и половина сборки молча не работала. НП — тот же случай:
+        # без них поле подсказывать нечем, а поставку человек не пересоздаёт.
+        n_place = one("SELECT count(*) FROM place")
+        check("справочник НП доехал до пользователя", n_place > 100, f"{n_place} пунктов")
+        check("Борисоглебское на месте",
+              one("SELECT count(*) FROM place WHERE name='Борисоглебское'") == 1)
         check("разбор ИОФ заработает: «Никита» не подменяется",
               db.execute("SELECT d.name FROM name_form f JOIN name_dict d ON d.id=f.name_id "
                          "WHERE f.kind IN ('name','variant') AND f.form_norm='никита' "

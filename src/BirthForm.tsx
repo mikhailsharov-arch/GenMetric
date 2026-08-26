@@ -32,6 +32,15 @@ import type { Case } from "./CaseHeader";
 
 const MOTHER_RANK = "законная жена его";
 
+// В работе Романа по Борисоглебскому приходу вероисповедание родителей стоит
+// «православного» во всех 4885 упоминаниях. Заказчик 24.08.2026:
+// «вероисповедания должно быть по-умолчанию заполнено». Поле остаётся
+// обычным — исправить можно всегда.
+const CONFESSION = "православного";
+
+const NEW_FATHER = { ...EMPTY_PERSON, confession: CONFESSION };
+const NEW_MOTHER = { ...EMPTY_PERSON, rank: MOTHER_RANK, confession: CONFESSION };
+
 type Brief = {
   id: number;
   page: string | null;
@@ -69,14 +78,20 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
   const [child, setChild] = useState("");
   const [childParsed, setChildParsed] = useState<Parsed | null>(null);
-  const [father, setFather] = useState<Person>(EMPTY_PERSON);
-  const [mother, setMother] = useState<Person>({ ...EMPTY_PERSON, rank: MOTHER_RANK });
+  const [father, setFatherState] = useState<Person>(NEW_FATHER);
+  const [mother, setMother] = useState<Person>(NEW_MOTHER);
   const [god1, setGod1] = useState<Person>(EMPTY_PERSON);
   const [god2, setGod2] = useState<Person>(EMPTY_PERSON);
 
+  // Причт держится между записями: в книге он один на весь разворот, а часто
+  // и на всё дело. Очищать его каждую запись — заставлять набирать заново.
+  const [clergy1, setClergy1] = useState<Person>(EMPTY_PERSON);
+  const [clergy2, setClergy2] = useState<Person>(EMPTY_PERSON);
+  const [clergy3, setClergy3] = useState<Person>(EMPTY_PERSON);
+
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
-  const firstField = useRef<HTMLInputElement>(null);
+  const countField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     refresh();
@@ -88,9 +103,29 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       .catch((e) => report("Не удалось прочитать список набранных записей", e));
   }
 
+  /**
+   * Правка отца руками.
+   *
+   * Населённый пункт матери повторяет отцовский: на 294 записях его работы
+   * совпало 292 раза. Раньше это работало только при выборе отца из базы,
+   * а при наборе НП руками — нет. Заказчик 24.08.2026: «при заполнении НП
+   * для отца, НП матери должен автоматически заполняться».
+   *
+   * Свой НП матери не затирается: как только он отличается от отцовского,
+   * значит его поставили руками, и трогать его нельзя.
+   */
+  function setFather(next: Person) {
+    const prev = father;
+    if (next.place !== prev.place) {
+      setMother((m) =>
+        !m.place || m.place === prev.place ? { ...m, place: next.place } : m);
+    }
+    setFatherState(next);
+  }
+
   /** Выбрали отца из базы — подставляем его населённый пункт, звание и жену. */
   function pickFather(hint: PersonHint) {
-    setFather((f) => ({
+    setFatherState((f) => ({
       ...f,
       place: hint.place ?? f.place,
       rank: hint.rank ?? f.rank,
@@ -119,6 +154,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   function pickInto(set: (fn: (p: Person) => Person) => void) {
     return (hint: PersonHint) =>
       set((p) => ({ ...p, place: hint.place ?? p.place, rank: hint.rank ?? p.rank }));
+  }
+
+  /** У причта населённого пункта нет — только звание. */
+  function pickRank(set: (fn: (p: Person) => Person) => void) {
+    return (hint: PersonHint) => set((p) => ({ ...p, rank: hint.rank ?? p.rank }));
   }
 
   function payload(role: string, order: number, p: Person, gender?: string): PersonPayload {
@@ -163,8 +203,17 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     if (mother.iof.trim()) persons.push(payload("mother", 30, mother, "Ж"));
     if (god1.iof.trim()) persons.push(payload("godparent1", 40, god1));
     if (god2.iof.trim()) persons.push(payload("godparent2", 50, god2));
+    // Причт пишется в каждую запись: в Excel он стоит в той же строке,
+    // и выгрузка в Familio ждёт его там же.
+    if (clergy1.iof.trim()) persons.push(payload("clergy1", 100, clergy1, "М"));
+    if (clergy2.iof.trim()) persons.push(payload("clergy2", 110, clergy2, "М"));
+    if (clergy3.iof.trim()) persons.push(payload("clergy3", 120, clergy3, "М"));
 
-    if (!child.trim() && persons.length === 1) {
+    // Причт в счёт не идёт: он держится между записями, и по нему нельзя
+    // судить, набрал человек запись или нажал «Сохранить» вхолостую.
+    const filled = [child, father.iof, mother.iof, god1.iof, god2.iof]
+      .some((v) => v.trim().length > 0);
+    if (!filled) {
       report("Запись пустая", "не заполнено ни имя ребёнка, ни родители");
       return;
     }
@@ -201,19 +250,30 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     }
   }
 
-  /** Очищает то, что меняется от записи к записи. Страница, месяц и счёт
-   *  остаются и растут сами: записи в книге идут подряд. */
+  /**
+   * Готовит форму к следующей записи.
+   *
+   * Счёт НЕ меняется сам. Счёт родившихся идёт раздельно по мальчикам
+   * и девочкам, поэтому угадать следующий нельзя, а поправленное программой
+   * число надо каждый раз перенабирать. Заказчик 24.08.2026: «счёт в этом поле
+   * не должен меняться, он должен оставаться как последний набранный».
+   *
+   * Курсор уходит в «Счёт», а не в «Ребёнок»: с него начинается запись
+   * в Excel, и оттуда стрелка вниз ведёт по форме до конца.
+   *
+   * Страница, месяц и причт остаются: они меняются реже, чем раз в запись.
+   */
   function next() {
     setChild("");
     setChildParsed(null);
-    setFather(EMPTY_PERSON);
-    setMother({ ...EMPTY_PERSON, rank: MOTHER_RANK });
-    setGod1(EMPTY_PERSON);
-    setGod2(EMPTY_PERSON);
+    setFatherState({ ...NEW_FATHER });
+    setMother({ ...NEW_MOTHER });
+    setGod1({ ...EMPTY_PERSON });
+    setGod2({ ...EMPTY_PERSON });
     setBirthDay(null);
     setRiteDay(null);
-    if (count !== null) setCount(count + 1);
-    firstField.current?.focus();
+    countField.current?.focus();
+    countField.current?.select();
   }
 
   return (
@@ -221,7 +281,13 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       <section>
         <div className="row">
           <NumberField label="Стр." value={page} onChange={setPage} min={1} />
-          <NumberField label="Счёт" value={count} onChange={setCount} min={1} />
+          <NumberField
+            label="Счёт"
+            value={count}
+            onChange={setCount}
+            min={1}
+            inputRef={countField}
+          />
         </div>
         <div className="row">
           <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} />
@@ -239,7 +305,6 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
             setChildParsed(parsed);
           }}
           placeholder="имя"
-          inputRef={firstField}
         />
       </section>
 
@@ -249,6 +314,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         onChange={setFather}
         rankKind="rank_m"
         withConfession
+        gender="М"
         onPickPerson={pickFather}
       />
       <PersonBlock
@@ -258,6 +324,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         rankKind="rank_f"
         withConfession
         withMaiden
+        gender="Ж"
         onPickPerson={pickInto(setMother)}
       />
       <PersonBlock
@@ -274,6 +341,47 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         rankKind="rank_m"
         onPickPerson={pickInto(setGod2)}
       />
+
+      {/* Церковнослужители. В Excel они стоят в той же строке записи —
+          колонки 47–55 листа «1»: ИОФ, Звание, Прим., без НП
+          и вероисповедания. Заказчик 24.08.2026: «нет полей для заполнения
+          церковнослужителей». Прежнее решение держать причт в шапке дела
+          отменено. Значения не сбрасываются между записями, поэтому набирать
+          их приходится один раз на дело. */}
+      <section className="person">
+        <h2>Церковнослужители</h2>
+        <p className="hint">
+          Набранное здесь переходит в следующую запись само — причт в книге
+          обычно один на всё дело.
+        </p>
+        <PersonBlock
+          title="Первый"
+          person={clergy1}
+          onChange={setClergy1}
+          rankKind="rank_clergy"
+          gender="М"
+          compact
+          onPickPerson={pickRank(setClergy1)}
+        />
+        <PersonBlock
+          title="Второй"
+          person={clergy2}
+          onChange={setClergy2}
+          rankKind="rank_clergy"
+          gender="М"
+          compact
+          onPickPerson={pickRank(setClergy2)}
+        />
+        <PersonBlock
+          title="Третий"
+          person={clergy3}
+          onChange={setClergy3}
+          rankKind="rank_clergy"
+          gender="М"
+          compact
+          onPickPerson={pickRank(setClergy3)}
+        />
+      </section>
 
       <section>
         <button className="primary" onClick={save} disabled={busy}>

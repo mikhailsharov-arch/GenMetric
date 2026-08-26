@@ -56,6 +56,9 @@ jobs:
       - name: Проверить сохранение записей
         run: python db/test_entry.py
 
+      - name: Проверить подсказки
+        run: python db/test_suggest.py
+
       - name: Проверить стили
         run: python scripts/check_styles.py
 

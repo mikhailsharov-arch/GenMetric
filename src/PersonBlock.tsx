@@ -33,8 +33,8 @@ type Props = {
   title: string;
   person: Person;
   onChange: (p: Person) => void;
-  /** Мужской или женский перечень званий — это разные справочники. */
-  rankKind: "rank_m" | "rank_f";
+  /** Мужской, женский или причтовый перечень званий — разные справочники. */
+  rankKind: "rank_m" | "rank_f" | "rank_clergy";
   /** Вероисповедание есть у родителей, у восприемников его в Excel нет. */
   withConfession?: boolean;
   /** Девичья фамилия — только у матери. */
@@ -42,29 +42,47 @@ type Props = {
   /** Выбор персоны из базы: заполняет НП и звание, для отца ещё и мать. */
   onPickPerson?: (hint: PersonHint) => void;
   inputRef?: React.RefObject<HTMLInputElement>;
+  /** Пол, заданный ролью: отец — М, мать — Ж. У восприемников роль пола
+   *  не задаёт, там он определяется по имени. Нужен, чтобы отцу не предлагали
+   *  женское отчество (пункт 6 отчёта от 24.08.2026). */
+  gender?: "М" | "Ж";
+  /**
+   * Причт: только ИОФ, звание и примечание — как в Excel, где у
+   * церковнослужителей нет ни населённого пункта, ни вероисповедания.
+   *
+   * Заодно блок рисуется без своей рамки, чтобы три причта уместились в одну
+   * секцию. Высота — самый дефицитный ресурс формы: заказчик подтвердил, что
+   * запись помещается на 85%, и терять это ради трёх рамок нельзя.
+   */
+  compact?: boolean;
 };
 
 export default function PersonBlock({
-  title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson, inputRef,
+  title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
+  inputRef, gender, compact,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
+  const Frame = compact ? "div" : "section";
 
   return (
-    <section className="person">
-      <h2>{title}</h2>
+    <Frame className={compact ? "person flat" : "person"}>
+      {compact ? <h3>{title}</h3> : <h2>{title}</h2>}
       <IofField
         label="ИОФ"
         value={person.iof}
         onChange={(iof, parsed) => set({ iof, parsed })}
         onPickPerson={onPickPerson}
         inputRef={inputRef}
+        gender={gender}
       />
-      <Suggest
-        label="НП"
-        kind="place"
-        value={person.place}
-        onChange={(place) => set({ place })}
-      />
+      {!compact && (
+        <Suggest
+          label="НП"
+          kind="place"
+          value={person.place}
+          onChange={(place) => set({ place })}
+        />
+      )}
       <Suggest
         label="Звание"
         kind={rankKind}
@@ -105,6 +123,6 @@ export default function PersonBlock({
           </div>
         </div>
       )}
-    </section>
+    </Frame>
   );
 }

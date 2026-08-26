@@ -108,13 +108,25 @@ def main() -> int:
         check("год обновился", one("SELECT year FROM mk_case WHERE id=1")[0] == 1894)
 
         print("\n2. Населённый пункт заводится по первому упоминанию")
-        for _ in range(2):
-            found = db.execute(sql["place_find"], {"name_norm": norm("Чертеж Малый")}).fetchone()
+        # «Чертеж Малый» теперь есть в поставке: справочник НП по Борисоглебскому
+        # приходу вшит, иначе поле НП нечем подсказывать на первой же странице.
+        # Проверяем поэтому не общее число пунктов, а что задвоения не случилось.
+        # «Пустошка» в поставке отсутствует — на ней видно, что новый пункт
+        # действительно заводится.
+        seeded = one("SELECT count(*) FROM place")[0]
+        check("справочник НП пришёл из поставки", seeded > 100, f"{seeded} пунктов")
+        for name in ("Чертеж Малый", "Чертеж Малый", "Пустошка", "Пустошка"):
+            found = db.execute(sql["place_find"], {"name_norm": norm(name)}).fetchone()
             if not found:
-                db.execute(sql["place_insert"],
-                           {"name": "Чертеж Малый", "name_norm": norm("Чертеж Малый")})
-        check("пункт заведён один раз", one("SELECT count(*) FROM place")[0] == 1)
-        place_id = one("SELECT id FROM place")[0]
+                db.execute(sql["place_insert"], {"name": name, "name_norm": norm(name)})
+        check("известный пункт не задваивается",
+              one("SELECT count(*) FROM place WHERE name_norm = ?",
+                  norm("Чертеж Малый"))[0] == 1)
+        check("новый пункт заведён один раз",
+              one("SELECT count(*) FROM place WHERE name_norm = ?",
+                  norm("Пустошка"))[0] == 1)
+        check("поставку не тронули", one("SELECT count(*) FROM place")[0] == seeded + 1)
+        place_id = one("SELECT id FROM place WHERE name_norm = ?", norm("Чертеж Малый"))[0]
 
         print("\n3. Запись о рождении со всеми персонами")
         db.execute(sql["entry_insert"], dict(

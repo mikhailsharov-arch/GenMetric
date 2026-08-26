@@ -54,9 +54,17 @@ NAME_COLUMNS = [
     ("source", 12),
 ]
 
+# Колонка 10 листа «НП» — «НП для ввода МК и таблицы МК». Это ровно та строка,
+# которую индексатор набирает в поле НП: «Чертеж Малый» для своего прихода,
+# «д.Балахонка, Заобнорская волость» для чужого. Колонка 1 — чистое название
+# без типа, оно нужно только для выгрузки в Familio, а искать надо по тому,
+# что человек набирает. Поэтому name берётся из 10-й, а не из 1-й.
+PLACE_NAME_COLUMN = 10
+PLACE_NAME_FALLBACK = 1
+
 PLACE_COLUMNS = [
-    ("name", 1), ("np_type", 2), ("guberniya", 3), ("uyezd", 4), ("volost", 5),
-    ("short_location", 6), ("full_location", 7), ("familio_url", 8),
+    ("name", PLACE_NAME_COLUMN), ("np_type", 2), ("guberniya", 3), ("uyezd", 4),
+    ("volost", 5), ("short_location", 6), ("full_location", 7), ("familio_url", 8),
 ]
 
 
@@ -140,15 +148,20 @@ def main() -> int:
                                          ["kind", "title", "editable", "autoextend"], kind_rows)
 
     # --- населённые пункты -------------------------------------------------
-    # На листе «НП» присланного файла данных нет: справочник у каждого
-    # индексатора свой и накапливается по ходу работы.
+    # Справочник у каждого индексатора свой и накапливается по ходу работы,
+    # поэтому в чистом шаблоне лист «НП» пуст. Но Роман и А.К. разрешили вшить
+    # в поставку наросший справочник по Борисоглебскому приходу (159 пунктов):
+    # без него поле НП вообще нечем подсказывать на первой же странице, а это
+    # четыре набора полного названия на каждую запись.
     ws = wb["НП"]
     rows, seen = [], set()
     for r in range(3, ws.max_row + 1):
-        name = clean(ws.cell(r, 1).value)
+        name = clean(ws.cell(r, PLACE_NAME_COLUMN).value) \
+            or clean(ws.cell(r, PLACE_NAME_FALLBACK).value)
         if not name:
             continue
         row = [clean(ws.cell(r, col).value) for _, col in PLACE_COLUMNS]
+        row[0] = name
         key = (row[0], row[1], row[3], row[2])
         if key in seen:
             continue
