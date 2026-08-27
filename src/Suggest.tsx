@@ -41,17 +41,29 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
   // открывать список заново — иначе он «залипает» открытым (баг 1 из отчёта).
   const justPicked = useRef(false);
 
+  /**
+   * Закрывает список и отменяет уже отправленные запросы.
+   *
+   * Увеличенный счётчик обязателен: запрос уходит на каждое нажатие, и на
+   * момент выбора предыдущий ещё в пути. Без отмены он возвращается и открывает
+   * список заново. В поле ИОФ это было видно заказчику, здесь ответы приходят
+   * быстрее и поломка просто не успевала проявиться — но она та же.
+   */
+  function closeList() {
+    seq.current += 1;
+    setItems([]);
+    setOpen(false);
+  }
+
   useEffect(() => {
     const query = value.trim();
     if (query.length < 1) {
-      setItems([]);
-      setOpen(false);
+      closeList();
       return;
     }
     if (justPicked.current) {
       justPicked.current = false;
-      setItems([]);
-      setOpen(false);
+      closeList();
       return;
     }
     const mine = ++seq.current;
@@ -65,6 +77,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         setOpen(rows.length > 0 && !exact);
       })
       .catch((e) => {
+        if (mine !== seq.current) return;
         setItems([]);
         setOpen(false);
         report(`Не удалось получить подсказки для поля «${label}»`, e);
@@ -73,9 +86,8 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
 
   function pick(item: Item) {
     justPicked.current = true;
+    closeList();
     onChange(item.value);
-    setItems([]);
-    setOpen(false);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -100,7 +112,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
       return;
     }
     if (e.key === "Escape") {
-      setOpen(false);
+      closeList();
     }
   }
 
@@ -117,7 +129,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         spellCheck={false}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
-        onBlur={() => setOpen(false)}
+        onBlur={() => closeList()}
       />
       {hint && <div className="fieldhint">{hint}</div>}
       {open && (

@@ -32,6 +32,12 @@ from pathlib import Path
 DB_DIR = Path(__file__).resolve().parent
 REPO = DB_DIR.parent
 
+# С какой версии поднимаемся. Ровно та, что стоит сейчас у Романа: он ставит
+# каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
+# первой. Слепки схем лежат в db/fixtures.
+FROM_VERSION = 3
+TO_VERSION = 4
+
 ok_count = 0
 fail_count = 0
 
@@ -60,7 +66,7 @@ def old_schema_sql() -> str:
     Именно из файла, а не из истории git: сборка клонирует репозиторий без
     истории, и обращение к старому коммиту там падает.
     """
-    path = DB_DIR / "fixtures" / "schema-v2.sql"
+    path = DB_DIR / "fixtures" / f"schema-v{FROM_VERSION}.sql"
     if not path.exists():
         raise SystemExit(f"Не найден слепок старой схемы: {path}")
     return path.read_text(encoding="utf-8")
@@ -70,13 +76,18 @@ def build_old_database(path: Path) -> None:
     """База, какой она была у пользователя после первой сборки, плюс его правки."""
     db = sqlite3.connect(path)
     db.executescript(old_schema_sql())
-    db.execute("INSERT INTO schema_version (version) VALUES (2)")
+    db.execute("INSERT INTO schema_version (version) VALUES (?)", (FROM_VERSION,))
     db.execute("INSERT INTO lookup_kind (kind, title, editable, autoextend) VALUES ('rank_m','Звания мужские',1,1)")
     db.executemany(
         "INSERT INTO lookup (kind, value, value_norm, sort_order, origin) VALUES (?,?,?,?,?)",
         [("rank_m", "крестьянин", "крестьянин", 10, "seed"),
          # значение, которого нет в поставке: человек завёл его сам
-         ("rank_m", "мещанин города Юрьевца", "мещанин города юрьевца", 9999, "user")])
+         ("rank_m", "мещанин города Юрьевца", "мещанин города юрьевца", 9999, "user"),
+         # Две записи, попавшие в чужой перечень прошлой поставкой. У Романа
+         # они в базе есть, и просто убрать их из поставки недостаточно.
+         ("rank_f", "крестьянский сын", "крестьянский сын", 470, "seed"),
+         ("rank_m", "крестьянская вдова после 1-го брака",
+          "крестьянская вдова после 1-го брака", 1070, "seed")])
     # накопленная статистика подсказок и заведённое дело — их терять нельзя
     db.execute("INSERT INTO mk_case (id, church, village, parish_key, year) "
                "VALUES (1,'Христорождественская','Борисоглебское','приход-1',1893)")
@@ -116,7 +127,7 @@ def upgrade(user_db: Path, seed_db: Path) -> None:
     # 2. Обновляем справочники.
     conn.executescript((DB_DIR / "migrate.sql").read_text(encoding="utf-8"))
 
-    conn.execute("INSERT INTO schema_version (version) VALUES (3)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (TO_VERSION,))
     conn.execute("DETACH DATABASE seed")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.close()
@@ -136,10 +147,16 @@ def main() -> int:
 
         print("\n1. База до обновления — такая же, как была у тестировщика")
         db = sqlite3.connect(user)
-        check("схема версии 2", db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 2)
-        has_persons = db.execute(
-            "SELECT count(*) FROM sqlite_master WHERE name='person_index'").fetchone()[0]
-        check("памяти о персонах ещё нет", has_persons == 0)
+        check(f"схема версии {FROM_VERSION}",
+              db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == FROM_VERSION)
+        has_clergy = db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='clergy_index'").fetchone()[0]
+        check("памяти о причте ещё нет", has_clergy == 0)
+        check("звания в чужих перечнях у него есть",
+              db.execute("SELECT count(*) FROM lookup WHERE "
+                         "(kind='rank_f' AND value='крестьянский сын') OR "
+                         "(kind='rank_m' AND value='крестьянская вдова после 1-го брака')"
+                         ).fetchone()[0] == 2)
         check("у человека есть набранная запись",
               db.execute("SELECT count(*) FROM entry").fetchone()[0] == 1)
         db.close()
@@ -149,18 +166,32 @@ def main() -> int:
         print("\n2. После обновления появилось новое из поставки")
         db = sqlite3.connect(user)
         one = lambda sql, *a: db.execute(sql, a).fetchone()[0]
-        check("схема поднялась до версии 3", one("SELECT max(version) FROM schema_version") == 3)
+        check(f"схема поднялась до версии {TO_VERSION}", one("SELECT max(version) FROM schema_version") == TO_VERSION)
         check("появилась память о персонах",
               one("SELECT count(*) FROM sqlite_master WHERE name='person_index'") == 1)
         check("появилась память о супругах",
               one("SELECT count(*) FROM sqlite_master WHERE name='spouse_index'") == 1)
+        # Новое в версии 4: причт, который можно выбрать списком, а не набирать.
+        check("появилась память о причте",
+              one("SELECT count(*) FROM sqlite_master WHERE name='clergy_index'") == 1)
         n_forms = one("SELECT count(*) FROM name_form")
         check("таблица форм имён заполнена", n_forms > 12000, f"{n_forms} написаний")
         check("имена перенесены", one("SELECT count(*) FROM name_dict") > 3000)
         n_rank_m = one("SELECT count(*) FROM lookup WHERE kind='rank_m'")
-        check("мужских званий стало 123 плюс своё", n_rank_m == 124, f"{n_rank_m}")
+        # 122 из поставки плюс одно, заведённое человеком. Было 123: «крестьянская
+        # вдова после 1-го брака» лежала среди мужских званий и убрана оттуда —
+        # в женском перечне она и так есть.
+        check("мужских званий стало 122 плюс своё", n_rank_m == 123, f"{n_rank_m}")
         check("женские звания появились",
-              one("SELECT count(*) FROM lookup WHERE kind='rank_f'") == 76)
+              one("SELECT count(*) FROM lookup WHERE kind='rank_f'") == 75)
+        # Переложенные записи не должны остаться в чужом перечне у тех, кто уже
+        # успел получить прежнюю поставку: migrate.sql только дополняет, поэтому
+        # для них есть отдельное удаление.
+        check("«крестьянский сын» только среди мужских",
+              one("SELECT count(*) FROM lookup WHERE value='крестьянский сын' AND kind='rank_f'") == 0)
+        check("«крестьянская вдова» только среди женских",
+              one("SELECT count(*) FROM lookup WHERE value='крестьянская вдова после 1-го брака' "
+                  "AND kind='rank_m'") == 0)
         check("«крестьянская жена» на месте",
               one("SELECT count(*) FROM lookup WHERE value='крестьянская жена'") == 1)
         # Справочник населённых пунктов доезжает до уже установленной программы.

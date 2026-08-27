@@ -126,8 +126,19 @@ export default function App() {
         </button>
       </nav>
 
-      {screen === "case" && <CaseHeader onSaved={setMkCase} />}
-      {screen === "births" && mkCase && mkCase.id > 0 && <BirthForm mkCase={mkCase} />}
+      {/* Форма рождений не размонтируется при переключении вкладок, а прячется
+          стилем. Иначе набранное пропадает: заказчик 27.08.2026 — «после
+          переключения на вкладку „дело“ или „о программе“ все поля во вкладке
+          „Рождения“ становятся пустыми». Это была потеря работы, а не
+          неудобство. */}
+      <div hidden={screen !== "case"}>
+        <CaseHeader onSaved={setMkCase} />
+      </div>
+      {mkCase && mkCase.id > 0 && (
+        <div hidden={screen !== "births"}>
+          <BirthForm mkCase={mkCase} />
+        </div>
+      )}
       {screen === "about" && info && (
         <section>
           <h2>Что внутри сборки</h2>

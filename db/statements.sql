@@ -169,6 +169,22 @@ SELECT iof, place, rank, gender, uses
  ORDER BY uses DESC, iof
  LIMIT :limit;
 
+-- @clergy_remember
+-- Причт запоминается, чтобы его можно было выбирать, а не набирать. Заказчик
+-- 27.08.2026: «если в списке его нет, то после ввода его руками он добавляется
+-- в базу и появляется в списке».
+INSERT INTO clergy_index (iof, iof_norm, rank, uses, last_used_at)
+VALUES (:iof, :iof_norm, :rank, 1, datetime('now'))
+ON CONFLICT(iof, rank) DO UPDATE SET
+    uses = uses + 1, last_used_at = datetime('now');
+
+-- @clergy_list
+-- Весь список целиком, без ввода первых букв: причт в приходе меняется редко,
+-- за год-два это те же три человека.
+SELECT iof, rank, uses FROM clergy_index
+ ORDER BY uses DESC, last_used_at DESC, iof
+ LIMIT :limit;
+
 -- @spouse_remember
 -- Кто чья жена. Заполняется, когда в записи о рождении есть и отец, и мать.
 INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, wife_rank, uses, last_used_at)

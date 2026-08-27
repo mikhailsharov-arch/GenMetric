@@ -64,6 +64,17 @@ SELECT name, name_norm, np_type, guberniya, uyezd, volost,
        short_location, full_location, familio_url, origin
   FROM seed.place;
 
+-- Исправление прошлой поставки. Два звания были перенесены из Excel не в тот
+-- перечень: «крестьянский сын» попал к женским, «крестьянская вдова после
+-- 1-го брака» — к мужским. Из поставки они убраны, но у тех, кто уже поставил
+-- прежнюю сборку, остались бы навсегда: правило «только дополняем» ничего
+-- не удаляет. Поэтому — точечное удаление, и только для значений из поставки:
+-- заведённое человеком не трогаем никогда.
+DELETE FROM lookup
+ WHERE origin = 'seed'
+   AND ((kind = 'rank_f' AND value = 'крестьянский сын')
+     OR (kind = 'rank_m' AND value = 'крестьянская вдова после 1-го брака'));
+
 -- Настройки пользователя не перезаписываем: добавляем только новые ключи.
 INSERT OR IGNORE INTO setting (key, value) SELECT key, value FROM seed.setting;
 

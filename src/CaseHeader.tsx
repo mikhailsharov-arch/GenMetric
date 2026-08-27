@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
+import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import { report } from "./errors";
 
@@ -55,6 +56,18 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
   const set = (k: keyof Case) => (v: string) =>
     setC((prev) => ({ ...prev, [k]: v === "" ? null : v }));
 
+  /** Enter и стрелки ведут по форме, как в остальных полях программы.
+   *  Шапка заполняется редко, но спотыкаться на ней всё равно незачем. */
+  function plainKeys(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" || e.key === "ArrowDown") {
+      e.preventDefault();
+      focusNextField(e.currentTarget);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      focusNextField(e.currentTarget, -1);
+    }
+  }
+
   // Год — число, а не строка. Текстовое поле отдавало сюда строку, и
   // сохранение дела падало на разборе: программа ждёт число. Ошибка нашлась
   // на скриншоте до того, как её увидел тестировщик.
@@ -66,6 +79,7 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
         data-field
         value={(c[k] as string | null) ?? ""}
         onChange={(e) => set(k)(e.target.value)}
+        onKeyDown={plainKeys}
         autoComplete="off"
         spellCheck={false}
       />

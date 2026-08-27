@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, type Person } from "./PersonBlock";
 import NumberField from "./NumberField";
+import ClergyBlock from "./ClergyBlock";
 import { report } from "./errors";
 import type { Case } from "./CaseHeader";
 
@@ -89,6 +90,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   const [clergy2, setClergy2] = useState<Person>(EMPTY_PERSON);
   const [clergy3, setClergy3] = useState<Person>(EMPTY_PERSON);
 
+  // Меняется после каждого сохранения: список причта должен пополняться сразу.
+  const [savedTimes, setSavedTimes] = useState(0);
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
@@ -154,11 +157,6 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   function pickInto(set: (fn: (p: Person) => Person) => void) {
     return (hint: PersonHint) =>
       set((p) => ({ ...p, place: hint.place ?? p.place, rank: hint.rank ?? p.rank }));
-  }
-
-  /** У причта населённого пункта нет — только звание. */
-  function pickRank(set: (fn: (p: Person) => Person) => void) {
-    return (hint: PersonHint) => set((p) => ({ ...p, rank: hint.rank ?? p.rank }));
   }
 
   function payload(role: string, order: number, p: Person, gender?: string): PersonPayload {
@@ -241,6 +239,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           persons,
         },
       });
+      setSavedTimes((n) => n + 1);
       next();
       refresh();
     } catch (e) {
@@ -312,7 +311,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         title="Отец"
         person={father}
         onChange={setFather}
-        rankKind="rank_m"
+        rankKind="rank"
         withConfession
         gender="М"
         onPickPerson={pickFather}
@@ -321,7 +320,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         title="Мать"
         person={mother}
         onChange={setMother}
-        rankKind="rank_f"
+        rankKind="rank"
         withConfession
         withMaiden
         gender="Ж"
@@ -331,63 +330,36 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         title="Восприемник 1"
         person={god1}
         onChange={setGod1}
-        rankKind="rank_m"
+        rankKind="rank"
         onPickPerson={pickInto(setGod1)}
       />
       <PersonBlock
         title="Восприемник 2"
         person={god2}
         onChange={setGod2}
-        rankKind="rank_m"
+        rankKind="rank"
         onPickPerson={pickInto(setGod2)}
       />
 
       {/* Церковнослужители. В Excel они стоят в той же строке записи —
           колонки 47–55 листа «1»: ИОФ, Звание, Прим., без НП
-          и вероисповедания. Заказчик 24.08.2026: «нет полей для заполнения
-          церковнослужителей». Прежнее решение держать причт в шапке дела
-          отменено. Значения не сбрасываются между записями, поэтому набирать
-          их приходится один раз на дело. */}
-      <section className="person">
-        <h2>Церковнослужители</h2>
-        <p className="hint">
-          Набранное здесь переходит в следующую запись само — причт в книге
-          обычно один на всё дело.
-        </p>
-        <PersonBlock
-          title="Первый"
-          person={clergy1}
-          onChange={setClergy1}
-          rankKind="rank_clergy"
-          gender="М"
-          compact
-          onPickPerson={pickRank(setClergy1)}
-        />
-        <PersonBlock
-          title="Второй"
-          person={clergy2}
-          onChange={setClergy2}
-          rankKind="rank_clergy"
-          gender="М"
-          compact
-          onPickPerson={pickRank(setClergy2)}
-        />
-        <PersonBlock
-          title="Третий"
-          person={clergy3}
-          onChange={setClergy3}
-          rankKind="rank_clergy"
-          gender="М"
-          compact
-          onPickPerson={pickRank(setClergy3)}
-        />
-      </section>
+          и вероисповедания. Заполненный причт сворачивается в строку:
+          он меняется раз в дело, а высота нужна каждой записи. */}
+      <ClergyBlock
+        people={[clergy1, clergy2, clergy3]}
+        onChange={(i, p) => [setClergy1, setClergy2, setClergy3][i](p)}
+        reloadKey={savedTimes}
+      />
 
-      <section>
+      {/* Кнопка прилипает к низу окна. Заказчик 27.08.2026: «все поля
+          не умещаются по высоте экрана и приходится скролить вниз чтобы нажать
+          кнопку сохранить и следующая». Прокрутка на каждой записи — это
+          и время, и рука на мыши, которой он просил избегать. */}
+      <div className="savebar">
         <button className="primary" onClick={save} disabled={busy}>
           {busy ? "Сохраняю…" : "Сохранить и следующая"}
         </button>
-      </section>
+      </div>
 
       {saved.length > 0 && (
         <section>

@@ -16,7 +16,7 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
 /// Версия схемы, которую понимает эта сборка.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
@@ -782,6 +782,17 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                     remember(conn, "patronymic", patr, entry.case_id, &parish)?;
                 }
 
+                // Причт — в свою память, чтобы его можно было выбрать списком,
+                // а не набирать заново в каждом деле.
+                if person.role_code.starts_with("clergy") {
+                    let iof = person_iof(person);
+                    if !iof.is_empty() {
+                        conn.execute(&statement("clergy_remember")?, rusqlite::named_params! {
+                            ":iof": iof, ":iof_norm": normalize(&iof), ":rank": person.rank,
+                        }).map_err(|e| e.to_string())?;
+                    }
+                }
+
                 // Персона целиком — вместе с населённым пунктом и званием.
                 // Заказчик 17.08.2026: выбор персоны должен заполнять все три
                 // поля разом, а не заставлять набирать каждое.
@@ -851,6 +862,34 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>)
                     iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?,
                     gender: r.get(3)?, uses: r.get(4)?,
                 })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
+}
+
+/// Церковнослужитель из памяти: ИОФ вместе со званием.
+#[derive(Serialize)]
+struct ClergyHint {
+    iof: String,
+    rank: Option<String>,
+    uses: i64,
+}
+
+/// Весь список причта. Не подсказка по префиксу, а именно список для выбора:
+/// заказчик просил кнопку, открывающую перечень, а не ввод первых букв.
+#[tauri::command]
+fn list_clergy(app: State<App>, limit: Option<i64>) -> Result<Vec<ClergyHint>, String> {
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    with_conn(&app, "Список церковнослужителей", |conn| {
+        let mut stmt = conn.prepare(&statement("clergy_list")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! { ":limit": limit }, |r| {
+                Ok(ClergyHint { iof: r.get(0)?, rank: r.get(1)?, uses: r.get(2)? })
             })
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
@@ -983,6 +1022,7 @@ fn main() {
             entry_list,
             suggest_person,
             suggest_spouse,
+            list_clergy,
             get_setting,
             set_setting,
             suggest,

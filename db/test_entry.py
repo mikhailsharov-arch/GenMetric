@@ -84,7 +84,8 @@ def main() -> int:
     print(f"\n0. Запросы из statements.sql: {len(sql)} блоков")
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
-                     "person_remember", "person_suggest", "spouse_remember", "spouse_lookup"):
+                     "person_remember", "person_suggest", "spouse_remember", "spouse_lookup",
+                     "clergy_remember", "clergy_list"):
         check(f"блок {required} на месте", required in sql)
 
     with tempfile.TemporaryDirectory() as tmp:

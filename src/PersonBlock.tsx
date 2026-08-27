@@ -1,5 +1,6 @@
 import Suggest from "./Suggest";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
+import { focusNextField } from "./focus";
 
 /**
  * Блок одной персоны в записи.
@@ -33,8 +34,12 @@ type Props = {
   title: string;
   person: Person;
   onChange: (p: Person) => void;
-  /** Мужской, женский или причтовый перечень званий — разные справочники. */
-  rankKind: "rank_m" | "rank_f" | "rank_clergy";
+  /**
+   * Перечень званий. Для причта он свой и от пола не зависит. Для остальных
+   * персон выбирается по полу: «rank» означает «взять мужской или женский
+   * по тому, кто перед нами».
+   */
+  rankKind: "rank" | "rank_clergy";
   /** Вероисповедание есть у родителей, у восприемников его в Excel нет. */
   withConfession?: boolean;
   /** Девичья фамилия — только у матери. */
@@ -64,16 +69,44 @@ export default function PersonBlock({
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   const Frame = compact ? "div" : "section";
 
+  /**
+   * Пол персоны. У отца и матери его задаёт роль, у ребёнка и восприемников —
+   * только набранное имя.
+   *
+   * От него зависят две вещи сразу: какие отчества предлагать и какой перечень
+   * званий открывать. Заказчик 27.08.2026: «при вводе женщины восприемника
+   * предлагает мужские звание, чего не должно быть». Раньше пол доходил только
+   * до отчеств, да и то у родителей, а перечень званий у восприемников был
+   * жёстко мужским.
+   */
+  const sex = gender ?? (person.parsed?.gender as "М" | "Ж" | undefined) ?? undefined;
+  const ranks = rankKind === "rank_clergy"
+    ? "rank_clergy"
+    : sex === "Ж" ? "rank_f" : "rank_m";
+
+  /** Простое поле без подсказок: Enter и стрелки ведут по форме дальше.
+   *  Без этого блок персоны заканчивался тупиком — «Прим.» никуда не вело,
+   *  и приходилось браться за мышь. */
+  function plainKeys(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" || e.key === "ArrowDown") {
+      e.preventDefault();
+      focusNextField(e.currentTarget);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      focusNextField(e.currentTarget, -1);
+    }
+  }
+
   return (
     <Frame className={compact ? "person flat" : "person"}>
-      {compact ? <h3>{title}</h3> : <h2>{title}</h2>}
+      {title && (compact ? <h3>{title}</h3> : <h2>{title}</h2>)}
       <IofField
         label="ИОФ"
         value={person.iof}
         onChange={(iof, parsed) => set({ iof, parsed })}
         onPickPerson={onPickPerson}
         inputRef={inputRef}
-        gender={gender}
+        gender={sex}
       />
       {!compact && (
         <Suggest
@@ -85,7 +118,7 @@ export default function PersonBlock({
       )}
       <Suggest
         label="Звание"
-        kind={rankKind}
+        kind={ranks}
         value={person.rank}
         onChange={(rank) => set({ rank })}
       />
@@ -104,6 +137,7 @@ export default function PersonBlock({
             data-field
             value={person.note}
             onChange={(e) => set({ note: e.target.value })}
+            onKeyDown={plainKeys}
             autoComplete="off"
             spellCheck={false}
           />
@@ -117,6 +151,7 @@ export default function PersonBlock({
               data-field
               value={person.maiden}
               onChange={(e) => set({ maiden: e.target.value })}
+              onKeyDown={plainKeys}
               autoComplete="off"
               spellCheck={false}
             />

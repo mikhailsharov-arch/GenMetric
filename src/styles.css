@@ -305,3 +305,55 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 .row .field { flex: 1; grid-template-columns: 5.5em 1fr; }
 .numrow input { text-align: center; }
 .numrow button { width: 1.7em; }
+
+
+/* ============================================================================
+   Кнопка сохранения прилипает к низу окна.
+
+   Заказчик 27.08.2026: «все поля не умещаются по высоте экрана и приходится
+   скролить вниз чтобы нажать кнопку сохранить и следующая». Прокрутка на
+   каждой записи — это и время, и рука на мыши, которой он просил избегать.
+   ============================================================================ */
+.savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  padding: 0.4em 0;
+  margin-bottom: 0.5em;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+/* Свёрнутый причт: одна строка вместо девяти полей. Меняется он раз в дело,
+   а высота нужна каждой записи. */
+.clergyline { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5em; }
+h2.inline { margin: 0; }
+.clergysummary {
+  margin-left: 0.5em;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.clergyslot { margin-bottom: 0.4em; }
+.clergyhead { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5em; }
+.clergynum { font-size: 0.78rem; font-weight: 600; color: var(--muted); }
+
+button.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 0.78rem;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* Список выбора причта: тот же вид, что у подсказок, но стоит в потоке,
+   а не поверх — он открывается по кнопке и не должен ничего перекрывать. */
+.suggest.static {
+  position: static;
+  margin: 0.25em 0 0.35em;
+  box-shadow: none;
+}
+.suggest.static li { cursor: pointer; }
+.suggest.static li:hover { background: var(--field); }

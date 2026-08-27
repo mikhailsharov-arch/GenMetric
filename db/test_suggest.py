@@ -197,7 +197,29 @@ def main() -> int:
               got.index("Чертеж Большой") < len(got) - 1 or len(got) == 2, ", ".join(got))
         check("дубликатов нет", len(got) == len(set(got)), ", ".join(got))
 
-        print("\n7. Кириллица: регистр и «ё»")
+        print("\n7. Причт запоминается и выдаётся списком")
+        # Заказчик 27.08.2026: причт надо выбирать из списка, а не набирать.
+        for iof, rank, times in [("Иоанн Предтеченский", "священник", 3),
+                                 ("Василий Смирнов", "псаломщик", 1)]:
+            for _ in range(times):
+                db.execute(sql["clergy_remember"],
+                           {"iof": iof, "iof_norm": norm(iof), "rank": rank})
+        rows = db.execute(sql["clergy_list"], {"limit": 20}).fetchall()
+        check("список причта не пуст", len(rows) == 2, f"{len(rows)}")
+        check("частый впереди", rows[0][0] == "Иоанн Предтеченский", str(rows[0]))
+        check("звание рядом с именем", rows[0][1] == "священник")
+        check("повторный ввод не задваивает", rows[0][2] == 3, str(rows[0][2]))
+
+        print("\n8. Звания женщине и мужчине — разные перечни")
+        fem = suggest(db, sql, "rank_f", "крестьян", limit=40)
+        mas = suggest(db, sql, "rank_m", "крестьян", limit=40)
+        check("«крестьянский сын» только среди мужских",
+              "крестьянский сын" in mas and "крестьянский сын" not in fem)
+        check("«крестьянская вдова после 1-го брака» только среди женских",
+              "крестьянская вдова после 1-го брака" in fem
+              and "крестьянская вдова после 1-го брака" not in mas)
+
+        print("\n9. Кириллица: регистр и «ё»")
         db.execute(
             "INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)"
             " VALUES ('rank_m','global','','бобыль дер. Кнышёво',?,1,datetime('now'))",

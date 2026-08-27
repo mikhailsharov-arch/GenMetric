@@ -98,20 +98,35 @@ export default function IofField({
       });
   }, [value]);
 
+  /**
+   * Закрывает список и отменяет всё, что уже улетело за подсказками.
+   *
+   * Отмена здесь — главное. Запрос подсказок уходит на каждое нажатие, и когда
+   * человек выбирает строку, предыдущий запрос ещё в пути. Вернувшись, он
+   * открывал список заново — тот самый «при его выборе списки не прячутся»,
+   * который заказчик написал дважды, 24 и 27 августа. В первый раз я починил
+   * зависимости эффекта, а не это, и поломка осталась.
+   *
+   * Увеличенный счётчик делает ответ на прежний запрос неактуальным: сравнение
+   * mine !== seq.current в обработчике ответа отбросит его.
+   */
+  function closeSuggestions() {
+    seq.current += 1;
+    setOpen(false);
+    setPersons([]);
+    setWords([]);
+  }
+
   // Подсказки: персоны по всей строке и слова по текущему слову.
   useEffect(() => {
     if (justPicked.current) {
       justPicked.current = false;
-      setWords([]);
-      setPersons([]);
-      setOpen(false);
+      closeSuggestions();
       return;
     }
     const query = value.trim();
     if (query.length < 1) {
-      setWords([]);
-      setPersons([]);
-      setOpen(false);
+      closeSuggestions();
       return;
     }
     const mine = ++seq.current;
@@ -137,6 +152,7 @@ export default function IofField({
         setOpen(foundPersons.length + foundWords.length > 0);
       })
       .catch((e) => {
+        if (mine !== seq.current) return;
         setPersons([]);
         setWords([]);
         setOpen(false);
@@ -152,21 +168,17 @@ export default function IofField({
 
   function pickPerson(hint: PersonHint) {
     justPicked.current = true;
-    setOpen(false);
-    setPersons([]);
-    setWords([]);
+    closeSuggestions();
     onChange(hint.iof, parsed);
     onPickPersonRef.current?.(hint);
   }
 
   function pickWord(item: Item) {
     justPicked.current = true;
+    closeSuggestions();
     const head = tokens.slice(0, wordIndex);
     // Пробел сразу после подстановки: следующее слово набирается без пауз.
     onChange([...head, item.value].join(" ") + " ", parsed);
-    setOpen(false);
-    setPersons([]);
-    setWords([]);
   }
 
   function pickActive() {
@@ -189,7 +201,7 @@ export default function IofField({
       if (listOpen) pickActive();
       else focusNextField(e.currentTarget);
     } else if (e.key === "Escape") {
-      setOpen(false);
+      closeSuggestions();
     }
   }
 
@@ -211,7 +223,7 @@ export default function IofField({
           spellCheck={false}
           onChange={(e) => onChange(e.target.value, parsed)}
           onKeyDown={onKeyDown}
-          onBlur={() => setOpen(false)}
+          onBlur={() => closeSuggestions()}
         />
         {/* Что программа поняла: современное написание и пол. Строка появляется
             только когда есть что сказать, чтобы не занимать высоту зря. */}
