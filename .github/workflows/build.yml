@@ -148,17 +148,28 @@ jobs:
         with:
           path: files
 
+      # 27.08.2026 к тестировщику ушёл выпуск без единого установщика, и конвейер
+      # отрапортовал успех: шаги проверяли, что команда не упала, а не что
+      # у человека есть что скачать. Отсюда три проверки ниже.
       - name: Собрать список файлов
         run: |
           mkdir -p out
           find files -type f \( -name "*.exe" -o -name "*.dmg" \) -exec cp {} out/ \;
           ls -la out
+          WIN=$(find out -type f -name "*.exe" | wc -l)
+          MAC=$(find out -type f -name "*.dmg" | wc -l)
+          echo "установщиков: Windows $WIN, macOS $MAC"
+          # Выкладывать нечего — это провал сборки, а не повод молча продолжить.
+          [ "$WIN" -ge 1 ] || { echo "::error::Нет установщика Windows (.exe)"; exit 1; }
+          [ "$MAC" -ge 1 ] || { echo "::error::Нет установщика macOS (.dmg)"; exit 1; }
 
       - name: Обновить выпуск latest-test
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Тег перевыпускается, чтобы ссылка для тестировщиков не менялась.
+          # Удаление может не найти прежний выпуск — это нормально, но ошибку
+          # самого создания глотать нельзя, поэтому || true стоит только здесь.
           gh release delete latest-test --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
           NOTES="Собрано автоматически из коммита ${GITHUB_SHA:0:7} — $(date -u '+%d.%m.%Y %H:%M UTC').
 
@@ -170,3 +181,20 @@ jobs:
             --prerelease \
             --title "Сборка для тестирования" \
             --notes "$NOTES"
+
+      - name: Убедиться, что тестировщику есть что скачать
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Спрашиваем у GitHub, что лежит на странице выпуска. Проверять надо
+          # не «команда вернула ноль», а то, что откроет человек по ссылке.
+          sleep 5
+          ASSETS=$(gh release view latest-test --repo "$GITHUB_REPOSITORY" \
+                     --json assets --jq '.assets[].name')
+          echo "на странице выпуска:"
+          echo "$ASSETS" | sed 's/^/  /'
+          echo "$ASSETS" | grep -q '\.exe$' \
+            || { echo "::error::В выпуске latest-test нет установщика Windows"; exit 1; }
+          echo "$ASSETS" | grep -q '\.dmg$' \
+            || { echo "::error::В выпуске latest-test нет установщика macOS"; exit 1; }
+          echo "Выпуск: https://github.com/$GITHUB_REPOSITORY/releases/tag/latest-test"
