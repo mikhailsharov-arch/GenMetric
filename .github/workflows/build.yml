@@ -62,6 +62,11 @@ jobs:
       - name: Проверить стили
         run: python scripts/check_styles.py
 
+      # Правило проекта: инцидент не закрыт, пока на него нет механической
+      # проверки. Этот шаг не даёт вернуть то, что уже стоило людям времени.
+      - name: Регресс-тесты по инцидентам
+        run: python scripts/test_incidents.py
+
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
