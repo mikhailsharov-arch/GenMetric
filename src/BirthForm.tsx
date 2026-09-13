@@ -47,6 +47,7 @@ type Brief = {
   id: number;
   page: string | null;
   no_male: number | null;
+  no_female: number | null;
   event_day: number | null;
   event_month: number | null;
   child: string | null;
@@ -438,6 +439,13 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
                 <tr key={e.id}>
                   <td>
                     {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.child || "без имени"}
+                  </td>
+                  {/* Номер с колонкой — единственное место, где видно, что счёт
+                      лёг по полу ребёнка (инцидент 13.09.2026). */}
+                  <td>
+                    {e.no_male !== null && `№ м. ${e.no_male}`}
+                    {e.no_female !== null && `№ ж. ${e.no_female}`}
+                    {e.no_male === null && e.no_female === null && "без №"}
                   </td>
                   <td>стр. {e.page ?? "—"}</td>
                 </tr>
