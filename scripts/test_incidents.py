@@ -263,6 +263,30 @@ def incident_20260913_schyot_v_muzhskuyu_kolonku():
           "scripts/test_count.mjs" in read(".github/workflows/build.yml"))
 
 
+# ============================================================================
+
+def incident_20260913_ctrl_enter_pri_otkrytom_spiske():
+    """Найдено проверяющим агентом 13.09.2026 на стенде, до выкладки.
+    Ctrl+Enter при открытом списке подсказок: поле подставляло выбранное
+    («Бухарино»), но событие всплывало до сохранения, и запись уходила
+    с недобранным «Бух» — в place заводился НП «Бух», в person_index
+    запоминалась персона с ним. Порча данных, на экране незаметная.
+
+    Защита: поля с подсказкой при Ctrl+Enter и открытом списке только
+    подставляют и гасят всплытие; сохранение — следующим Ctrl+Enter, когда
+    списка уже нет. Живой сценарий прогоняется стендом (не в репозитории).
+    """
+    for f in ("src/Suggest.tsx", "src/IofField.tsx"):
+        src = strip_comments(read(f))
+        i = src.find('e.key === "Enter"')
+        block = src[i:i + 400] if i >= 0 else ""
+        check(f"{f}: Ctrl+Enter при открытом списке гасит всплытие",
+              "stopPropagation()" in block and "ctrlKey" in block)
+    form = strip_comments(read("src/BirthForm.tsx"))
+    check("сохранение по Ctrl+Enter висит на обёртке формы, а не на полях",
+          "function hotkeys" in form and "onKeyDown={hotkeys}" in form)
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -282,6 +306,7 @@ def incident_20260913_schyot_v_muzhskuyu_kolonku():
     incident_20260828_pricht_dopushchenie,
     incident_20260828_pravilo_ispolneno_bukvalno,
     incident_20260913_schyot_v_muzhskuyu_kolonku,
+    incident_20260913_ctrl_enter_pri_otkrytom_spiske,
 ]
 
 

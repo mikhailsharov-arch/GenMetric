@@ -374,6 +374,9 @@ button.linkish {
 }
 .sexpick button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .sexpick .fieldhint { margin: 0; }
+/* Сохранить не дали, пока пол не выбран: показать это у самих кнопок. */
+.sexpick.ask button { border-color: #c0392b; }
+.sexpick.ask .fieldhint { color: #c0392b; }
 
 /* Подсказка клавиши на кнопке сохранения: без мыши до неё не добраться,
    а Ctrl+Enter человек сам не угадает. */

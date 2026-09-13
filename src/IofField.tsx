@@ -213,8 +213,11 @@ export default function IofField({
       else focusNextField(e.currentTarget, -1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (listOpen) pickActive();
-      else focusNextField(e.currentTarget);
+      if (listOpen) {
+        // Ctrl+Enter при открытом списке — только подставить, см. Suggest.tsx.
+        if (e.ctrlKey || e.metaKey) e.stopPropagation();
+        pickActive();
+      } else focusNextField(e.currentTarget);
     } else if (e.key === "Escape") {
       closeSuggestions();
     }

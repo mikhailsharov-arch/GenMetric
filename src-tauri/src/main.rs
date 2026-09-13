@@ -955,6 +955,13 @@ fn import_archive(app: State<App>, request: tauri::ipc::Request<'_>) -> Result<I
                 source,
             })
         })();
+        // Слияние — одна транзакция внутри import_archive.sql. Если пакет
+        // упал посередине, транзакция осталась открытой: DETACH в ней не
+        // выполнится, а соединение зависнет в ней до перезапуска. Откатываем
+        // сами; когда транзакции нет, is_autocommit() это и скажет.
+        if done.is_err() && !conn.is_autocommit() {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
         // Отключаем архив в любом случае, иначе следующая загрузка упрётся
         // в «archive уже подключён». Ошибку отключения не глотаем.
         conn.execute_batch("DETACH DATABASE archive").map_err(|e| e.to_string())?;

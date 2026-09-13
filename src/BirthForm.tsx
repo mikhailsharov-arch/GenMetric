@@ -83,6 +83,9 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   // Пол ребёнка, указанный руками — только когда по имени его не понять.
   // Пол из разбора имени важнее: он есть у 99,7% имён на данных Романа.
   const [childSexManual, setChildSexManual] = useState<Sex | null>(null);
+  // Пытались сохранить, а пол ребёнка неизвестен: подсветить выбор у поля.
+  // Полоса ошибок для этого не годится — она говорит «пришлите текст Михаилу».
+  const [askSex, setAskSex] = useState(false);
   const childSex: Sex | null =
     (childParsed?.gender as Sex | null | undefined) ?? childSexManual;
   const [father, setFatherState] = useState<Person>(NEW_FATHER);
@@ -227,8 +230,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // ребёнка. До 13.09.2026 здесь молча писалось в мужскую колонку.
     const columns = splitCount(count, childSex);
     if (columns === null) {
-      report("Не понять, мальчик это или девочка",
-             "имени нет в словаре — укажите пол под полем «Ребёнок», иначе счёт ляжет не в ту колонку");
+      setAskSex(true);
+      document.querySelector<HTMLButtonElement>(".sexpick button")?.focus();
       return;
     }
 
@@ -280,6 +283,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     setChild("");
     setChildParsed(null);
     setChildSexManual(null);
+    setAskSex(false);
     setFatherState({ ...NEW_FATHER });
     setMother({ ...NEW_MOTHER });
     setGod1({ ...EMPTY_PERSON });
@@ -337,22 +341,26 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         {child.trim() && childParsed && !childParsed.gender && (
           <div className="field">
             <label>Пол</label>
-            <div className="fieldbody sexpick">
+            <div className={"fieldbody sexpick" + (askSex ? " ask" : "")}>
               <button
                 type="button"
                 className={childSexManual === "М" ? "on" : ""}
-                onClick={() => setChildSexManual("М")}
+                onClick={() => { setChildSexManual("М"); setAskSex(false); }}
               >
                 мальчик
               </button>
               <button
                 type="button"
                 className={childSexManual === "Ж" ? "on" : ""}
-                onClick={() => setChildSexManual("Ж")}
+                onClick={() => { setChildSexManual("Ж"); setAskSex(false); }}
               >
                 девочка
               </button>
-              <span className="fieldhint">имени нет в словаре — от пола зависит колонка счёта</span>
+              <span className="fieldhint">
+                {askSex
+                  ? "Не сохранено: выберите, мальчик это или девочка, — от пола зависит колонка счёта"
+                  : "имени нет в словаре — от пола зависит колонка счёта"}
+              </span>
             </div>
           </div>
         )}

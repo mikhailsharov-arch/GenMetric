@@ -118,8 +118,14 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      if (listOpen) pick(items[active]);
-      else focusNextField(e.currentTarget);
+      if (listOpen) {
+        // Ctrl+Enter при открытом списке: только подставить, не сохранять.
+        // Иначе сохранение (обработчик выше по дереву) уйдёт с недобранным
+        // «Бух» вместо выбранного «Бухарино» — состояние ещё не применилось.
+        // Проверяющий 13.09.2026 воспроизвёл это на стенде.
+        if (e.ctrlKey || e.metaKey) e.stopPropagation();
+        pick(items[active]);
+      } else focusNextField(e.currentTarget);
       return;
     }
     if (e.key === "Escape") {
