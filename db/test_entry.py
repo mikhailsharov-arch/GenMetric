@@ -227,7 +227,7 @@ def main() -> int:
               one("SELECT uses FROM person_index WHERE place='Чертеж Малый' AND iof='Никита Алексеев'")[0] == 2)
 
         rows = db.execute(sql["person_suggest"],
-                          {"prefix": norm("Ник") + "%", "limit": 8}).fetchall()
+                          {"prefix": norm("Ник") + "%", "limit": 8, "gender": None}).fetchall()
         check("подсказка находит персон по началу строки", len(rows) == 3, f"{len(rows)} персон")
         check("первым идёт тот, кого вводили чаще", rows[0][0] == "Никита Алексеев" and rows[0][4] == 2,
               f"{rows[0][0]}, {rows[0][1]}, {rows[0][4]} раз")

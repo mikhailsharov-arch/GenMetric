@@ -131,8 +131,11 @@ SELECT value, min(tier) AS tier, max(count) AS cnt
   FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT :limit;
 
 -- @suggest_first_name
+-- Имя по полу роли: матери — женские, отцу — мужские. Заказчик 13.09.2026:
+-- «при вводе ИОФ матери подставляет мужские имена». Пол неизвестен — обе.
 SELECT form, 4, 0 FROM name_form
  WHERE kind IN ('name','variant') AND form_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender = :gender)
 
 -- @suggest_patronymic
 -- Отчество мужчины и отчество женщины — разные формы одного имени. Пол берётся
@@ -163,9 +166,12 @@ ON CONFLICT(iof, place, rank) DO UPDATE SET
 -- @person_suggest
 -- Подсказка персонами. Сначала те, кого вводили чаще: заказчик работает
 -- приходами, и одни и те же люди возвращаются в записях год за годом.
+-- Персоны — тоже по полу роли. Пол у персоны может быть не записан (старые
+-- записи), такие показываются всем: лучше лишняя строка, чем потерянный человек.
 SELECT iof, place, rank, gender, uses
   FROM person_index
  WHERE iof_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender IS NULL OR gender = :gender)
  ORDER BY uses DESC, iof
  LIMIT :limit;
 

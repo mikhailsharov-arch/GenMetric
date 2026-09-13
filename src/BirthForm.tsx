@@ -4,6 +4,7 @@ import IofField, { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, type Person } from "./PersonBlock";
 import NumberField from "./NumberField";
 import ClergyBlock from "./ClergyBlock";
+import { splitCount, type Sex } from "./count";
 import { report } from "./errors";
 import type { Case } from "./CaseHeader";
 
@@ -79,6 +80,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
   const [child, setChild] = useState("");
   const [childParsed, setChildParsed] = useState<Parsed | null>(null);
+  // Пол ребёнка, указанный руками — только когда по имени его не понять.
+  // Пол из разбора имени важнее: он есть у 99,7% имён на данных Романа.
+  const [childSexManual, setChildSexManual] = useState<Sex | null>(null);
+  const childSex: Sex | null =
+    (childParsed?.gender as Sex | null | undefined) ?? childSexManual;
   const [father, setFatherState] = useState<Person>(NEW_FATHER);
   const [mother, setMother] = useState<Person>(NEW_MOTHER);
   const [god1, setGod1] = useState<Person>(EMPTY_PERSON);
@@ -216,6 +222,16 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       return;
     }
 
+    // Счёт кладётся в колонку по полу ребёнка. Пол неизвестен и счёт есть —
+    // не сохраняем и говорим почему; выбор «мальчик / девочка» стоит под полем
+    // ребёнка. До 13.09.2026 здесь молча писалось в мужскую колонку.
+    const columns = splitCount(count, childSex);
+    if (columns === null) {
+      report("Не понять, мальчик это или девочка",
+             "имени нет в словаре — укажите пол под полем «Ребёнок», иначе счёт ляжет не в ту колонку");
+      return;
+    }
+
     setBusy(true);
     try {
       await invoke<number>("entry_save", {
@@ -224,10 +240,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           case_id: mkCase.id,
           section: 1,
           page: page === null ? null : String(page),
-          // Счёт в Excel один. Пол ребёнка программа знает по имени,
-          // поэтому раскладывать счёт на мужской и женский незачем.
-          no_male: count,
-          no_female: null,
+          no_male: columns.no_male,
+          no_female: columns.no_female,
           event_day: birthDay,
           event_month: birthMonth,
           event_year: mkCase.year ?? null,
@@ -265,6 +279,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   function next() {
     setChild("");
     setChildParsed(null);
+    setChildSexManual(null);
     setFatherState({ ...NEW_FATHER });
     setMother({ ...NEW_MOTHER });
     setGod1({ ...EMPTY_PERSON });
@@ -275,8 +290,22 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     countField.current?.select();
   }
 
+  /**
+   * Ctrl+Enter (на Маке — Cmd+Enter) сохраняет из любого поля.
+   *
+   * Заказчик 13.09.2026 на вопрос «где приходится браться за мышь»: «чтобы
+   * нажать кнопку „сохранить и следующая“». Последнее поле формы было тупиком:
+   * Enter из него никуда не вёл. Обычный Enter по-прежнему ведёт по форме.
+   */
+  function hotkeys(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !busy) {
+      e.preventDefault();
+      void save();
+    }
+  }
+
   return (
-    <>
+    <div onKeyDown={hotkeys}>
       <section>
         <div className="row">
           <NumberField label="Стр." value={page} onChange={setPage} min={1} />
@@ -305,6 +334,28 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           }}
           placeholder="имя"
         />
+        {child.trim() && childParsed && !childParsed.gender && (
+          <div className="field">
+            <label>Пол</label>
+            <div className="fieldbody sexpick">
+              <button
+                type="button"
+                className={childSexManual === "М" ? "on" : ""}
+                onClick={() => setChildSexManual("М")}
+              >
+                мальчик
+              </button>
+              <button
+                type="button"
+                className={childSexManual === "Ж" ? "on" : ""}
+                onClick={() => setChildSexManual("Ж")}
+              >
+                девочка
+              </button>
+              <span className="fieldhint">имени нет в словаре — от пола зависит колонка счёта</span>
+            </div>
+          </div>
+        )}
       </section>
 
       <PersonBlock
@@ -356,8 +407,9 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           кнопку сохранить и следующая». Прокрутка на каждой записи — это
           и время, и рука на мыши, которой он просил избегать. */}
       <div className="savebar">
-        <button className="primary" onClick={save} disabled={busy}>
+        <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
           {busy ? "Сохраняю…" : "Сохранить и следующая"}
+          <span className="kbd">Ctrl+Enter</span>
         </button>
       </div>
 
@@ -378,6 +430,6 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           </table>
         </section>
       )}
-    </>
+    </div>
   );
 }

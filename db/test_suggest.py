@@ -103,7 +103,7 @@ def build(sql: dict, kind: str) -> str:
 
 def suggest(db, sql, kind, prefix, gender=None, limit=8):
     params = {"kind": kind, "prefix": like_prefix(prefix), "limit": limit}
-    if kind == "patronymic":
+    if kind in ("patronymic", "first_name"):
         params["gender"] = gender
     rows = db.execute(build(sql, kind), params).fetchall()
     return [r[0] for r in rows]
@@ -174,6 +174,16 @@ def main() -> int:
               not any(v.endswith("евич") for v in f), ", ".join(f[:6]))
         check("без пола показываются обе формы", len(both) >= max(len(m), len(f)),
               f"м {len(m)}, ж {len(f)}, обе {len(both)}")
+
+        print("\n4а. Имена по полу — заказчик 13.09.2026: «матери подставляет мужские имена»")
+        f_names = suggest(db, sql, "first_name", "Ан", gender="Ж", limit=30)
+        m_names = suggest(db, sql, "first_name", "Ан", gender="М", limit=30)
+        both = suggest(db, sql, "first_name", "Ан", gender=None, limit=60)
+        check("матери на «Ан» не предлагается «Ананий»", "Ананий" not in f_names, ", ".join(f_names[:5]))
+        check("матери предлагается «Анна»", "Анна" in f_names)
+        check("отцу предлагается «Ананий»", "Ананий" in m_names)
+        check("отцу не предлагается «Анна»", "Анна" not in m_names)
+        check("без пола — обе стороны", "Анна" in both and "Ананий" in both)
 
         print("\n5. Имена и плоские перечни не сломались")
         check("имя «Никит» находится",

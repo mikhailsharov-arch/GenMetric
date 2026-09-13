@@ -98,33 +98,29 @@ export default function App() {
   return (
     <div className="app">
       <ErrorBar />
-      <header className="apphead">
-        <div>
-          <h1>GenMetric</h1>
-          <p className="sub">
-            Индексатор метрических книг
-            {info ? ` · версия ${info.app_version}` : ""}
-          </p>
-        </div>
+      {/* Заголовок, вкладки и размер шрифта — одной строкой. Высота — самый
+          дефицитный ресурс: заказчику нужна вся запись на экране без прокрутки,
+          пока справа открыт скан. Название программы человек и так знает. */}
+      <header className="topbar">
+        <h1 title={info ? `GenMetric, версия ${info.app_version}` : "GenMetric"}>GenMetric</h1>
+        <nav className="tabs">
+          <button className={screen === "case" ? "on" : ""} onClick={() => setScreen("case")}>
+            Дело
+          </button>
+          <button
+            className={screen === "births" ? "on" : ""}
+            onClick={() => setScreen("births")}
+            disabled={!mkCase || !mkCase.id}
+            title={mkCase && mkCase.id ? "" : "Сначала заполните дело"}
+          >
+            Рождения
+          </button>
+          <button className={screen === "about" ? "on" : ""} onClick={() => setScreen("about")}>
+            О программе
+          </button>
+        </nav>
         <FontScale />
       </header>
-
-      <nav className="tabs">
-        <button className={screen === "case" ? "on" : ""} onClick={() => setScreen("case")}>
-          Дело
-        </button>
-        <button
-          className={screen === "births" ? "on" : ""}
-          onClick={() => setScreen("births")}
-          disabled={!mkCase || !mkCase.id}
-          title={mkCase && mkCase.id ? "" : "Сначала заполните дело"}
-        >
-          Рождения
-        </button>
-        <button className={screen === "about" ? "on" : ""} onClick={() => setScreen("about")}>
-          О программе
-        </button>
-      </nav>
 
       {/* Форма рождений не размонтируется при переключении вкладок, а прячется
           стилем. Иначе набранное пропадает: заказчик 27.08.2026 — «после
@@ -205,10 +201,14 @@ export default function App() {
         </section>
       )}
 
-      <footer>
-        Записи сохраняются в базу на вашем компьютере. Выгрузка в Familio
-        и Excel появится на следующем этапе.
-      </footer>
+      {/* На экране набора подвал не нужен: каждая строка высоты — это строка
+          записи, которую человек должен видеть, не прокручивая. */}
+      {screen !== "births" && (
+        <footer>
+          Записи сохраняются в базу на вашем компьютере. Выгрузка в Familio
+          и Excel появится на следующем этапе.
+        </footer>
+      )}
     </div>
   );
 }

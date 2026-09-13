@@ -84,10 +84,21 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
       });
   }, [value, kind]);
 
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * Выбор строки — и подстановка, и переход к следующему полю одним нажатием.
+   *
+   * Заказчик 13.09.2026: «у восприемника после ввода НП почему-то не
+   * перескакивает на следующее поле». На стенде переход работал — но вторым
+   * Enter: первый выбирал, второй переходил. В Excel это одно действие,
+   * и лишнее нажатие на каждом поле с подсказкой он ощущал как поломку.
+   */
   function pick(item: Item) {
     justPicked.current = true;
     closeList();
     onChange(item.value);
+    if (inputRef.current) focusNextField(inputRef.current);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -121,7 +132,11 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
       <label>{label}</label>
       <div className="fieldbody">
       <input
-        ref={ref}
+        ref={(el) => {
+          inputRef.current = el;
+          if (typeof ref === "function") ref(el);
+          else if (ref) ref.current = el;
+        }}
         data-field
         value={value}
         placeholder={placeholder}

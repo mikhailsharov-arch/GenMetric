@@ -27,6 +27,9 @@ const MIGRATE_SQL: &str = include_str!("../../db/migrate.sql");
 /// значит проверяется именно то, что работает у человека, а не похожая копия.
 const STATEMENTS_SQL: &str = include_str!("../../db/statements.sql");
 
+/// Слияние архива подсказок из Excel. Тот же файл прогоняет db/test_archive.py.
+const IMPORT_ARCHIVE_SQL: &str = include_str!("../../db/import_archive.sql");
+
 /// Разбирает statements.sql на именованные блоки, разделённые «-- @имя».
 /// Такой же разбор делает тест: формат намеренно простейший.
 fn statement(name: &str) -> Result<String, String> {
@@ -334,7 +337,9 @@ fn suggest(
         // rusqlite считает ошибкой, поэтому список собирается по месту.
         let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
             vec![(":kind", &kind), (":prefix", &pattern), (":limit", &limit)];
-        if kind == "patronymic" {
+        // Пол нужен отчествам и именам. Заказчик 13.09.2026: матери
+        // подставлялись мужские имена — фильтровались только отчества.
+        if kind == "patronymic" || kind == "first_name" {
             params.push((":gender", &gender));
         }
         let rows = stmt
@@ -849,7 +854,7 @@ fn person_iof(p: &PersonInput) -> String {
 /// отдельно имя, отдельно отчество, отдельно фамилия, — и населённый пункт
 /// со званием приходилось набирать руками для каждой персоны.
 #[tauri::command]
-fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>)
+fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: Option<String>)
     -> Result<Vec<PersonHint>, String>
 {
     let pattern = like_prefix(&prefix);
@@ -857,7 +862,9 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>)
     with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
         let mut stmt = conn.prepare(&statement("person_suggest")?).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::named_params! { ":prefix": pattern, ":limit": limit }, |r| {
+            .query_map(rusqlite::named_params! {
+                ":prefix": pattern, ":limit": limit, ":gender": gender,
+            }, |r| {
                 Ok(PersonHint {
                     iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?,
                     gender: r.get(3)?, uses: r.get(4)?,
@@ -870,6 +877,91 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>)
         }
         Ok(out)
     })
+}
+
+/// Что дала загрузка архива — показывается человеку.
+#[derive(Serialize)]
+struct ImportReport {
+    persons_added: i64,
+    spouses_added: i64,
+    clergy_added: i64,
+    places_added: i64,
+    source: String,
+}
+
+/// Загрузка архива подсказок, собранного из рабочего файла Excel-индексатора
+/// (db/tools/build_archive.py). Файл приходит байтами из окна выбора файла
+/// в интерфейсе — так не нужен ни плагин диалогов, ни доступ к путям.
+///
+/// Заказчик 13.09.2026 прислал файл с 2089 записями; замер на незнакомой
+/// странице — 55 секунд на запись — сделан с пустой памятью подсказок.
+/// Перенос памяти — самый большой рычаг из всех, что у нас остались.
+#[tauri::command]
+fn import_archive(app: State<App>, request: tauri::ipc::Request<'_>) -> Result<ImportReport, String> {
+    let bytes: Vec<u8> = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b.clone(),
+        _ => return Err("ожидался файл архива, а пришло что-то другое".into()),
+    };
+    if !bytes.starts_with(b"SQLite format 3\0") {
+        return Err("это не файл архива GenMetric: нет заголовка SQLite".into());
+    }
+    // Архив кладём рядом с базой во временный файл: SQLite подключает
+    // только файлы, а не память.
+    let tmp = Path::new(&app.db_path)
+        .parent()
+        .map(|d| d.join("archive-import.tmp.sqlite"))
+        .ok_or("не найдена папка базы")?;
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("не удалось записать временный файл: {e}"))?;
+    let tmp_str = tmp.to_string_lossy().to_string();
+
+    let result = with_conn(&app, "Загрузка архива", |conn| {
+        conn.execute("ATTACH DATABASE ?1 AS archive", [&tmp_str]).map_err(|e| e.to_string())?;
+        let done = (|| -> Result<ImportReport, String> {
+            let count = |sql: &str| -> Result<i64, String> {
+                conn.query_row(sql, [], |r| r.get(0)).map_err(|e| e.to_string())
+            };
+            // Это архив GenMetric? У него есть наша таблица памяти и отметка источника.
+            let is_archive = count(
+                "SELECT count(*) FROM archive.sqlite_master WHERE name = 'person_index'")? == 1;
+            if !is_archive {
+                return Err("в файле нет памяти подсказок — это не архив GenMetric".into());
+            }
+            let source: String = conn
+                .query_row(
+                    "SELECT coalesce((SELECT value FROM archive.setting WHERE key='archive_source'),'?') \
+                     || ' @ ' || coalesce((SELECT value FROM archive.setting WHERE key='archive_built'),'?')",
+                    [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            // Тот же архив второй раз — счётчики сложились бы повторно.
+            let loaded: Option<String> = conn
+                .query_row("SELECT value FROM setting WHERE key = 'archive_loaded'", [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if loaded.as_deref() == Some(source.as_str()) {
+                return Err(format!("этот архив уже загружен: {source}"));
+            }
+            let before = (
+                count("SELECT count(*) FROM person_index")?,
+                count("SELECT count(*) FROM spouse_index")?,
+                count("SELECT count(*) FROM clergy_index")?,
+                count("SELECT count(*) FROM place")?,
+            );
+            conn.execute_batch(IMPORT_ARCHIVE_SQL).map_err(|e| e.to_string())?;
+            Ok(ImportReport {
+                persons_added: count("SELECT count(*) FROM person_index")? - before.0,
+                spouses_added: count("SELECT count(*) FROM spouse_index")? - before.1,
+                clergy_added: count("SELECT count(*) FROM clergy_index")? - before.2,
+                places_added: count("SELECT count(*) FROM place")? - before.3,
+                source,
+            })
+        })();
+        // Отключаем архив в любом случае, иначе следующая загрузка упрётся
+        // в «archive уже подключён». Ошибку отключения не глотаем.
+        conn.execute_batch("DETACH DATABASE archive").map_err(|e| e.to_string())?;
+        done
+    });
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 /// Церковнослужитель из памяти: ИОФ вместе со званием.
@@ -1023,6 +1115,7 @@ fn main() {
             suggest_person,
             suggest_spouse,
             list_clergy,
+            import_archive,
             get_setting,
             set_setting,
             suggest,

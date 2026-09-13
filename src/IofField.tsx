@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { focusNextField } from "./focus";
+import { focusNextField, focusNextEmptyField } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
 
@@ -133,7 +133,10 @@ export default function IofField({
 
     Promise.all([
       wantPersons
-        ? invoke<PersonHint[]>("suggest_person", { prefix: query, limit: 6 })
+        ? invoke<PersonHint[]>("suggest_person", {
+            prefix: query, limit: 6,
+            gender: gender ?? parsedRef.current?.gender ?? null,
+          })
         : Promise.resolve([] as PersonHint[]),
       currentWord.length > 0
         ? invoke<Item[]>("suggest", {
@@ -166,11 +169,23 @@ export default function IofField({
 
   const total = persons.length + words.length;
 
+  const inputEl = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * Выбор целой персоны заполняет ИОФ, НП и звание разом — значит и фокус
+   * должен уйти дальше сразу, без второго Enter (заказчик 13.09.2026).
+   * Пословная подсказка (pickWord) фокус не трогает: после имени набирается
+   * отчество в том же поле.
+   */
   function pickPerson(hint: PersonHint) {
     justPicked.current = true;
     closeSuggestions();
     onChange(hint.iof, parsed);
     onPickPersonRef.current?.(hint);
+    // Поля заполнятся после того, как React применит состояние, — поэтому
+    // к первому пустому идём следующим тиком, а не сразу.
+    const el = inputEl.current;
+    if (el) setTimeout(() => focusNextEmptyField(el), 0);
   }
 
   function pickWord(item: Item) {
@@ -215,7 +230,10 @@ export default function IofField({
       <label>{label}</label>
       <div className="fieldbody">
         <input
-          ref={inputRef}
+          ref={(el) => {
+            inputEl.current = el;
+            if (inputRef) (inputRef as React.MutableRefObject<HTMLInputElement | null>).current = el;
+          }}
           data-field
           value={value}
           placeholder={placeholder ?? "имя, отчество, фамилия"}

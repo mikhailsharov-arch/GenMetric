@@ -59,6 +59,9 @@ jobs:
       - name: Проверить подсказки
         run: python db/test_suggest.py
 
+      - name: Проверить перенос архива подсказок из Excel
+        run: python db/test_archive.py
+
       - name: Проверить стили
         run: python scripts/check_styles.py
 
@@ -74,6 +77,9 @@ jobs:
 
       - name: Установить зависимости интерфейса
         run: npm ci
+
+      - name: Проверить раскладку счёта по полу
+        run: node --experimental-strip-types scripts/test_count.mjs
 
       - name: Собрать интерфейс
         run: npm run build
