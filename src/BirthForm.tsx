@@ -230,8 +230,16 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // ребёнка. До 13.09.2026 здесь молча писалось в мужскую колонку.
     const columns = splitCount(count, childSex);
     if (columns === null) {
-      setAskSex(true);
-      document.querySelector<HTMLButtonElement>(".sexpick button")?.focus();
+      // Кнопки выбора пола есть только под набранным именем. Счёт без имени
+      // ребёнка — отдельный случай, и молчать тут нельзя (ревьюер 13.09.2026).
+      const buttons = document.querySelector<HTMLButtonElement>(".sexpick button");
+      if (buttons) {
+        setAskSex(true);
+        buttons.focus();
+      } else {
+        report("Счёт есть, а ребёнка нет",
+               "имя ребёнка не набрано — не понять, в мужскую или женскую колонку класть счёт");
+      }
       return;
     }
 
