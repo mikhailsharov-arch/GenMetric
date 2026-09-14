@@ -170,12 +170,13 @@ def main() -> int:
             print(f"нет {what}: {path}")
             return 1
 
-    # Приложение запускаем сами. WebView2 читает переменную окружения и
-    # добавляет порт отладки к своим аргументам (документация
-    # CreateCoreWebView2EnvironmentWithOptions: additionalBrowserArguments
-    # из окружения дописываются к заданным в коде).
+    # Приложение запускаем сами. Порт отладки WebView2 оно открывает само,
+    # увидев GENMETRIC_E2E_DEBUG_PORT (main.rs). Переменная
+    # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, которую обещает документация
+    # Microsoft, на раннере 14.09.2026 до WebView2 не дошла — порт не открылся.
     port = 9222
     env = dict(os.environ)
+    env["GENMETRIC_E2E_DEBUG_PORT"] = str(port)
     env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--remote-debugging-port={port}"
     app = subprocess.Popen([str(exe)], env=env, cwd=str(exe.parent))
     print(f"приложение запущено, pid {app.pid}")
@@ -185,10 +186,19 @@ def main() -> int:
         print_app_log()
         return 1
     print("приложение живо через 5 с")
+    # Диагностика до драйвера: слушает ли кто-то порт, и есть ли процесс WebView2.
+    import socket
+    with socket.socket() as sock:
+        sock.settimeout(2)
+        listening = sock.connect_ex(("127.0.0.1", port)) == 0
+    print(f"порт {port} {'открыт' if listening else 'ЗАКРЫТ'}")
+    tasks = subprocess.run(["tasklist", "/FI", "IMAGENAME eq msedgewebview2.exe"],
+                           capture_output=True, text=True, errors="replace").stdout
+    print("процессов msedgewebview2.exe:", tasks.count("msedgewebview2.exe"))
 
     opts = EdgeOptions()
     opts.use_webview = True  # browserName: webview2
-    opts.debugger_address = f"localhost:{port}"
+    opts.debugger_address = f"127.0.0.1:{port}"
     service = EdgeService(executable_path=str(msedgedriver), log_output="e2e-msedgedriver.log")
     try:
         driver = webdriver.Edge(service=service, options=opts)

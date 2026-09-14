@@ -1117,6 +1117,33 @@ fn main() {
                 log_path,
                 startup_error,
             });
+
+            // Окно создаём здесь, а не из конфигурации («create»: false в
+            // tauri.conf.json): только так на Windows можно добавить WebView2
+            // порт отладки для сквозной проверки в конвейере. Переменная
+            // окружения WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS на раннере
+            // 14.09.2026 до WebView2 не дошла — порт не открылся. У Романа
+            // переменной GENMETRIC_E2E_DEBUG_PORT нет, окно как прежде.
+            let window = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or("в конфигурации нет окна main")?;
+            #[allow(unused_mut)]
+            let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?;
+            #[cfg(windows)]
+            if let Ok(port) = std::env::var("GENMETRIC_E2E_DEBUG_PORT") {
+                // Первая часть — то, что wry передаёт по умолчанию; при своих
+                // аргументах её нужно повторить (см. документацию метода).
+                builder = builder.additional_browser_args(&format!(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                     --remote-debugging-port={port}"
+                ));
+            }
+            builder.build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

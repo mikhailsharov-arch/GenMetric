@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "GenMetric — индексатор метрических книг",
         "width": 470,
         "height": 980,
