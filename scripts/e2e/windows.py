@@ -6,8 +6,14 @@
 не работала: сырое тело IPC-запроса на WebView2 не доходило. В песочнице
 это не воспроизвести — стенд не Tauri, cargo build невозможен. Единственное
 место, где есть настоящий Windows с настоящим WebView2, — раннер конвейера.
-Поэтому здесь: запускаем собранный genmetric.exe через tauri-driver
-(WebDriver поверх WebView2) и проходим путь Романа руками робота.
+Поэтому здесь: запускаем собранный genmetric.exe сами, с портом отладки
+WebView2, подключаем к нему msedgedriver (подход «attach» из документации
+Microsoft) и проходим путь Романа руками робота.
+
+Почему не tauri-driver (подход «launch»): 14.09.2026 первый прогон упал на
+создании сессии — «DevToolsActivePort file doesn't exist», без единой
+строки от драйвера, и понять, запустилось ли вообще приложение, было нельзя.
+Здесь приложение запускается явно: видно, живо ли оно, и его журнал.
 
 Что проверяется:
   1. окно открылось, база справочников подключилась (нет экрана «База не открылась»);
@@ -18,20 +24,24 @@
   5. запись девочки сохраняется, и в списке «Набрано» у неё «№ ж.».
 
 Запуск (в конвейере, см. .github/workflows/build.yml):
-    python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite
+    python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite путь\\к\\msedgedriver.exe
 
-tauri-driver должен уже слушать 127.0.0.1:4444. При провале рядом остаётся
-снимок e2e-failure.png — его конвейер выкладывает артефактом.
+При провале рядом остаётся снимок e2e-failure.png — его конвейер
+выкладывает артефактом.
 """
 
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.options import ArgOptions
+from selenium.webdriver.edge.options import Options as EdgeOptions
+from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -135,6 +145,17 @@ def run(driver, wait, archive):
     check("в мужской колонке ничего", "№ м." not in body)
 
 
+def print_app_log():
+    """Журнал ошибок приложения — там, куда его пишет main.rs."""
+    appdata = os.environ.get("APPDATA", "")
+    log = Path(appdata) / "org.genmetric.app" / "genmetric-журнал.txt"
+    if log.exists():
+        print(f"--- {log} ---")
+        print(log.read_text(encoding="utf-8", errors="replace")[-4000:])
+    else:
+        print(f"журнала приложения нет: {log}")
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -143,17 +164,39 @@ def main() -> int:
             pass
 
     exe, archive = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
-    if not exe.exists():
-        print(f"нет приложения: {exe}")
-        return 1
-    if not archive.exists():
-        print(f"нет архива: {archive}")
-        return 1
+    msedgedriver = Path(sys.argv[3]).resolve()
+    for what, path in (("приложения", exe), ("архива", archive), ("msedgedriver", msedgedriver)):
+        if not path.exists():
+            print(f"нет {what}: {path}")
+            return 1
 
-    opts = ArgOptions()
-    opts.set_capability("browserName", "wry")
-    opts.set_capability("tauri:options", {"application": str(exe)})
-    driver = webdriver.Remote(command_executor="http://127.0.0.1:4444", options=opts)
+    # Приложение запускаем сами. WebView2 читает переменную окружения и
+    # добавляет порт отладки к своим аргументам (документация
+    # CreateCoreWebView2EnvironmentWithOptions: additionalBrowserArguments
+    # из окружения дописываются к заданным в коде).
+    port = 9222
+    env = dict(os.environ)
+    env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--remote-debugging-port={port}"
+    app = subprocess.Popen([str(exe)], env=env, cwd=str(exe.parent))
+    print(f"приложение запущено, pid {app.pid}")
+    time.sleep(5)
+    if app.poll() is not None:
+        print(f"приложение завершилось само с кодом {app.returncode} — WebView2 не создан?")
+        print_app_log()
+        return 1
+    print("приложение живо через 5 с")
+
+    opts = EdgeOptions()
+    opts.use_webview = True  # browserName: webview2
+    opts.debugger_address = f"localhost:{port}"
+    service = EdgeService(executable_path=str(msedgedriver), log_output="e2e-msedgedriver.log")
+    try:
+        driver = webdriver.Edge(service=service, options=opts)
+    except Exception as e:  # noqa: BLE001 — сессия не создалась: показать всё, что есть
+        print(f"сессия WebDriver не создалась: {type(e).__name__}: {e}")
+        print_app_log()
+        app.kill()
+        return 1
     wait = WebDriverWait(driver, 30)
 
     try:
@@ -168,6 +211,9 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001 — снимок не должен прятать провал
                 print(f"снимок не снялся: {e}")
         driver.quit()
+        app.kill()
+        if fail_count:
+            print_app_log()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

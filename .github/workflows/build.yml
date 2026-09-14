@@ -146,17 +146,24 @@ jobs:
       # настоящий Windows с настоящим WebView2 у нас — этот раннер. Здесь
       # собранный genmetric.exe проходит путь Романа: дело, архив, запись.
       # Падает — выпуска не будет.
-      - name: Кэш tauri-driver
+      - name: WebView2 Runtime на раннере
         if: matrix.os == 'windows-latest'
-        id: driver-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/tauri-driver.exe
-          key: tauri-driver-${{ runner.os }}-1
-
-      - name: Установить tauri-driver
-        if: matrix.os == 'windows-latest' && steps.driver-cache.outputs.cache-hit != 'true'
-        run: cargo install tauri-driver --locked
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Без WebView2 Runtime приложение не откроет окно вовсе. Edge-браузер
+          # его не заменяет: WebView2 ищет только Runtime, Beta, Dev, Canary.
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          if (Test-Path -LiteralPath $key) {
+            Write-Host "WebView2 Runtime уже есть: $((Get-ItemProperty -LiteralPath $key).pv)"
+          } else {
+            Write-Host "WebView2 Runtime нет — ставлю Evergreen bootstrapper"
+            Invoke-WebRequest -UseBasicParsing "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile webview2setup.exe
+            Start-Process -Wait -FilePath .\webview2setup.exe -ArgumentList "/silent", "/install"
+            if (Test-Path -LiteralPath $key) {
+              Write-Host "Поставлен: $((Get-ItemProperty -LiteralPath $key).pv)"
+            } else { throw "WebView2 Runtime не установился" }
+          }
 
       - name: Скачать msedgedriver под установленный WebView2
         if: matrix.os == 'windows-latest'
@@ -204,20 +211,16 @@ jobs:
           python scripts/e2e/make_archive.py "$pwd\e2e-archive.sqlite"
           $exe = "$pwd\src-tauri\target\release\genmetric.exe"
           if (-not (Test-Path $exe)) { throw "нет $exe" }
-          # Вывод драйверов — в файлы: без этого при провале на создании сессии
-          # в логе будет один трейсбек Selenium, и чинить не по чему.
-          $driver = Start-Process -PassThru -NoNewWindow -FilePath "$env:USERPROFILE\.cargo\bin\tauri-driver.exe" `
-            -ArgumentList "--native-driver", "$pwd\msedgedriver\msedgedriver.exe" `
-            -RedirectStandardOutput e2e-driver.out.txt -RedirectStandardError e2e-driver.err.txt
-          Start-Sleep -Seconds 3
+          # Приложение и msedgedriver запускает сам сценарий (подход «attach»);
+          # журнал драйвера — в e2e-msedgedriver.log, при провале уходит артефактом.
           try {
-            python scripts/e2e/windows.py $exe "$pwd\e2e-archive.sqlite"
+            python scripts/e2e/windows.py $exe "$pwd\e2e-archive.sqlite" "$pwd\msedgedriver\msedgedriver.exe"
             if ($LASTEXITCODE -ne 0) { throw "сквозная проверка провалилась" }
           } finally {
-            Stop-Process -Id $driver.Id -Force -ErrorAction SilentlyContinue
             Get-Process genmetric -ErrorAction SilentlyContinue | Stop-Process -Force
-            Write-Host "--- tauri-driver stdout ---"; Get-Content e2e-driver.out.txt -ErrorAction SilentlyContinue
-            Write-Host "--- tauri-driver stderr ---"; Get-Content e2e-driver.err.txt -ErrorAction SilentlyContinue
+            Get-Process msedgedriver -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Host "--- msedgedriver.log (хвост) ---"
+            Get-Content e2e-msedgedriver.log -Tail 60 -ErrorAction SilentlyContinue
           }
 
       - name: Снимок провала e2e
@@ -228,7 +231,7 @@ jobs:
           if-no-files-found: ignore
           path: |
             e2e-failure.png
-            e2e-driver.*.txt
+            e2e-msedgedriver.log
 
       - uses: actions/upload-artifact@v7
         with:

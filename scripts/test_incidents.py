@@ -299,7 +299,7 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
 
     Защита: байты передаются обычным аргументом Vec<u8>; сырое тело в
     командах не используется. Живой прогон — сквозной проверкой на
-    Windows-раннере (scripts/e2e/), она стоит в конвейере перед выкладкой.
+    Windows-раннере (scripts/e2e/, msedgedriver «attach»), она стоит в конвейере перед выкладкой.
     """
     rs = strip_comments(read("src-tauri/src/main.rs"))
     check("команды не принимают сырое тело запроса",
@@ -312,7 +312,7 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
           'invoke<ImportReport>("import_archive", { bytes })' in ts)
     wf = read(".github/workflows/build.yml")
     check("сквозная проверка на Windows стоит в конвейере",
-          "tauri-driver" in wf and "e2e" in wf)
+          "msedgedriver" in wf and "scripts/e2e/windows.py" in wf)
 
 
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе

@@ -23,8 +23,11 @@ Tauri шлёт сырое тело через `fetch` на `http://ipc.localhost
 ## 2. Сквозная проверка на Windows-раннере
 
 В job сборки на `windows-latest`, после `tauri build` и до выкладки:
-`tauri-driver` + `msedgedriver` (под версию WebView2 из реестра) управляют
-собранным `genmetric.exe`. Сценарий `scripts/e2e/windows.py`: окно и база
+приложение запускается с `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port`,
+`msedgedriver` (под версию WebView2 из реестра) подключается к нему —
+подход «attach» из документации Microsoft. Первый вариант через `tauri-driver`
+(«launch») упал 14.09 на «DevToolsActivePort file doesn't exist» без диагностики;
+при явном запуске видно, живо ли приложение, и его журнал. Сценарий `scripts/e2e/windows.py`: окно и база
 открылись; дело сохраняется; архив (синтетический, `scripts/e2e/make_archive.py`)
 загружается через `<input type=file>` и настоящий IPC — под кнопкой
 «Добавлено: персон 4»; отцу предлагается персона из архива; запись девочки
