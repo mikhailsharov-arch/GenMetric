@@ -897,13 +897,22 @@ struct ImportReport {
 /// странице — 55 секунд на запись — сделан с пустой памятью подсказок.
 /// Перенос памяти — самый большой рычаг из всех, что у нас остались.
 #[tauri::command]
-fn import_archive(app: State<App>, request: tauri::ipc::Request<'_>) -> Result<ImportReport, String> {
-    let bytes: Vec<u8> = match request.body() {
-        tauri::ipc::InvokeBody::Raw(b) => b.clone(),
-        _ => return Err("ожидался файл архива, а пришло что-то другое".into()),
-    };
+fn import_archive(app: State<App>, bytes: Vec<u8>) -> Result<ImportReport, String> {
+    // Байты приходят обычным JSON-аргументом (массив чисел), а не сырым телом
+    // запроса. Сырое тело (tauri::ipc::Request / InvokeBody::Raw) на Windows
+    // 13.09.2026 не дошло: fetch на ipc.localhost у WebView2 не прошёл, Tauri
+    // молча переключился на postMessage, и тело пришло уже как JSON. Роман
+    // получил «ожидался файл архива, а пришло что-то другое». Через аргумент
+    // работает любой транспорт; ~5 МБ JSON на разовую загрузку — терпимо.
+    if bytes.is_empty() {
+        return Err("файл пустой — пришло 0 байт".into());
+    }
     if !bytes.starts_with(b"SQLite format 3\0") {
-        return Err("это не файл архива GenMetric: нет заголовка SQLite".into());
+        return Err(format!(
+            "это не файл архива GenMetric: нет заголовка SQLite (пришло {} байт, начало {:?})",
+            bytes.len(),
+            String::from_utf8_lossy(&bytes[..bytes.len().min(16)])
+        ));
     }
     // Архив кладём рядом с базой во временный файл: SQLite подключает
     // только файлы, а не память.

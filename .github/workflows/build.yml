@@ -139,6 +139,90 @@ jobs:
         shell: bash
         run: find "${{ matrix.bundles }}" -type f \( -name "*.exe" -o -name "*.dmg" \) -print
 
+      # --- сквозная проверка на настоящем Windows ---------------------------
+      # 13.09.2026 Роман получил сборку, где кнопка «Загрузить архив» не
+      # работала: сырое тело IPC на WebView2 не доходило. В песочнице такое
+      # не воспроизвести, а петля через заказчика — сутки. Единственный
+      # настоящий Windows с настоящим WebView2 у нас — этот раннер. Здесь
+      # собранный genmetric.exe проходит путь Романа: дело, архив, запись.
+      # Падает — выпуска не будет.
+      - name: Кэш tauri-driver
+        if: matrix.os == 'windows-latest'
+        id: driver-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/tauri-driver.exe
+          key: tauri-driver-${{ runner.os }}-1
+
+      - name: Установить tauri-driver
+        if: matrix.os == 'windows-latest' && steps.driver-cache.outputs.cache-hit != 'true'
+        run: cargo install tauri-driver --locked
+
+      - name: Скачать msedgedriver под установленный WebView2
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Версия WebView2 Runtime — из реестра; драйвер обязан совпадать по мажору.
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $ver = $null
+          if (Test-Path -LiteralPath $key) { $ver = (Get-ItemProperty -LiteralPath $key).pv }
+          if (-not $ver) {
+            $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+            $ver = (Get-Item $edge).VersionInfo.ProductVersion
+          }
+          Write-Host "WebView2: $ver"
+          $major = $ver.Split('.')[0]
+          $urls = @(
+            "https://msedgedriver.microsoft.com/$ver/edgedriver_win64.zip"
+          )
+          try {
+            Invoke-WebRequest -UseBasicParsing "https://msedgedriver.microsoft.com/LATEST_RELEASE_${major}_WINDOWS" -OutFile latest.txt
+            # Ответ приходит в UTF-16 с BOM.
+            $latest = [System.Text.Encoding]::Unicode.GetString([System.IO.File]::ReadAllBytes("latest.txt")).Trim([char]0xFEFF, ' ', "`r", "`n")
+            Write-Host "Последний драйвер ветки ${major}: $latest"
+            $urls += "https://msedgedriver.microsoft.com/$latest/edgedriver_win64.zip"
+          } catch { Write-Host "LATEST_RELEASE не ответил: $_" }
+          $got = $false
+          foreach ($u in $urls) {
+            try {
+              Write-Host "Пробую $u"
+              Invoke-WebRequest -UseBasicParsing $u -OutFile edgedriver.zip
+              $got = $true; break
+            } catch { Write-Host "  нет: $_" }
+          }
+          if (-not $got) { throw "msedgedriver для WebView2 $ver не скачался" }
+          Expand-Archive edgedriver.zip -DestinationPath msedgedriver -Force
+          & .\msedgedriver\msedgedriver.exe --version
+
+      - name: Сквозная проверка (e2e) собранного приложения
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pip install selenium
+          python scripts/e2e/make_archive.py "$pwd\e2e-архив.sqlite"
+          $exe = "$pwd\src-tauri\target\release\genmetric.exe"
+          if (-not (Test-Path $exe)) { throw "нет $exe" }
+          $driver = Start-Process -PassThru -FilePath "$env:USERPROFILE\.cargo\bin\tauri-driver.exe" `
+            -ArgumentList "--native-driver", "$pwd\msedgedriver\msedgedriver.exe"
+          Start-Sleep -Seconds 3
+          try {
+            python scripts/e2e/windows.py $exe "$pwd\e2e-архив.sqlite"
+            if ($LASTEXITCODE -ne 0) { throw "сквозная проверка провалилась" }
+          } finally {
+            Stop-Process -Id $driver.Id -Force -ErrorAction SilentlyContinue
+            Get-Process genmetric -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+
+      - name: Снимок провала e2e
+        if: failure() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-провал
+          if-no-files-found: ignore
+          path: e2e-провал.png
+
       - uses: actions/upload-artifact@v7
         with:
           name: genmetric-${{ matrix.title }}

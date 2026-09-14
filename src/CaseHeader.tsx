@@ -70,8 +70,11 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
   async function importArchive(file: File) {
     setArchiveBusy(true);
     try {
+      // Байты — обычным аргументом, не сырым телом: сырое тело на Windows
+      // не дошло (13.09.2026, инцидент). Tauri сам превращает Uint8Array
+      // в массив чисел, Rust принимает его как Vec<u8>.
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const r = await invoke<ImportReport>("import_archive", bytes);
+      const r = await invoke<ImportReport>("import_archive", { bytes });
       setArchiveReport(r);
     } catch (e) {
       report("Архив не загрузился", e);

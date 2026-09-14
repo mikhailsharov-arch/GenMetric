@@ -287,6 +287,34 @@ def incident_20260913_ctrl_enter_pri_otkrytom_spiske():
           "function hotkeys" in form and "onKeyDown={hotkeys}" in form)
 
 
+# ============================================================================
+
+def incident_20260914_arhiv_ne_gruzitsya_na_windows():
+    """Роман, 14.09.2026: «Архив не загрузился — ожидался файл архива,
+    а пришло что-то другое». Команда import_archive ждала сырое тело запроса
+    (tauri::ipc::Request → InvokeBody::Raw). На Windows fetch на ipc.localhost
+    у WebView2 не прошёл, Tauri молча упал на postMessage, где всё уходит
+    JSON-ом, — и тело пришло не сырым. В песочнице это не воспроизвести:
+    стенд не Tauri, cargo build невозможен.
+
+    Защита: байты передаются обычным аргументом Vec<u8>; сырое тело в
+    командах не используется. Живой прогон — сквозной проверкой на
+    Windows-раннере (scripts/e2e/), она стоит в конвейере перед выкладкой.
+    """
+    rs = strip_comments(read("src-tauri/src/main.rs"))
+    check("команды не принимают сырое тело запроса",
+          "tauri::ipc::Request" not in rs and "InvokeBody::Raw" not in rs)
+    i = rs.find("fn import_archive(")
+    check("import_archive принимает bytes: Vec<u8>",
+          i >= 0 and "bytes: Vec<u8>" in rs[i:i + 200])
+    ts = strip_comments(read("src/CaseHeader.tsx"))
+    check("интерфейс передаёт байты аргументом { bytes }",
+          'invoke<ImportReport>("import_archive", { bytes })' in ts)
+    wf = read(".github/workflows/build.yml")
+    check("сквозная проверка на Windows стоит в конвейере",
+          "tauri-driver" in wf and "e2e" in wf)
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -307,6 +335,7 @@ def incident_20260913_ctrl_enter_pri_otkrytom_spiske():
     incident_20260828_pravilo_ispolneno_bukvalno,
     incident_20260913_schyot_v_muzhskuyu_kolonku,
     incident_20260913_ctrl_enter_pri_otkrytom_spiske,
+    incident_20260914_arhiv_ne_gruzitsya_na_windows,
 ]
 
 
