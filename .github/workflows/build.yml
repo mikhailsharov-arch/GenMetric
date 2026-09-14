@@ -201,14 +201,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           pip install selenium
-          python scripts/e2e/make_archive.py "$pwd\e2e-архив.sqlite"
+          python scripts/e2e/make_archive.py "$pwd\e2e-archive.sqlite"
           $exe = "$pwd\src-tauri\target\release\genmetric.exe"
           if (-not (Test-Path $exe)) { throw "нет $exe" }
           $driver = Start-Process -PassThru -FilePath "$env:USERPROFILE\.cargo\bin\tauri-driver.exe" `
             -ArgumentList "--native-driver", "$pwd\msedgedriver\msedgedriver.exe"
           Start-Sleep -Seconds 3
           try {
-            python scripts/e2e/windows.py $exe "$pwd\e2e-архив.sqlite"
+            python scripts/e2e/windows.py $exe "$pwd\e2e-archive.sqlite"
             if ($LASTEXITCODE -ne 0) { throw "сквозная проверка провалилась" }
           } finally {
             Stop-Process -Id $driver.Id -Force -ErrorAction SilentlyContinue
@@ -219,9 +219,9 @@ jobs:
         if: failure() && matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-провал
+          name: e2e-failure
           if-no-files-found: ignore
-          path: e2e-провал.png
+          path: e2e-failure.png
 
       - uses: actions/upload-artifact@v7
         with:

@@ -28,6 +28,11 @@ def row(**cells):
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     import build_seed
     import build_archive as ba
 
