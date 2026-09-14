@@ -204,8 +204,11 @@ jobs:
           python scripts/e2e/make_archive.py "$pwd\e2e-archive.sqlite"
           $exe = "$pwd\src-tauri\target\release\genmetric.exe"
           if (-not (Test-Path $exe)) { throw "нет $exe" }
-          $driver = Start-Process -PassThru -FilePath "$env:USERPROFILE\.cargo\bin\tauri-driver.exe" `
-            -ArgumentList "--native-driver", "$pwd\msedgedriver\msedgedriver.exe"
+          # Вывод драйверов — в файлы: без этого при провале на создании сессии
+          # в логе будет один трейсбек Selenium, и чинить не по чему.
+          $driver = Start-Process -PassThru -NoNewWindow -FilePath "$env:USERPROFILE\.cargo\bin\tauri-driver.exe" `
+            -ArgumentList "--native-driver", "$pwd\msedgedriver\msedgedriver.exe" `
+            -RedirectStandardOutput e2e-driver.out.txt -RedirectStandardError e2e-driver.err.txt
           Start-Sleep -Seconds 3
           try {
             python scripts/e2e/windows.py $exe "$pwd\e2e-archive.sqlite"
@@ -213,6 +216,8 @@ jobs:
           } finally {
             Stop-Process -Id $driver.Id -Force -ErrorAction SilentlyContinue
             Get-Process genmetric -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Host "--- tauri-driver stdout ---"; Get-Content e2e-driver.out.txt -ErrorAction SilentlyContinue
+            Write-Host "--- tauri-driver stderr ---"; Get-Content e2e-driver.err.txt -ErrorAction SilentlyContinue
           }
 
       - name: Снимок провала e2e
@@ -221,7 +226,9 @@ jobs:
         with:
           name: e2e-failure
           if-no-files-found: ignore
-          path: e2e-failure.png
+          path: |
+            e2e-failure.png
+            e2e-driver.*.txt
 
       - uses: actions/upload-artifact@v7
         with:
