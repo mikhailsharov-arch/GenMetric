@@ -124,11 +124,23 @@ WITH ranked AS (
            count
       FROM usage_stat
      WHERE kind = :kind AND value_norm LIKE :prefix ESCAPE '\'
+     {usage_gender}
     UNION ALL
     {dict}
 )
 SELECT value, min(tier) AS tier, max(count) AS cnt
   FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT :limit;
+
+-- @usage_gender_filter
+-- Подставляется на место {usage_gender} для имён и отчеств. Частоты (usage_stat)
+-- пола не знают, а архив из Excel принёс сотни имён обоих полов — и матери
+-- снова предлагались все имена (заказчик 15.09.2026), хотя словарная ветка
+-- уже фильтровалась. Сверяем со словарём; имя, которого в словаре нет,
+-- показываем обоим — лучше лишнее, чем спрятать настоящее.
+AND (:gender IS NULL
+     OR NOT EXISTS (SELECT 1 FROM name_form f WHERE f.form_norm = usage_stat.value_norm)
+     OR EXISTS (SELECT 1 FROM name_form f
+                 WHERE f.form_norm = usage_stat.value_norm AND f.gender = :gender))
 
 -- @suggest_first_name
 -- Имя по полу роли: матери — женские, отцу — мужские. Заказчик 13.09.2026:

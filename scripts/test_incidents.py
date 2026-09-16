@@ -315,6 +315,28 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
           "msedgedriver" in wf and "scripts/e2e/windows.py" in wf)
 
 
+# ============================================================================
+
+def incident_20260915_neskolko_spiskov_razom():
+    """Роман, 15.09.2026: «при выборе отца, матери или восприемника открывается
+    сразу несколько списков, которые приходится протыкивать мышкой». Три снимка.
+    Списки открывались на любое изменение значения поля, включая программную
+    подстановку (НП, звание, жена по мужу, причт из списка).
+
+    Защита: в обоих полях с подсказкой список открывается только после
+    onChange с клавиатуры (флаг typed). Живой сценарий — _стенд/lists.mjs.
+    """
+    for f in ("src/Suggest.tsx", "src/IofField.tsx"):
+        src = strip_comments(read(f))
+        check(f"{f}: есть флаг набора с клавиатуры", "typed = useRef(false)" in src)
+        check(f"{f}: onChange поля ставит флаг", "typed.current = true;" in src)
+        check(f"{f}: без флага эффект список не открывает", "if (!typed.current) return;" in src)
+    sql = read("db/statements.sql")
+    check("частоты имён фильтруются по полу (usage_gender_filter)",
+          "-- @usage_gender_filter" in sql and "{usage_gender}" in sql)
+    check("тест 4б на имена из частот есть", "4б" in read("db/test_suggest.py"))
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -336,6 +358,7 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
     incident_20260913_schyot_v_muzhskuyu_kolonku,
     incident_20260913_ctrl_enter_pri_otkrytom_spiske,
     incident_20260914_arhiv_ne_gruzitsya_na_windows,
+    incident_20260915_neskolko_spiskov_razom,
 ]
 
 

@@ -98,7 +98,10 @@ DICT_FOR_KIND = {
 
 def build(sql: dict, kind: str) -> str:
     dict_block = sql[DICT_FOR_KIND.get(kind, "suggest_lookup")]
-    return sql["suggest_ranked"].replace("{dict}", dict_block.strip().rstrip(";"))
+    gendered = kind in ("first_name", "patronymic")
+    return (sql["suggest_ranked"]
+            .replace("{dict}", dict_block.strip().rstrip(";"))
+            .replace("{usage_gender}", sql["usage_gender_filter"].strip().rstrip(";") if gendered else ""))
 
 
 def suggest(db, sql, kind, prefix, gender=None, limit=8):
@@ -184,6 +187,21 @@ def main() -> int:
         check("отцу предлагается «Ананий»", "Ананий" in m_names)
         check("отцу не предлагается «Анна»", "Анна" not in m_names)
         check("без пола — обе стороны", "Анна" in both and "Ананий" in both)
+
+        print("\n4б. Имена из частот тоже по полу — заказчик 15.09.2026 после архива: «предлагаются все имена»")
+        # Архив приносит usage_stat с именами обоих полов и без пола.
+        for name in ("Ананий", "Анна", "Анфимоглея"):
+            db.execute(
+                "INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)"
+                " VALUES ('first_name','global','',?,?,50,datetime('now'))", (name, name.lower()))
+        f_names = suggest(db, sql, "first_name", "Ан", gender="Ж", limit=30)
+        m_names = suggest(db, sql, "first_name", "Ан", gender="М", limit=30)
+        check("частый «Ананий» из архива матери не предлагается", "Ананий" not in f_names, ", ".join(f_names[:5]))
+        check("частая «Анна» из архива матери идёт первой", f_names and f_names[0] == "Анна", ", ".join(f_names[:3]))
+        check("частая «Анна» отцу не предлагается", "Анна" not in m_names)
+        check("имя, которого нет в словаре, показывается обоим",
+              "Анфимоглея" in f_names and "Анфимоглея" in m_names)
+        db.execute("DELETE FROM usage_stat WHERE kind='first_name' AND value IN ('Ананий','Анна','Анфимоглея')")
 
         print("\n5. Имена и плоские перечни не сломались")
         check("имя «Никит» находится",

@@ -90,7 +90,9 @@ export default function PersonBlock({
   function plainKeys(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
-      focusNextField(e.currentTarget);
+      // Shift+Enter — назад: заказчик 15.09.2026 возвращался в пропущенное
+      // поле мышью. Стрелка вверх делала это и раньше, но её не нашли.
+      focusNextField(e.currentTarget, e.shiftKey && e.key === "Enter" ? -1 : 1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       focusNextField(e.currentTarget, -1);

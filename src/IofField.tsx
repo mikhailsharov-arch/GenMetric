@@ -117,6 +117,10 @@ export default function IofField({
     setWords([]);
   }
 
+  // Только набор с клавиатуры открывает список: программная подстановка
+  // (жена по мужу, причт из списка) — нет. Заказчик 15.09.2026, см. Suggest.tsx.
+  const typed = useRef(false);
+
   // Подсказки: персоны по всей строке и слова по текущему слову.
   useEffect(() => {
     if (justPicked.current) {
@@ -129,6 +133,11 @@ export default function IofField({
       closeSuggestions();
       return;
     }
+    // Не с клавиатуры — список не трогаем: ни открывать, ни закрывать.
+    // Закрывать нельзя: у восприемника пол приходит после разбора имени
+    // и перезапускает эффект — открытый по набору список пропадал бы.
+    if (!typed.current) return;
+    typed.current = false;
     const mine = ++seq.current;
 
     Promise.all([
@@ -217,7 +226,7 @@ export default function IofField({
         // Ctrl+Enter при открытом списке — только подставить, см. Suggest.tsx.
         if (e.ctrlKey || e.metaKey) e.stopPropagation();
         pickActive();
-      } else focusNextField(e.currentTarget);
+      } else focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); // Shift+Enter — назад
     } else if (e.key === "Escape") {
       closeSuggestions();
     }
@@ -242,7 +251,10 @@ export default function IofField({
           placeholder={placeholder ?? "имя, отчество, фамилия"}
           autoComplete="off"
           spellCheck={false}
-          onChange={(e) => onChange(e.target.value, parsed)}
+          onChange={(e) => {
+            typed.current = true;
+            onChange(e.target.value, parsed);
+          }}
           onKeyDown={onKeyDown}
           onBlur={() => closeSuggestions()}
         />

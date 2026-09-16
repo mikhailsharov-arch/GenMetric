@@ -329,8 +329,12 @@ fn suggest(
             "place" => "suggest_place",
             _ => "suggest_lookup",
         })?;
+        let gendered = kind == "patronymic" || kind == "first_name";
+        // Ветка частот тоже фильтруется по полу — см. usage_gender_filter.
+        let usage_gender = if gendered { statement("usage_gender_filter")? } else { String::new() };
         let sql = statement("suggest_ranked")?
-            .replace("{dict}", dict.trim().trim_end_matches(';'));
+            .replace("{dict}", dict.trim().trim_end_matches(';'))
+            .replace("{usage_gender}", usage_gender.trim().trim_end_matches(';'));
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         // :gender есть только в запросе отчеств — лишний именованный параметр
@@ -339,7 +343,7 @@ fn suggest(
             vec![(":kind", &kind), (":prefix", &pattern), (":limit", &limit)];
         // Пол нужен отчествам и именам. Заказчик 13.09.2026: матери
         // подставлялись мужские имена — фильтровались только отчества.
-        if kind == "patronymic" || kind == "first_name" {
+        if gendered {
             params.push((":gender", &gender));
         }
         let rows = stmt

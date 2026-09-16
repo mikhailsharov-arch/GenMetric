@@ -40,6 +40,12 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
   // После подстановки поле меняется программно, и запрос подсказок не должен
   // открывать список заново — иначе он «залипает» открытым (баг 1 из отчёта).
   const justPicked = useRef(false);
+  // Список открывается только на набор с клавиатуры. Значение меняется и
+  // программно — выбор персоны подставляет НП и звание, выбор отца — жену, —
+  // и без этого у каждого подставленного поля открывался свой список.
+  // Заказчик 15.09.2026: «открывается сразу несколько списков, которые
+  // приходится протыкивать мышкой».
+  const typed = useRef(false);
 
   /**
    * Закрывает список и отменяет уже отправленные запросы.
@@ -66,6 +72,11 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
       closeList();
       return;
     }
+    // Не с клавиатуры — список не трогаем: ни открывать, ни закрывать.
+    // Закрывать нельзя: у восприемника пол приходит после разбора имени
+    // и перезапускает эффект — открытый по набору список пропадал бы.
+    if (!typed.current) return;
+    typed.current = false;
     const mine = ++seq.current;
     invoke<Item[]>("suggest", { kind, prefix: query, limit: 8 })
       .then((rows) => {
@@ -125,7 +136,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         // Проверяющий 13.09.2026 воспроизвёл это на стенде.
         if (e.ctrlKey || e.metaKey) e.stopPropagation();
         pick(items[active]);
-      } else focusNextField(e.currentTarget);
+      } else focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); // Shift+Enter — назад
       return;
     }
     if (e.key === "Escape") {
@@ -148,7 +159,10 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          typed.current = true;
+          onChange(e.target.value);
+        }}
         onKeyDown={onKeyDown}
         onBlur={() => closeList()}
       />
