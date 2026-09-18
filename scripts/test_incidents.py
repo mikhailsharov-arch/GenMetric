@@ -339,6 +339,26 @@ def incident_20260915_neskolko_spiskov_razom():
     check("тест 4б на имена из частот есть", "4б" in read("db/test_suggest.py"))
 
 
+# ============================================================================
+
+def incident_20260918_razbor_stiraet_poslednyuyu_bukvu():
+    """Сквозная проверка на Windows, сборка #27, 18.09.2026: робот набрал
+    «Мария», в поле осталось «Мари». Асинхронный разбор имени (parse_iof)
+    отдавал родителю значение, с которым был вызван, — ответ на «Мари»
+    приходил после последней буквы и перезаписывал поле. При быстром наборе
+    то же случилось бы у Романа.
+
+    Защита: у разбора счётчик запросов, как у подсказок; устаревший ответ
+    отбрасывается. Живой сценарий — e2e шаг 5 на Windows.
+    """
+    src = strip_comments(read("src/IofField.tsx"))
+    i = src.find('invoke<Parsed>("parse_iof"')
+    block = src[max(0, i - 200):i + 400] if i >= 0 else ""
+    check("разбор имени нумерует запросы", "parseSeq.current" in block)
+    check("устаревший ответ разбора отбрасывается",
+          "if (mine !== parseSeq.current) return;" in block)
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -361,6 +381,7 @@ def incident_20260915_neskolko_spiskov_razom():
     incident_20260913_ctrl_enter_pri_otkrytom_spiske,
     incident_20260914_arhiv_ne_gruzitsya_na_windows,
     incident_20260915_neskolko_spiskov_razom,
+    incident_20260918_razbor_stiraet_poslednyuyu_bukvu,
 ]
 
 

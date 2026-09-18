@@ -84,9 +84,18 @@ export default function IofField({
   const KIND_TITLE = ["имя", "отчество", "фамилия"][Math.min(wordIndex, 2)];
 
   // Разбор на имя, отчество и фамилию — на каждое изменение.
+  //
+  // Ответ на прежнее значение обязан пропадать. Он несёт с собой то самое
+  // прежнее значение и отдаёт его родителю через onChange — при быстром
+  // наборе «Мария» ответ на «Мари» приходил после последней буквы и
+  // стирал её. Поймано сквозной проверкой на Windows 18.09.2026 (сборка #27):
+  // на снимке в поле осталось «Мари». Тот же приём, что у подсказок: счётчик.
+  const parseSeq = useRef(0);
   useEffect(() => {
+    const mine = ++parseSeq.current;
     invoke<Parsed>("parse_iof", { text: value })
       .then((result) => {
+        if (mine !== parseSeq.current) return; // поле уже изменилось
         parsedRef.current = result;
         setParsed(result);
         onChangeRef.current?.(value, result);

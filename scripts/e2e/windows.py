@@ -130,8 +130,16 @@ def run(driver, wait, archive):
     # Пол приходит асинхронно (parse_iof). Нажать «Сохранить» раньше —
     # форма попросит выбрать пол и не сохранит. Ждём метку «Ж» под полем.
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
-    wait.until(EC.text_to_be_present_in_element(
-        (By.XPATH, child + "/following-sibling::*[contains(@class,'parsedline')] | " + child + "//*[contains(@class,'parsedline')]"), "Ж"))
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.XPATH, child + "//*[contains(@class,'parsedline')]"), "Ж"))
+    except TimeoutException:
+        # Не гадать по «элемент не найден» (сборка #27): показать, что в поле.
+        value = field(driver, "Ребёнок").get_attribute("value")
+        under = driver.find_element(By.XPATH, child).text.replace("\n", " | ")
+        errorbar = " | ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar"))
+        check("под полем «Ребёнок» появилась метка пола «Ж»", False,
+              f"в поле «{value}», под ним «{under}», полоса ошибок: {errorbar or 'нет'}")
+        return
     # В кнопке ещё <span class="kbd">Ctrl+Enter</span>, поэтому starts-with.
     driver.find_element(By.XPATH, "//button[starts-with(normalize-space(),'Сохранить и следующая')]").click()
     try:
