@@ -134,12 +134,14 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
    * Только в пустую форму: набранное до перезапуска не трогаем.
    */
   function resume(last: Brief) {
-    if (page !== null || count !== null || birthMonth !== null || riteMonth !== null) return;
+    // Через функциональный setState: resume вызывается из ответа на запрос
+    // первого рендера, и замкнутые page/count там всегда пусты — проверка
+    // «форма пуста» через них была бы мёртвой (проверяющий 18.09.2026).
     const pageNumber = last.page === null ? NaN : Number(last.page);
-    if (!Number.isNaN(pageNumber)) setPage(pageNumber);
-    setCount(last.no_male ?? last.no_female ?? null);
-    setBirthMonth(last.event_month);
-    setRiteMonth(last.rite_month);
+    if (!Number.isNaN(pageNumber)) setPage((v) => v ?? pageNumber);
+    setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
+    setBirthMonth((v) => v ?? last.event_month);
+    setRiteMonth((v) => v ?? last.rite_month);
   }
 
   /**

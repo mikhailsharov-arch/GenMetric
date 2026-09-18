@@ -27,8 +27,8 @@
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 46, ошибок 0»
     python3 db/test_upgrade.py                                  # → «Итог: успешно 30, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 45, ошибок 0»
-    python3 db/test_suggest.py                                  # → «Итого: 46 ок, 0 ошибок»
+    python3 db/test_entry.py                                    # → «Итог: успешно 46, ошибок 0»
+    python3 db/test_suggest.py                                  # → «Итого: 50 ок, 0 ошибок»
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 7, ошибок 0»
     python3 scripts/test_incidents.py                           # регресс-тесты по инцидентам
