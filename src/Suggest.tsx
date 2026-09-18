@@ -62,6 +62,11 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
   }
 
   useEffect(() => {
+    // Флаг снимается сразу, на любом пути: иначе после стирания поля до
+    // пустого он оставался взведённым и следующая программная подстановка
+    // открывала список (ревьюер 18.09.2026).
+    const byKeyboard = typed.current;
+    typed.current = false;
     const query = value.trim();
     if (query.length < 1) {
       closeList();
@@ -75,8 +80,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
     // Не с клавиатуры — список не трогаем: ни открывать, ни закрывать.
     // Закрывать нельзя: у восприемника пол приходит после разбора имени
     // и перезапускает эффект — открытый по набору список пропадал бы.
-    if (!typed.current) return;
-    typed.current = false;
+    if (!byKeyboard) return;
     const mine = ++seq.current;
     invoke<Item[]>("suggest", { kind, prefix: query, limit: 8 })
       .then((rows) => {

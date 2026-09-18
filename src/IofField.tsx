@@ -132,6 +132,9 @@ export default function IofField({
 
   // Подсказки: персоны по всей строке и слова по текущему слову.
   useEffect(() => {
+    // Флаг снимается сразу, на любом пути — см. Suggest.tsx (ревьюер 18.09.2026).
+    const byKeyboard = typed.current;
+    typed.current = false;
     if (justPicked.current) {
       justPicked.current = false;
       closeSuggestions();
@@ -145,8 +148,7 @@ export default function IofField({
     // Не с клавиатуры — список не трогаем: ни открывать, ни закрывать.
     // Закрывать нельзя: у восприемника пол приходит после разбора имени
     // и перезапускает эффект — открытый по набору список пропадал бы.
-    if (!typed.current) return;
-    typed.current = false;
+    if (!byKeyboard) return;
     const mine = ++seq.current;
 
     Promise.all([

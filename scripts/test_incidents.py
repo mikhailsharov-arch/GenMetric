@@ -332,7 +332,7 @@ def incident_20260915_neskolko_spiskov_razom():
         src = strip_comments(read(f))
         check(f"{f}: есть флаг набора с клавиатуры", "typed = useRef(false)" in src)
         check(f"{f}: onChange поля ставит флаг", "typed.current = true;" in src)
-        check(f"{f}: без флага эффект список не открывает", "if (!typed.current) return;" in src)
+        check(f"{f}: без флага эффект список не открывает", "if (!byKeyboard) return;" in src)
     sql = read("db/statements.sql")
     check("частоты имён фильтруются по полу (usage_gender_filter)",
           "-- @usage_gender_filter" in sql and "{usage_gender}" in sql)
