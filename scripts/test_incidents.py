@@ -313,6 +313,8 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
     wf = read(".github/workflows/build.yml")
     check("сквозная проверка на Windows стоит в конвейере",
           "msedgedriver" in wf and "scripts/e2e/windows.py" in wf)
+    check("сквозная проверка перезапускает приложение (форма продолжает с места)",
+          "def resumed(" in read("scripts/e2e/windows.py"))
 
 
 # ============================================================================

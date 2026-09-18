@@ -154,27 +154,13 @@ def print_app_log():
         print(log.read_text(encoding="utf-8", errors="replace")[-4000:])
     else:
         print(f"журнала приложения нет: {log}")
-
-
-def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
-
-    exe, archive = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
-    msedgedriver = Path(sys.argv[3]).resolve()
-    for what, path in (("приложения", exe), ("архива", archive), ("msedgedriver", msedgedriver)):
-        if not path.exists():
-            print(f"нет {what}: {path}")
-            return 1
-
-    # Приложение запускаем сами. Порт отладки WebView2 оно открывает само,
-    # увидев GENMETRIC_E2E_DEBUG_PORT (main.rs). Переменная
+def launch(exe, msedgedriver, port=9222):
+    """Запускает приложение с портом отладки и подключает к нему msedgedriver.
+    Возвращает (процесс, driver, wait) или (процесс, None, None) при отказе."""
+    # Порт отладки WebView2 приложение открывает само, увидев
+    # GENMETRIC_E2E_DEBUG_PORT (main.rs). Переменная
     # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, которую обещает документация
     # Microsoft, на раннере 14.09.2026 до WebView2 не дошла — порт не открылся.
-    port = 9222
     env = dict(os.environ)
     env["GENMETRIC_E2E_DEBUG_PORT"] = str(port)
     env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--remote-debugging-port={port}"
@@ -184,7 +170,7 @@ def main() -> int:
     if app.poll() is not None:
         print(f"приложение завершилось само с кодом {app.returncode} — WebView2 не создан?")
         print_app_log()
-        return 1
+        return app, None, None
     print("приложение живо через 5 с")
     # Диагностика до драйвера: слушает ли кто-то порт, и есть ли процесс WebView2.
     import socket
@@ -206,24 +192,86 @@ def main() -> int:
         print(f"сессия WebDriver не создалась: {type(e).__name__}: {e}")
         print_app_log()
         app.kill()
-        return 1
-    wait = WebDriverWait(driver, 30)
+        return app, None, None
+    return app, driver, WebDriverWait(driver, 30)
 
+
+def stop(app, driver):
+    """Закрыть сессию и приложение, дождаться выхода — иначе база занята."""
+    if driver:
+        try:
+            driver.quit()
+        except Exception:  # noqa: BLE001 — на пути выхода всё равно убиваем
+            pass
+    app.kill()
     try:
-        run(driver, wait, archive)
-    except Exception as e:  # noqa: BLE001 — любое исключение = провал со снимком
-        check("сценарий дошёл до конца", False, f"{type(e).__name__}: {e}")
-    finally:
+        app.wait(timeout=10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def resumed(driver, wait):
+    """После перезапуска форма продолжает с места остановки (заказчик 15.09.2026)."""
+    print("\n6. Перезапуск: форма помнит, где остановились")
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".app")))
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
+    time.sleep(1)
+    count = field(driver, "Счёт").get_attribute("value")
+    check("счёт восстановлен: 7", count == "7", f"«{count}»")
+    check("список набранного на месте", "Набрано: 1" in driver.find_element(By.TAG_NAME, "body").text)
+
+
+def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+    exe, archive = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+    msedgedriver = Path(sys.argv[3]).resolve()
+    for what, path in (("приложения", exe), ("архива", archive), ("msedgedriver", msedgedriver)):
+        if not path.exists():
+            print(f"нет {what}: {path}")
+            return 1
+
+    app, driver, wait = launch(exe, msedgedriver)
+    if driver is None:
+        return 1
+
+    def snapshot():
         if fail_count:
             try:
                 driver.get_screenshot_as_file("e2e-failure.png")
                 print("снимок: e2e-failure.png")
             except Exception as e:  # noqa: BLE001 — снимок не должен прятать провал
                 print(f"снимок не снялся: {e}")
-        driver.quit()
-        app.kill()
-        if fail_count:
-            print_app_log()
+
+    try:
+        run(driver, wait, archive)
+    except Exception as e:  # noqa: BLE001 — любое исключение = провал со снимком
+        check("сценарий дошёл до конца", False, f"{type(e).__name__}: {e}")
+    finally:
+        snapshot()
+        stop(app, driver)
+
+    if not fail_count:
+        # Второй запуск — та же база в папке данных, форма должна продолжить.
+        app, driver, wait = launch(exe, msedgedriver)
+        if driver is None:
+            check("приложение запустилось второй раз", False)
+        else:
+            try:
+                resumed(driver, wait)
+            except Exception as e:  # noqa: BLE001
+                check("сценарий перезапуска дошёл до конца", False, f"{type(e).__name__}: {e}")
+            finally:
+                snapshot()
+                stop(app, driver)
+
+    if fail_count:
+        print_app_log()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

@@ -50,6 +50,7 @@ type Brief = {
   no_female: number | null;
   event_day: number | null;
   event_month: number | null;
+  rite_month: number | null;
   child: string | null;
 };
 
@@ -110,10 +111,35 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     refresh();
   }, [mkCase.id]);
 
+  // Восстановление места работы — один раз при открытии формы.
+  const restored = useRef(false);
+
   function refresh() {
     invoke<Brief[]>("entry_list", { caseId: mkCase.id, section: 1 })
-      .then(setSaved)
+      .then((rows) => {
+        setSaved(rows);
+        if (!restored.current) {
+          restored.current = true;
+          if (rows[0]) resume(rows[0]);
+        }
+      })
       .catch((e) => report("Не удалось прочитать список набранных записей", e));
+  }
+
+  /**
+   * Продолжить с того места, где остановились: страница, счёт и месяцы —
+   * из последней сохранённой записи дела, как после «Сохранить и следующая».
+   * Заказчик 15.09.2026: «при новом открытии приложения все поля не заполнены,
+   * но программа должна запоминать, над чем я работал — стр., счёт, месяц».
+   * Только в пустую форму: набранное до перезапуска не трогаем.
+   */
+  function resume(last: Brief) {
+    if (page !== null || count !== null || birthMonth !== null || riteMonth !== null) return;
+    const pageNumber = last.page === null ? NaN : Number(last.page);
+    if (!Number.isNaN(pageNumber)) setPage(pageNumber);
+    setCount(last.no_male ?? last.no_female ?? null);
+    setBirthMonth(last.event_month);
+    setRiteMonth(last.rite_month);
   }
 
   /**

@@ -88,7 +88,7 @@ ON CONFLICT(kind, scope, scope_key, value) DO UPDATE SET
 -- Список набранных записей дела: номер, дата, имя ребёнка — чтобы вернуться
 -- и поправить.
 SELECT e.id, e.page, e.no_male, e.no_female,
-       e.event_day, e.event_month, e.event_year,
+       e.event_day, e.event_month, e.event_year, e.rite_month,
        (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
                     || ' ' || coalesce(m.surname, ''))
           FROM person_mention m

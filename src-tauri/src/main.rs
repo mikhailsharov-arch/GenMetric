@@ -672,6 +672,7 @@ struct EntryBrief {
     event_day: Option<i64>,
     event_month: Option<i64>,
     event_year: Option<i64>,
+    rite_month: Option<i64>,
     child: Option<String>,
 }
 
@@ -1074,7 +1075,7 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
                 Ok(EntryBrief {
                     id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
-                    child: r.get(7)?,
+                    rite_month: r.get(7)?, child: r.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?;
