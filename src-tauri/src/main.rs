@@ -326,7 +326,10 @@ fn suggest(
     gender: Option<String>,
 ) -> Result<Vec<Suggestion>, String> {
     let pattern = like_prefix(&prefix);
-    let limit = limit.unwrap_or(8).clamp(1, 50);
+    // До 200: «весь перечень» по кнопке ▾ — губерний 115, архивов 59.
+    // Проверяющий 21.09.2026: с пределом 50 из перечня пропадали «ЦГА Москвы»
+    // и «Московская губерния», а тест этого не видел — он не ходит через Rust.
+    let limit = limit.unwrap_or(8).clamp(1, 200);
     with_conn(&app, &format!("Подсказки «{prefix}»"), |conn| {
         // Имена и отчества лежат в таблице форм, населённые пункты — в place,
         // остальные перечни — в lookup. Сами запросы в db/statements.sql:

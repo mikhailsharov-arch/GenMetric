@@ -381,9 +381,9 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   return (
     <div onKeyDown={hotkeys}>
       <section>
-        <div className="row">
+        <div className="row tight">
           <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
-          <PageField label="Стр." value={page} onChange={setPage} width="9em" />
+          <PageField label="Стр." value={page} onChange={setPage} />
           <NumberField
             label="Счёт"
             value={count}

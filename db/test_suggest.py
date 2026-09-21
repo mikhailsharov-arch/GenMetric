@@ -214,6 +214,15 @@ def main() -> int:
         archives = suggest(db, sql, "archive", "", limit=200)
         check("использованный архив — первым", archives[0] == "ГА Костромской области", archives[0])
         check("свой архив, добавленный при сохранении дела, в перечне есть", "Свой домашний архив" in archives)
+        # Предел выдачи в приложении задаётся в main.rs и тестом не исполняется —
+        # проверяющий 21.09.2026 нашёл clamp(1, 50), из-за которого «весь перечень»
+        # терял часть губерний. Держим предел не ниже самого длинного перечня.
+        import re as _re
+        rust = (DB_DIR.parent / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        m = _re.search(r"clamp\(1,\s*(\d+)\)", rust)
+        longest = db.execute("SELECT max(n) FROM (SELECT count(*) AS n FROM lookup GROUP BY kind)").fetchone()[0]
+        check("предел выдачи в main.rs не меньше самого длинного перечня",
+              m is not None and int(m.group(1)) >= longest, f"clamp={m.group(1) if m else '?'}, перечень={longest}")
         db.execute("DELETE FROM usage_stat WHERE kind='archive'")
         db.execute("DELETE FROM lookup WHERE kind='archive' AND origin='user'")
 

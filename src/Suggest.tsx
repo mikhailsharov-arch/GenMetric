@@ -211,6 +211,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           {items.map((it, i) => (
             <li
               key={it.value}
+              ref={i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
               className={i === active ? "active" : ""}
               onMouseDown={(e) => {
                 e.preventDefault();

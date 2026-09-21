@@ -38,7 +38,7 @@ export default function PageField({ label, value, onChange, width }: Props) {
   }
 
   return (
-    <div className="field num" style={width ? { width } : undefined}>
+    <div className="field num wide" style={width ? { width } : undefined}>
       <label>{label}</label>
       <div className="fieldbody numrow">
         <button type="button" onClick={() => step(-1)} tabIndex={-1} aria-label="Меньше">
