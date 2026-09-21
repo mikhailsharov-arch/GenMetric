@@ -12,6 +12,10 @@ type Props = {
   onChange: (v: string) => void;
   placeholder?: string;
   hint?: string;
+  /** Кнопка «▾» и Alt+↓: показать весь перечень, не набирая ни буквы.
+   *  Заказчик 21.09.2026 про архив: «в индексаторе Excel же есть список
+   *  архивов, надо сделать, чтобы можно было выбрать из выпадающего списка». */
+  browse?: boolean;
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -30,7 +34,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint },
+  { label, kind, value, onChange, placeholder, hint, browse },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -59,6 +63,20 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
     seq.current += 1;
     setItems([]);
     setOpen(false);
+  }
+
+  /** Весь перечень целиком: своё и частое — сверху, остальное по алфавиту. */
+  function browseAll() {
+    const mine = ++seq.current;
+    invoke<Item[]>("suggest", { kind, prefix: "", limit: 200 })
+      .then((rows) => {
+        if (mine !== seq.current) return;
+        setItems(rows);
+        setActive(Math.max(0, rows.findIndex((r) => r.value === value)));
+        setOpen(rows.length > 0);
+        inputRef.current?.focus();
+      })
+      .catch((e) => report(`Не удалось получить перечень для поля «${label}»`, e));
   }
 
   useEffect(() => {
@@ -122,6 +140,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
     if (e.key === "ArrowDown") {
       e.preventDefault();
       if (listOpen) setActive((i) => (i + 1) % items.length);
+      else if (browse && e.altKey) browseAll();
       else focusNextField(e.currentTarget);
       return;
     }
@@ -170,6 +189,22 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         onKeyDown={onKeyDown}
         onBlur={() => closeList()}
       />
+      {browse && (
+        <button
+          type="button"
+          className="browse"
+          tabIndex={-1}
+          title="Показать весь перечень (Alt+↓)"
+          aria-label="Показать весь перечень"
+          onMouseDown={(e) => {
+            e.preventDefault(); // не отдавать фокус кнопке — иначе onBlur закроет список
+            if (open) closeList();
+            else browseAll();
+          }}
+        >
+          ▾
+        </button>
+      )}
       {hint && <div className="fieldhint">{hint}</div>}
       {open && (
         <ul className="suggest">

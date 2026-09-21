@@ -715,6 +715,17 @@ fn case_save(app: State<App>, case: Case) -> Result<i64, String> {
             ":parish_key": case.parish_key(), ":indexer": case.indexer,
         })
         .map_err(|e| e.to_string())?;
+        // Архив, церковь, уезд, губерния — в справочники, как звания при
+        // сохранении записи. Заказчик 21.09.2026: «должна сохраниться
+        // возможность добавить свой [архив], если его нет в списке, и чтобы
+        // он добавлялся в базу». Перечни помечены autoextend в lookup_kind.
+        let parish = case.parish_key();
+        for (kind, value) in [("archive", &case.archive), ("church", &case.church),
+                              ("uyezd", &case.uyezd), ("guberniya", &case.guberniya)] {
+            if let Some(v) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                remember(conn, kind, v, id, &parish)?;
+            }
+        }
         Ok(id)
     })
 }

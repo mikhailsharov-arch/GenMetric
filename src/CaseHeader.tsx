@@ -156,7 +156,7 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
         между годами.
       </p>
 
-      <Suggest label="Архив" kind="archive" value={c.archive ?? ""} onChange={set("archive")} />
+      <Suggest label="Архив" kind="archive" browse value={c.archive ?? ""} onChange={set("archive")} />
       <div className="row">
         {text("Фонд", "fond")}
         {text("Опись", "opis")}
@@ -164,8 +164,8 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
       </div>
       <Suggest label="Церковь" kind="church" value={c.church ?? ""} onChange={set("church")} />
       <Suggest label="Село" kind="place" value={c.village ?? ""} onChange={set("village")} />
-      <Suggest label="Уезд" kind="uyezd" value={c.uyezd ?? ""} onChange={set("uyezd")} />
-      <Suggest label="Губерния" kind="guberniya" value={c.guberniya ?? ""} onChange={set("guberniya")} />
+      <Suggest label="Уезд" kind="uyezd" browse value={c.uyezd ?? ""} onChange={set("uyezd")} />
+      <Suggest label="Губерния" kind="guberniya" browse value={c.guberniya ?? ""} onChange={set("guberniya")} />
       <div className="row">
         <NumberField
           label="Год начала"

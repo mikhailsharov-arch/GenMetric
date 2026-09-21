@@ -402,3 +402,11 @@ button.linkish {
   padding-top: 0.5em;
   border-top: 1px solid var(--line);
 }
+
+/* Кнопка «весь перечень» у полей шапки дела: архив, уезд, губерния. */
+.fieldbody .browse {
+  position: absolute; right: 0.3em; top: 0.15em;
+  padding: 0.05em 0.4em; font-size: 0.9em; line-height: 1.4;
+  color: var(--muted); background: transparent; border: 0; cursor: pointer;
+}
+.fieldbody .browse:hover { color: var(--ink); }

@@ -203,6 +203,20 @@ def main() -> int:
               "Анфимоглея" in f_names and "Анфимоглея" in m_names)
         db.execute("DELETE FROM usage_stat WHERE kind='first_name' AND value IN ('Ананий','Анна','Анфимоглея')")
 
+        print("\n4в. Весь перечень по пустому префиксу — заказчик 21.09.2026: архив из выпадающего списка")
+        archives = suggest(db, sql, "archive", "", limit=200)
+        check("перечень архивов отдаётся целиком", len(archives) == 59, f"{len(archives)}")
+        check("«ГА Костромской области» в перечне", "ГА Костромской области" in archives)
+        db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)"
+                   " VALUES ('archive','global','','ГА Костромской области','га костромской области',3,datetime('now'))")
+        db.execute("INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin)"
+                   " VALUES ('archive','Свой домашний архив','свой домашний архив',9999,'user')")
+        archives = suggest(db, sql, "archive", "", limit=200)
+        check("использованный архив — первым", archives[0] == "ГА Костромской области", archives[0])
+        check("свой архив, добавленный при сохранении дела, в перечне есть", "Свой домашний архив" in archives)
+        db.execute("DELETE FROM usage_stat WHERE kind='archive'")
+        db.execute("DELETE FROM lookup WHERE kind='archive' AND origin='user'")
+
         print("\n5. Имена и плоские перечни не сломались")
         check("имя «Никит» находится",
               any(v.startswith("Никит") for v in suggest(db, sql, "first_name", "Никит")))
