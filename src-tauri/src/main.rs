@@ -80,6 +80,9 @@ struct DbInfo {
     /// Сколько записей починено при обновлении (номер девочек в женскую
     /// колонку). Человек должен видеть, что с его данными что-то сделали.
     repaired_entries: i64,
+    /// Записи до 13.09 с ребёнком без пола и номером в мужской колонке —
+    /// их программа не чинит, человек правит сам.
+    unknown_sex_entries: i64,
 }
 
 #[derive(Serialize)]
@@ -308,6 +311,12 @@ fn db_info(handle: tauri::AppHandle, app: State<App>) -> Result<DbInfo, String> 
                 .optional()
                 .map_err(|e| e.to_string())?
                 .unwrap_or(0),
+            unknown_sex_entries: conn
+                .query_row("SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'repair_unknown_sex'",
+                           [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .unwrap_or(0),
         })
     })
 }
@@ -528,13 +537,19 @@ fn open_database(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn s
         return Ok(conn); // база свежая, делать нечего
     }
 
-    backup(db_path)?;
+    backup(&conn, db_path)?;
     upgrade(&conn, bundled, version)?;
     Ok(conn)
 }
 
 /// Копия базы перед обновлением. Дёшево и один раз спасёт.
-fn backup(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Сначала — контрольная точка WAL: после сбоя прошлого сеанса часть данных
+/// лежит в файле -wal, и копия одного основного файла отстала бы от базы.
+/// С 21.09.2026 обновление правит набранные записи, так что копия обязана
+/// быть полной (ревьюер).
+fn backup(conn: &Connection, db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     let seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let name = format!("genmetric-до-обновления-{seconds}.sqlite");
     let target = db_path.with_file_name(name);

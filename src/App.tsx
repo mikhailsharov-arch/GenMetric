@@ -25,6 +25,7 @@ type DbInfo = {
   schema_version: number;
   seed_stamp: string;
   repaired_entries: number;
+  unknown_sex_entries: number;
 };
 
 /**
@@ -184,6 +185,13 @@ export default function App() {
               При обновлении исправлено записей: {info.repaired_entries} — номер девочек,
               набранных до 13 сентября 2026, перенесён из мужской колонки в женскую.
               Копия базы до исправления лежит рядом с базой (файл «до-обновления»).
+            </p>
+          )}
+          {info.unknown_sex_entries > 0 && (
+            <p className="hint">
+              Записей, где пол ребёнка не определён, а номер стоит в мужской колонке:{" "}
+              {info.unknown_sex_entries}. Их программа не трогала — угадывать нельзя.
+              В списке «Набрано» у них «№ м.»; если это девочки, скажите — поправим.
             </p>
           )}
 

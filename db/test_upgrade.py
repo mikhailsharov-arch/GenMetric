@@ -243,6 +243,8 @@ def main() -> int:
               one("SELECT no_male = 6 AND no_female IS NULL FROM entry WHERE id=5") == 1)
         check("число исправленных записано для экрана «О программе»",
               one("SELECT value FROM setting WHERE key='repair_count_column'") == "1")
+        check("ребёнок без пола с мужским номером посчитан отдельно: 1",
+              one("SELECT value FROM setting WHERE key='repair_unknown_sex'") == "1")
 
         print("\n4. Целостность и повторный запуск")
         check("integrity_check", one("PRAGMA integrity_check") == "ok")

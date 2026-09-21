@@ -252,6 +252,21 @@ def resumed(driver, wait):
     body = driver.find_element(By.TAG_NAME, "body").text
     check("список набранного на месте", "Набрано: 1" in body)
     check("причт восстановлен (21.09.2026)", "Александр Рождественский" in body)
+    # Записать ещё одну — с восстановленным причтом (ревьюер 21.09.2026: причт
+    # приходит без разбора, и сохранение должно пройти без ошибок).
+    fill(driver, "Счёт", "8")
+    fill(driver, "Ребёнок", "Иван")
+    child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
+    wait.until(EC.text_to_be_present_in_element((By.XPATH, child + "//*[contains(@class,'parsedline')]"), "М"))
+    driver.find_element(By.XPATH, "//button[starts-with(normalize-space(),'Сохранить и следующая')]").click()
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Набрано: 2"))
+    except TimeoutException:
+        pass
+    body = driver.find_element(By.TAG_NAME, "body").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("вторая запись после перезапуска сохранена", "Набрано: 2" in body, " | ".join(errorbar))
+    check("у мальчика «№ м. 8»", "№ м. 8" in body)
 
 
 def main() -> int:

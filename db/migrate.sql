@@ -106,6 +106,16 @@ UPDATE entry
    AND EXISTS (SELECT 1 FROM person_mention m
                 WHERE m.entry_id = entry.id AND m.role_code = 'child' AND m.gender = 'Ж');
 
+-- Ребёнок без пола (имя вне словаря до 13.09) с номером в мужской колонке —
+-- не чиним, но считаем: «исправлено N» без этого читалось бы как «всё
+-- исправлено» (ревьюер 21.09.2026). Число пересчитывается при каждом
+-- обновлении, показывается на «О программе», Роман правит такие сам.
+INSERT OR REPLACE INTO setting (key, value)
+SELECT 'repair_unknown_sex', CAST(count(*) AS TEXT) FROM entry e
+ WHERE e.section = 1 AND e.no_male IS NOT NULL AND e.no_female IS NULL
+   AND EXISTS (SELECT 1 FROM person_mention m
+                WHERE m.entry_id = e.id AND m.role_code = 'child' AND m.gender IS NULL);
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting
