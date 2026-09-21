@@ -81,6 +81,9 @@ jobs:
       - name: Проверить раскладку счёта по полу
         run: node --experimental-strip-types scripts/test_count.mjs
 
+      - name: Проверить шаг по номеру страницы
+        run: node --experimental-strip-types scripts/test_page.mjs
+
       - name: Собрать интерфейс
         run: npm run build
 

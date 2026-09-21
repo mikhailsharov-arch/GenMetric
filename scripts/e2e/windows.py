@@ -126,8 +126,25 @@ def run(driver, wait, archive):
     iof.send_keys(Keys.BACKSPACE)
 
     print("\n5. Запись девочки — номер в женскую колонку")
+    # Страница-разворот и шаг по ней (заказчик 21.09.2026).
+    fill(driver, "Стр.", "938об-939")
+    driver.find_element(By.XPATH, "//div[contains(@class,'field')][./label[normalize-space()='Стр.']]//button[@aria-label='Больше']").click()
+    page = field(driver, "Стр.").get_attribute("value")
+    check("«+» на странице 938об-939 даёт 939об-940", page == "939об-940", f"«{page}»")
+    year = field(driver, "Год").get_attribute("value")
+    check("год на форме взят из дела: 1897", year == "1897", f"«{year}»")
     fill(driver, "Счёт", "7")
     fill(driver, "Ребёнок", "Мария")
+    # Четвёртый восприемник — кнопкой, дважды.
+    for _ in range(2):
+        driver.find_element(By.XPATH, "//button[normalize-space()='Добавить восприемника']").click()
+    god4 = "//section[.//h2[normalize-space()='Восприемник 4']]//"
+    field(driver, "ИОФ", god4).send_keys("Пётр Сидоров")
+    field(driver, "ИОФ", god4).send_keys(Keys.ESCAPE)
+    # Причт — чтобы было что восстанавливать после перезапуска.
+    clergy1 = "(//div[contains(@class,'clergyslot')])[1]//div[contains(@class,'field')][./label[normalize-space()='ИОФ']]//"
+    driver.find_element(By.XPATH, clergy1 + "input").send_keys("Александр Рождественский")
+    driver.find_element(By.XPATH, clergy1 + "input").send_keys(Keys.ESCAPE)
     # Пол приходит асинхронно (parse_iof). Нажать «Сохранить» раньше —
     # форма попросит выбрать пол и не сохранит. Ждём метку «Ж» под полем.
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
@@ -228,7 +245,13 @@ def resumed(driver, wait):
     time.sleep(1)
     count = field(driver, "Счёт").get_attribute("value")
     check("счёт восстановлен: 7", count == "7", f"«{count}»")
-    check("список набранного на месте", "Набрано: 1" in driver.find_element(By.TAG_NAME, "body").text)
+    page = field(driver, "Стр.").get_attribute("value")
+    check("страница восстановлена: 939об-940", page == "939об-940", f"«{page}»")
+    year = field(driver, "Год").get_attribute("value")
+    check("год восстановлен: 1897", year == "1897", f"«{year}»")
+    body = driver.find_element(By.TAG_NAME, "body").text
+    check("список набранного на месте", "Набрано: 1" in body)
+    check("причт восстановлен (21.09.2026)", "Александр Рождественский" in body)
 
 
 def main() -> int:
