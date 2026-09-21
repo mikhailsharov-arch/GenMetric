@@ -228,7 +228,9 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       first_name_modern: childParsed?.first_name_modern ?? null,
       patronymic_modern: childParsed?.patronymic_modern ?? null,
       maiden_surname: null,
-      gender: childParsed?.gender ?? null,
+      // Пол, выбранный кнопками, тоже уходит в запись: по нему потом
+      // отличают девочек при починке данных (migrate.sql, 21.09.2026).
+      gender: childSex,
       rank: null,
       confession: null,
       place: null,

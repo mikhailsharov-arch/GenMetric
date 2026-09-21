@@ -77,6 +77,9 @@ struct DbInfo {
     app_version: String,
     schema_version: i64,
     seed_stamp: String,
+    /// Сколько записей починено при обновлении (номер девочек в женскую
+    /// колонку). Человек должен видеть, что с его данными что-то сделали.
+    repaired_entries: i64,
 }
 
 #[derive(Serialize)]
@@ -299,6 +302,12 @@ fn db_info(handle: tauri::AppHandle, app: State<App>) -> Result<DbInfo, String> 
                 .optional()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_else(|| "нет".to_string()),
+            repaired_entries: conn
+                .query_row("SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'repair_count_column'",
+                           [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .unwrap_or(0),
         })
     })
 }

@@ -80,6 +80,34 @@ INSERT OR IGNORE INTO setting (key, value) SELECT key, value FROM seed.setting;
 
 -- Отпечаток поставки — единственная настройка, которую обновляем принудительно:
 -- по ней определяется, нужно ли обновление в следующий раз.
+-- --- починка данных: номер девочек в женскую колонку ------------------------
+-- До сборки 13.09.2026 форма писала счёт в мужскую колонку независимо от пола
+-- ребёнка (инцидент 20260913). Роман 21.09.2026: «Да, конечно же нужно
+-- исправить, так как я планирую продолжать индексацию уже в этой программе».
+--
+-- Условие точное и повторяемое: номер стоит только в мужской колонке, а ребёнок
+-- записан девочкой. Записи после починки у девочек имеют номер в женской
+-- колонке и под условие не попадают; мальчики — тоже; ребёнок без пола
+-- не трогается: угадывать нельзя. Повторный прогон ничего не находит.
+-- Число исправленных складывается в setting и показывается на экране
+-- «О программе» — человек должен увидеть, что с его данными что-то сделали.
+INSERT OR IGNORE INTO setting (key, value) VALUES ('repair_count_column', '0');
+
+UPDATE setting
+   SET value = CAST(CAST(value AS INTEGER) + (
+        SELECT count(*) FROM entry e
+         WHERE e.section = 1 AND e.no_male IS NOT NULL AND e.no_female IS NULL
+           AND EXISTS (SELECT 1 FROM person_mention m
+                        WHERE m.entry_id = e.id AND m.role_code = 'child' AND m.gender = 'Ж')
+       ) AS TEXT)
+ WHERE key = 'repair_count_column';
+
+UPDATE entry
+   SET no_female = no_male, no_male = NULL, updated_at = datetime('now')
+ WHERE section = 1 AND no_male IS NOT NULL AND no_female IS NULL
+   AND EXISTS (SELECT 1 FROM person_mention m
+                WHERE m.entry_id = entry.id AND m.role_code = 'child' AND m.gender = 'Ж');
+
 UPDATE setting
    SET value = (SELECT value FROM seed.setting WHERE key = 'seed_stamp')
  WHERE key = 'seed_stamp';

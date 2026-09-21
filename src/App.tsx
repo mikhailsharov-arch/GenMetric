@@ -24,6 +24,7 @@ type DbInfo = {
   app_version: string;
   schema_version: number;
   seed_stamp: string;
+  repaired_entries: number;
 };
 
 /**
@@ -178,6 +179,13 @@ export default function App() {
             </tbody>
           </table>
           <p className="path mono">{info.db_path}</p>
+          {info.repaired_entries > 0 && (
+            <p className="hint">
+              При обновлении исправлено записей: {info.repaired_entries} — номер девочек,
+              набранных до 13 сентября 2026, перенесён из мужской колонки в женскую.
+              Копия базы до исправления лежит рядом с базой (файл «до-обновления»).
+            </p>
+          )}
 
           {lookups.length > 0 && (
             <>

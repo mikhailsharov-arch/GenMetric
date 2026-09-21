@@ -101,6 +101,15 @@ def build_old_database(path: Path) -> None:
                "VALUES (1, 1, 1, '957', 6, 12, 1896)")
     db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name) "
                "VALUES (1, 'child', 10, 'Евграф')")
+    # Записи до 13.09.2026: счёт всегда в мужской колонке. Четыре случая —
+    # девочка (чинить), мальчик (не трогать), девочка уже с женским номером
+    # (не трогать), ребёнок без пола (не трогать: угадывать нельзя).
+    db.executemany(
+        "INSERT INTO entry (id, case_id, section, page, no_male, no_female) VALUES (?,1,1,'958',?,?)",
+        [(2, 3, None), (3, 4, None), (4, None, 5), (5, 6, None)])
+    db.executemany(
+        "INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, gender) VALUES (?,'child',10,?,?)",
+        [(2, "Татьяна", "Ж"), (3, "Иван", "М"), (4, "Мария", "Ж"), (5, "Зурбаган", None)])
     db.commit()
     db.close()
 
@@ -158,7 +167,7 @@ def main() -> int:
                          "(kind='rank_m' AND value='крестьянская вдова после 1-го брака')"
                          ).fetchone()[0] == 2)
         check("у человека есть набранная запись",
-              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 1)
+              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 5)
         db.close()
 
         upgrade(user, seed)
@@ -215,11 +224,22 @@ def main() -> int:
         check("накопленная статистика подсказок цела",
               one("SELECT count FROM usage_stat WHERE value='крестьянин'") == 42)
         check("заведённое дело на месте", one("SELECT count(*) FROM mk_case") == 1)
-        check("набранная запись на месте", one("SELECT count(*) FROM entry") == 1)
+        check("набранные записи на месте", one("SELECT count(*) FROM entry") == 5)
         check("персона записи на месте",
               one("SELECT first_name FROM person_mention WHERE entry_id=1") == "Евграф")
         check("настройка пользователя не перезаписана",
               one("SELECT value FROM setting WHERE key='modernize_names'") == "0")
+
+        print("\n3а. Починка номера девочек — заказчик 21.09.2026: «нужно исправить»")
+        check("девочке номер перенесён в женскую колонку",
+              one("SELECT no_male IS NULL AND no_female = 3 FROM entry WHERE id=2") == 1)
+        check("мальчик не тронут", one("SELECT no_male = 4 AND no_female IS NULL FROM entry WHERE id=3") == 1)
+        check("девочка с женским номером не тронута",
+              one("SELECT no_male IS NULL AND no_female = 5 FROM entry WHERE id=4") == 1)
+        check("ребёнок без пола не тронут — угадывать нельзя",
+              one("SELECT no_male = 6 AND no_female IS NULL FROM entry WHERE id=5") == 1)
+        check("число исправленных записано для экрана «О программе»",
+              one("SELECT value FROM setting WHERE key='repair_count_column'") == "1")
 
         print("\n4. Целостность и повторный запуск")
         check("integrity_check", one("PRAGMA integrity_check") == "ok")
@@ -239,6 +259,8 @@ def main() -> int:
               db.execute("SELECT count(*) FROM lookup WHERE value='мещанин города Юрьевца'").fetchone()[0] == 1)
         check("и не задвоило имена",
               db.execute("SELECT count(*) FROM name_dict").fetchone()[0] == 3112)
+        check("повторная починка ничего не нашла и счётчик не вырос",
+              db.execute("SELECT value FROM setting WHERE key='repair_count_column'").fetchone()[0] == "1")
         db.close()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}\n")
