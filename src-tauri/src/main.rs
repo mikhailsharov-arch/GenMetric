@@ -1075,6 +1075,32 @@ fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &s
     Ok(())
 }
 
+#[derive(Serialize)]
+struct ClergyMention {
+    role_code: String,
+    iof: String,
+    rank: Option<String>,
+    note: Option<String>,
+}
+
+/// Причт последней записи дела — форма продолжает с ним после перезапуска.
+#[tauri::command]
+fn last_clergy(app: State<App>, case_id: i64, section: i64) -> Result<Vec<ClergyMention>, String> {
+    with_conn(&app, "Причт последней записи", |conn| {
+        let mut stmt = conn.prepare(&statement("last_clergy")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! { ":case_id": case_id, ":section": section }, |r| {
+                Ok(ClergyMention { role_code: r.get(0)?, iof: r.get(1)?, rank: r.get(2)?, note: r.get(3)? })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
+}
+
 #[tauri::command]
 fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBrief>, String> {
     with_conn(&app, "Список записей", |conn| {
@@ -1169,6 +1195,7 @@ fn main() {
             case_save,
             entry_save,
             entry_list,
+            last_clergy,
             suggest_person,
             suggest_spouse,
             list_clergy,

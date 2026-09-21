@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, type Person } from "./PersonBlock";
 import NumberField from "./NumberField";
+import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import { splitCount, type Sex } from "./count";
 import { report } from "./errors";
@@ -50,6 +51,7 @@ type Brief = {
   no_female: number | null;
   event_day: number | null;
   event_month: number | null;
+  event_year: number | null;
   rite_month: number | null;
   child: string | null;
 };
@@ -73,7 +75,12 @@ type PersonPayload = {
 };
 
 export default function BirthForm({ mkCase }: { mkCase: Case }) {
-  const [page, setPage] = useState<number | null>(null);
+  // Страница — текст: «938об-939» (заказчик 21.09.2026), в базе колонка TEXT.
+  const [page, setPage] = useState<string | null>(null);
+  // Год — на форме, а не только в деле: «он меняется в процессе индексации»
+  // (заказчик 21.09.2026). Начинается с года дела, дальше держится между
+  // записями, как страница, и восстанавливается после перезапуска.
+  const [year, setYear] = useState<number | null>(mkCase.year ?? null);
   const [count, setCount] = useState<number | null>(null);
   const [birthDay, setBirthDay] = useState<number | null>(null);
   const [birthMonth, setBirthMonth] = useState<number | null>(null);
@@ -137,8 +144,22 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // Через функциональный setState: resume вызывается из ответа на запрос
     // первого рендера, и замкнутые page/count там всегда пусты — проверка
     // «форма пуста» через них была бы мёртвой (проверяющий 18.09.2026).
-    const pageNumber = last.page === null ? NaN : Number(last.page);
-    if (!Number.isNaN(pageNumber)) setPage((v) => v ?? pageNumber);
+    setPage((v) => v ?? last.page);
+    if (last.event_year !== null) setYear(last.event_year);
+    // Причт — тоже (заказчик 21.09.2026). Разбор ИОФ поле сделает само.
+    invoke<{ role_code: string; iof: string; rank: string | null; note: string | null }[]>(
+      "last_clergy", { caseId: mkCase.id, section: 1 })
+      .then((rows) => {
+        const setters = { clergy1: setClergy1, clergy2: setClergy2, clergy3: setClergy3 } as const;
+        for (const r of rows) {
+          const set = setters[r.role_code as keyof typeof setters];
+          if (set && r.iof.trim()) {
+            set((p) => (p.iof.trim() ? p : { ...p, iof: r.iof, rank: r.rank ?? "", note: r.note ?? "" }));
+          }
+        }
+        if (rows.length > 0) setSavedTimes((n) => n + 1); // свернуть заполненный причт
+      })
+      .catch((e) => report("Не удалось восстановить причт последней записи", e));
     setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
     setBirthMonth((v) => v ?? last.event_month);
     setRiteMonth((v) => v ?? last.rite_month);
@@ -281,15 +302,15 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           id: null,
           case_id: mkCase.id,
           section: 1,
-          page: page === null ? null : String(page),
+          page,
           no_male: columns.no_male,
           no_female: columns.no_female,
           event_day: birthDay,
           event_month: birthMonth,
-          event_year: mkCase.year ?? null,
+          event_year: year,
           rite_day: riteDay,
           rite_month: riteMonth,
-          rite_year: mkCase.year ?? null,
+          rite_year: year,
           note: null,
           uncertain: null,
           persons,
@@ -351,7 +372,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     <div onKeyDown={hotkeys}>
       <section>
         <div className="row">
-          <NumberField label="Стр." value={page} onChange={setPage} min={1} />
+          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
+          <PageField label="Стр." value={page} onChange={setPage} width="9em" />
           <NumberField
             label="Счёт"
             value={count}

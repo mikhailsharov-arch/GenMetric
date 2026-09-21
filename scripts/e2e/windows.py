@@ -84,7 +84,7 @@ def run(driver, wait, archive):
     print("\n2. Дело")
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Христорождественская"),
                          ("Село", "Борисоглебское"), ("Уезд", "Макарьевский"),
-                         ("Губерния", "Костромская"), ("Год", "1897")]:
+                         ("Губерния", "Костромская"), ("Год начала", "1897")]:
         fill(driver, label, value)
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))

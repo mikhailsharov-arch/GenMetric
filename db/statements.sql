@@ -105,6 +105,21 @@ SELECT role_code, sort_order, surname, first_name, patronymic,
  WHERE entry_id = :entry_id
  ORDER BY sort_order;
 
+-- @last_clergy
+-- Причт последней записи дела — чтобы после перезапуска форма продолжала
+-- с ним, как со страницей и счётом (заказчик 21.09.2026: «надо сделать,
+-- чтобы церковнослужители также сохранялись»).
+SELECT m.role_code,
+       -- Без отчества между именем и фамилией остался бы двойной пробел.
+       trim(coalesce(m.first_name, '')
+            || CASE WHEN m.patronymic IS NULL THEN '' ELSE ' ' || m.patronymic END
+            || CASE WHEN m.surname IS NULL THEN '' ELSE ' ' || m.surname END) AS iof,
+       m.rank, m.note
+  FROM person_mention m
+ WHERE m.entry_id = (SELECT max(e.id) FROM entry e WHERE e.case_id = :case_id AND e.section = :section)
+   AND m.role_code IN ('clergy1', 'clergy2', 'clergy3')
+ ORDER BY m.sort_order;
+
 -- @suggest_ranked
 -- ПОДСКАЗКИ. Раньше эти запросы жили прямо в коде на Rust — и именно там
 -- спрятался пункт 1 отчёта от 24.08.2026: поле НП искало населённые пункты

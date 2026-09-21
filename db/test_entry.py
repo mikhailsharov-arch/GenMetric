@@ -85,7 +85,7 @@ def main() -> int:
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
                      "person_remember", "person_suggest", "spouse_remember", "spouse_lookup",
-                     "clergy_remember", "clergy_list"):
+                     "clergy_remember", "clergy_list", "last_clergy"):
         check(f"блок {required} на месте", required in sql)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +155,8 @@ def main() -> int:
             dict(role_code="godparent1", sort_order=40, first_name="Александр",
                  patronymic="Арсеньев", patronymic_modern="Арсениевич",
                  gender="М", rank="крестьянский сын", place_id=place_id),
+            dict(role_code="clergy1", sort_order=100, first_name="Александр",
+                 surname="Рождественский", gender="М", rank="священник"),
         ]
         blank = dict(surname=None, first_name=None, patronymic=None, surname_modern=None,
                      first_name_modern=None, patronymic_modern=None, maiden_surname=None,
@@ -162,7 +164,7 @@ def main() -> int:
                      uncertain=None, birth_year_from=None, birth_year_to=None)
         for p in persons:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": entry_id})
-        check("персоны сохранены", one("SELECT count(*) FROM person_mention")[0] == 4)
+        check("персоны сохранены", one("SELECT count(*) FROM person_mention")[0] == 5)
         check("роли из справочника ролей",
               one("SELECT count(*) FROM person_mention m LEFT JOIN role r "
                   "ON r.code = m.role_code WHERE r.code IS NULL")[0] == 0)
@@ -171,7 +173,7 @@ def main() -> int:
         db.execute(sql["mentions_clear"], {"entry_id": entry_id})
         for p in persons:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": entry_id})
-        check("персон по-прежнему 4", one("SELECT count(*) FROM person_mention")[0] == 4)
+        check("персон по-прежнему 5", one("SELECT count(*) FROM person_mention")[0] == 5)
         check("запись одна", one("SELECT count(*) FROM entry")[0] == 1)
 
         print("\n5. Справочник пополняется сам")
@@ -213,6 +215,13 @@ def main() -> int:
         # ей нужны страница, счёт и оба месяца последней записи.
         check("в списке есть месяц крещения для восстановления места работы",
               rows[0][7] == 1, f"rite_month={rows[0][7]}")
+
+        # Заказчик 21.09.2026: «надо сделать, чтобы церковнослужители также
+        # сохранялись» — причт последней записи для восстановления после перезапуска.
+        clergy = db.execute(sql["last_clergy"], {"case_id": 1, "section": 1}).fetchall()
+        check("причт последней записи читается", len(clergy) == 1 and clergy[0][0] == "clergy1", str(clergy))
+        check("ИОФ причта собран из частей без лишних пробелов",
+              clergy and clergy[0][1] == "Александр Рождественский" and clergy[0][2] == "священник")
 
         print("\n8. Память о персонах: выбор заполняет три поля разом")
         # Главное требование заказчика от 17.08.2026. Раньше он набирал ИОФ,

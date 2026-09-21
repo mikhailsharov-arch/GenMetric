@@ -168,7 +168,7 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
       <Suggest label="Губерния" kind="guberniya" value={c.guberniya ?? ""} onChange={set("guberniya")} />
       <div className="row">
         <NumberField
-          label="Год"
+          label="Год начала"
           value={c.year}
           onChange={(v) => setC((prev) => ({ ...prev, year: v }))}
           min={1700}
