@@ -66,6 +66,15 @@ def field(driver, label, scope="//"):
         By.XPATH, f"{scope}div[contains(@class,'field')][./label[normalize-space()='{label}']]//input")
 
 
+def click(driver, xpath):
+    """Клик по кнопке в середине окна. WebDriver сам прокручивает элемент
+    к нижнему краю — а там прилипшая панель «Сохранить и следующая», и клик
+    уходит в неё (сборка #30: «element click intercepted»)."""
+    el = driver.find_element(By.XPATH, xpath)
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+    el.click()
+
+
 def fill(driver, label, value, scope="//"):
     el = field(driver, label, scope)
     el.clear()
@@ -128,7 +137,7 @@ def run(driver, wait, archive):
     print("\n5. Запись девочки — номер в женскую колонку")
     # Страница-разворот и шаг по ней (заказчик 21.09.2026).
     fill(driver, "Стр.", "938об-939")
-    driver.find_element(By.XPATH, "//div[contains(@class,'field')][./label[normalize-space()='Стр.']]//button[@aria-label='Больше']").click()
+    click(driver, "//div[contains(@class,'field')][./label[normalize-space()='Стр.']]//button[@aria-label='Больше']")
     page = field(driver, "Стр.").get_attribute("value")
     check("«+» на странице 938об-939 даёт 939об-940", page == "939об-940", f"«{page}»")
     year = field(driver, "Год").get_attribute("value")
@@ -137,7 +146,7 @@ def run(driver, wait, archive):
     fill(driver, "Ребёнок", "Мария")
     # Четвёртый восприемник — кнопкой, дважды.
     for _ in range(2):
-        driver.find_element(By.XPATH, "//button[normalize-space()='Добавить восприемника']").click()
+        click(driver, "//button[normalize-space()='Добавить восприемника']")
     god4 = "//section[.//h2[normalize-space()='Восприемник 4']]//"
     field(driver, "ИОФ", god4).send_keys("Пётр Сидоров")
     field(driver, "ИОФ", god4).send_keys(Keys.ESCAPE)
@@ -159,7 +168,7 @@ def run(driver, wait, archive):
               f"в поле «{value}», под ним «{under}», полоса ошибок: {errorbar or 'нет'}")
         return
     # В кнопке ещё <span class="kbd">Ctrl+Enter</span>, поэтому starts-with.
-    driver.find_element(By.XPATH, "//button[starts-with(normalize-space(),'Сохранить и следующая')]").click()
+    click(driver, "//button[starts-with(normalize-space(),'Сохранить и следующая')]")
     try:
         wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Набрано: 1"))
     except TimeoutException:
@@ -258,7 +267,7 @@ def resumed(driver, wait):
     fill(driver, "Ребёнок", "Иван")
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
     wait.until(EC.text_to_be_present_in_element((By.XPATH, child + "//*[contains(@class,'parsedline')]"), "М"))
-    driver.find_element(By.XPATH, "//button[starts-with(normalize-space(),'Сохранить и следующая')]").click()
+    click(driver, "//button[starts-with(normalize-space(),'Сохранить и следующая')]")
     try:
         wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Набрано: 2"))
     except TimeoutException:
