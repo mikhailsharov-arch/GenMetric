@@ -216,6 +216,9 @@ def main() -> int:
                          "WHERE f.kind IN ('name','variant') AND f.form_norm='никита' "
                          "ORDER BY f.priority LIMIT 1").fetchone()[0] == "Никита")
 
+        check("роли восприемников 3 и 4 доехали до пользователя (21.09.2026)",
+              one("SELECT count(*) FROM role WHERE code IN ('godparent3','godparent4')") == 2)
+
         print("\n3. После обновления ничего пользовательского не потерялось")
         check("значение, заведённое человеком, на месте",
               one("SELECT count(*) FROM lookup WHERE value='мещанин города Юрьевца'") == 1)

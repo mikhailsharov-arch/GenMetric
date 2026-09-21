@@ -101,6 +101,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   const [mother, setMother] = useState<Person>(NEW_MOTHER);
   const [god1, setGod1] = useState<Person>(EMPTY_PERSON);
   const [god2, setGod2] = useState<Person>(EMPTY_PERSON);
+  // Восприемников по умолчанию два, кнопкой — до четырёх: «такое встречается
+  // в метриках, и в шаблоне Familio присутствует 4 восприемника» (21.09.2026).
+  const [god3, setGod3] = useState<Person>(EMPTY_PERSON);
+  const [god4, setGod4] = useState<Person>(EMPTY_PERSON);
+  const [godCount, setGodCount] = useState(2);
 
   // Причт держится между записями: в книге он один на весь разворот, а часто
   // и на всё дело. Очищать его каждую запись — заставлять набирать заново.
@@ -262,6 +267,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     if (mother.iof.trim()) persons.push(payload("mother", 30, mother, "Ж"));
     if (god1.iof.trim()) persons.push(payload("godparent1", 40, god1));
     if (god2.iof.trim()) persons.push(payload("godparent2", 50, god2));
+    if (god3.iof.trim()) persons.push(payload("godparent3", 60, god3));
+    if (god4.iof.trim()) persons.push(payload("godparent4", 70, god4));
     // Причт пишется в каждую запись: в Excel он стоит в той же строке,
     // и выгрузка в Familio ждёт его там же.
     if (clergy1.iof.trim()) persons.push(payload("clergy1", 100, clergy1, "М"));
@@ -270,7 +277,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
     // Причт в счёт не идёт: он держится между записями, и по нему нельзя
     // судить, набрал человек запись или нажал «Сохранить» вхолостую.
-    const filled = [child, father.iof, mother.iof, god1.iof, god2.iof]
+    const filled = [child, father.iof, mother.iof, god1.iof, god2.iof, god3.iof, god4.iof]
       .some((v) => v.trim().length > 0);
     if (!filled) {
       report("Запись пустая", "не заполнено ни имя ребёнка, ни родители");
@@ -348,6 +355,9 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     setMother({ ...NEW_MOTHER });
     setGod1({ ...EMPTY_PERSON });
     setGod2({ ...EMPTY_PERSON });
+    setGod3({ ...EMPTY_PERSON });
+    setGod4({ ...EMPTY_PERSON });
+    setGodCount(2);
     setBirthDay(null);
     setRiteDay(null);
     countField.current?.focus();
@@ -442,7 +452,6 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         onChange={setMother}
         rankKind="rank"
         withConfession
-        withMaiden
         gender="Ж"
         onPickPerson={pickInto(setMother)}
       />
@@ -460,6 +469,31 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         rankKind="rank"
         onPickPerson={pickInto(setGod2)}
       />
+      {godCount >= 3 && (
+        <PersonBlock
+          title="Восприемник 3"
+          person={god3}
+          onChange={setGod3}
+          rankKind="rank"
+          onPickPerson={pickInto(setGod3)}
+        />
+      )}
+      {godCount >= 4 && (
+        <PersonBlock
+          title="Восприемник 4"
+          person={god4}
+          onChange={setGod4}
+          rankKind="rank"
+          onPickPerson={pickInto(setGod4)}
+        />
+      )}
+      {godCount < 4 && (
+        <div className="addrow">
+          <button type="button" className="toggle" onClick={() => setGodCount((n) => n + 1)}>
+            Добавить восприемника
+          </button>
+        </div>
+      )}
 
       {/* Церковнослужители. В Excel они стоят в той же строке записи —
           колонки 47–55 листа «1»: ИОФ, Звание, Прим., без НП

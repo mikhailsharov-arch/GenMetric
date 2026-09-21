@@ -410,3 +410,6 @@ button.linkish {
   color: var(--muted); background: transparent; border: 0; cursor: pointer;
 }
 .fieldbody .browse:hover { color: var(--ink); }
+
+/* «Добавить восприемника» — между блоками, без лишней высоты. */
+.addrow { display: flex; justify-content: flex-end; margin: 0.15em 0 0.3em; }

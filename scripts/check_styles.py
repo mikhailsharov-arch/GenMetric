@@ -78,7 +78,7 @@ def main() -> int:
           all(h <= 1.45 for h in heights), f"максимальный {max(heights) if heights else 0}")
 
     print("\n4. Что это даёт на экране")
-    steps = [0.85, 0.925, 1, 1.1, 1.2, 1.35]
+    steps = [0.7, 0.775, 0.85, 0.925, 1, 1.1, 1.2, 1.35]
     print("     масштаб   основной текст   поле ввода   подпись поля")
     for s in steps:
         base = 15 * s

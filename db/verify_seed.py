@@ -93,8 +93,9 @@ def main() -> int:
           one("SELECT count(*) FROM lookup l LEFT JOIN lookup_kind k USING(kind) WHERE k.kind IS NULL") == 0)
 
     print("\n3. Роли и коридоры возраста")
-    check("21 роль", one("SELECT count(*) FROM role") == 21)
-    for section, expected in [(1, 5), (2, 9), (3, 4), (0, 3)]:
+    # 23 с 21.09.2026: восприемники 3 и 4 — «в шаблоне Familio присутствует 4».
+    check("23 роли", one("SELECT count(*) FROM role") == 23)
+    for section, expected in [(1, 7), (2, 9), (3, 4), (0, 3)]:
         check(f"ролей в разделе {section}",
               one("SELECT count(*) FROM role WHERE section=?", section) == expected)
     check("коридор родителей 17-55",
