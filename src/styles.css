@@ -423,3 +423,23 @@ button.linkish {
 
 /* «Добавить восприемника» — между блоками, без лишней высоты. */
 .addrow { display: flex; justify-content: flex-end; margin: 0.15em 0 0.3em; }
+
+/* Свёрнутое примечание персоны: одна короткая ссылка вместо пустой строки. */
+.noterow { display: flex; justify-content: flex-end; margin: 0 0 0.1em; }
+.linkish {
+  padding: 0; border: 0; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 0.82em; color: var(--muted);
+}
+.linkish:hover { color: var(--accent); text-decoration: underline; }
+
+/* Правка сохранённой записи. */
+.editbar {
+  display: flex; align-items: center; gap: 0.6em; flex-wrap: wrap;
+  margin: 0 0 0.4em; padding: 0.4em 0.6em; font-size: 0.9em;
+  background: #fff7e0;
+  border: 1px solid #f0d48a;
+  border-radius: 6px;
+}
+.editbar .toggle { margin-left: auto; }
+.facts.saved { display: block; max-height: 14em; overflow-y: auto; }
+.facts.saved tr.editing td { background: #fff7e0; }

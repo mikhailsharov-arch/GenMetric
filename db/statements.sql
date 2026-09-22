@@ -97,13 +97,23 @@ SELECT e.id, e.page, e.no_male, e.no_female,
  WHERE e.case_id = :case_id AND e.section = :section
  ORDER BY e.id DESC;
 
+-- @entry_get
+-- Запись целиком — для правки уже сохранённого (заказчик 22.09.2026).
+SELECT id, page, no_male, no_female, event_day, event_month, event_year,
+       rite_day, rite_month, rite_year, note
+  FROM entry
+ WHERE id = :id;
+
 -- @mentions_of_entry
-SELECT role_code, sort_order, surname, first_name, patronymic,
-       surname_modern, first_name_modern, patronymic_modern, maiden_surname,
-       gender, rank, confession, place_id, note, uncertain
-  FROM person_mention
- WHERE entry_id = :entry_id
- ORDER BY sort_order;
+-- Персоны записи для формы: НП — названием, как его набирают, а не id.
+SELECT m.role_code, m.sort_order, m.surname, m.first_name, m.patronymic,
+       m.surname_modern, m.first_name_modern, m.patronymic_modern, m.maiden_surname,
+       m.gender, m.rank, m.confession,
+       (SELECT p.name FROM place p WHERE p.id = m.place_id) AS place,
+       m.note, m.uncertain
+  FROM person_mention m
+ WHERE m.entry_id = :entry_id
+ ORDER BY m.sort_order;
 
 -- @last_clergy
 -- Причт последней записи дела — чтобы после перезапуска форма продолжала

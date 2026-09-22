@@ -85,7 +85,7 @@ def main() -> int:
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
                      "person_remember", "person_suggest", "spouse_remember", "spouse_lookup",
-                     "clergy_remember", "clergy_list", "last_clergy"):
+                     "clergy_remember", "clergy_list", "last_clergy", "entry_get", "mentions_of_entry"):
         check(f"блок {required} на месте", required in sql)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -222,6 +222,16 @@ def main() -> int:
         check("причт последней записи читается", len(clergy) == 1 and clergy[0][0] == "clergy1", str(clergy))
         check("ИОФ причта собран из частей без лишних пробелов",
               clergy and clergy[0][1] == "Александр Рождественский" and clergy[0][2] == "священник")
+
+        # Заказчик 22.09.2026: правка сохранённой записи — форма поднимает запись
+        # теми же запросами, что и приложение.
+        full = db.execute(sql["entry_get"], {"id": 1}).fetchone()
+        check("запись читается целиком для правки", full is not None and full[1] == "909" and full[3] == 2, str(full))
+        ms = db.execute(sql["mentions_of_entry"], {"entry_id": 1}).fetchall()
+        check("персоны записи читаются в порядке ролей",
+              [m[0] for m in ms][:3] == ["child", "father", "mother"], str([m[0] for m in ms]))
+        father_row = next(m for m in ms if m[0] == "father")
+        check("НП персоны приходит названием, а не id", father_row[12] == "Чертеж Малый", str(father_row[12]))
 
         print("\n8. Память о персонах: выбор заполняет три поля разом")
         # Главное требование заказчика от 17.08.2026. Раньше он набирал ИОФ,

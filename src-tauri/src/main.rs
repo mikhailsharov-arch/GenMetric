@@ -1105,6 +1105,69 @@ fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &s
 }
 
 #[derive(Serialize)]
+struct MentionOut {
+    role_code: String,
+    sort_order: i64,
+    surname: Option<String>,
+    first_name: Option<String>,
+    patronymic: Option<String>,
+    gender: Option<String>,
+    rank: Option<String>,
+    confession: Option<String>,
+    place: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EntryFull {
+    id: i64,
+    page: Option<String>,
+    no_male: Option<i64>,
+    no_female: Option<i64>,
+    event_day: Option<i64>,
+    event_month: Option<i64>,
+    event_year: Option<i64>,
+    rite_day: Option<i64>,
+    rite_month: Option<i64>,
+    rite_year: Option<i64>,
+    note: Option<String>,
+    persons: Vec<MentionOut>,
+}
+
+/// Запись целиком — чтобы поднять её в форму и поправить.
+/// Заказчик 22.09.2026 продолжает индексацию в программе; до этого любая
+/// ошибка в сохранённой записи стоила перенабора.
+#[tauri::command]
+fn entry_load(app: State<App>, id: i64) -> Result<EntryFull, String> {
+    with_conn(&app, "Чтение записи", |conn| {
+        let mut entry = conn
+            .query_row(&statement("entry_get")?, rusqlite::named_params! { ":id": id }, |r| {
+                Ok(EntryFull {
+                    id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
+                    event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
+                    rite_day: r.get(7)?, rite_month: r.get(8)?, rite_year: r.get(9)?,
+                    note: r.get(10)?, persons: Vec::new(),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&statement("mentions_of_entry")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! { ":entry_id": id }, |r| {
+                Ok(MentionOut {
+                    role_code: r.get(0)?, sort_order: r.get(1)?, surname: r.get(2)?,
+                    first_name: r.get(3)?, patronymic: r.get(4)?, gender: r.get(9)?,
+                    rank: r.get(10)?, confession: r.get(11)?, place: r.get(12)?, note: r.get(13)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            entry.persons.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(entry)
+    })
+}
+
+#[derive(Serialize)]
 struct ClergyMention {
     role_code: String,
     iof: String,
@@ -1224,6 +1287,7 @@ fn main() {
             case_save,
             entry_save,
             entry_list,
+            entry_load,
             last_clergy,
             suggest_person,
             suggest_spouse,

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { focusNextField } from "./focus";
-import NumberField from "./NumberField";
 import { report } from "./errors";
 
 /**
@@ -166,16 +165,10 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
       <Suggest label="Село" kind="place" value={c.village ?? ""} onChange={set("village")} />
       <Suggest label="Уезд" kind="uyezd" browse value={c.uyezd ?? ""} onChange={set("uyezd")} />
       <Suggest label="Губерния" kind="guberniya" browse value={c.guberniya ?? ""} onChange={set("guberniya")} />
-      <div className="row">
-        <NumberField
-          label="Год начала"
-          value={c.year}
-          onChange={(v) => setC((prev) => ({ ...prev, year: v }))}
-          min={1700}
-          max={1930}
-        />
-        {text("Кто индексирует", "indexer")}
-      </div>
+      {/* Года здесь больше нет — он на форме рождений и меняется по ходу
+          индексации. Заказчик 22.09.2026: «чтобы наличие двух годов не путало».
+          В деле год остаётся в базе как год первой записи. */}
+      {text("Кто индексирует", "indexer")}
 
       <button className="primary" onClick={save} disabled={busy}>
         {busy ? "Сохраняю…" : "Сохранить дело"}

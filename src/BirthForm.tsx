@@ -115,6 +115,14 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
   // Меняется после каждого сохранения: список причта должен пополняться сразу.
   const [savedTimes, setSavedTimes] = useState(0);
+  // Правка сохранённой записи: id открытой записи или null — новая.
+  // Заказчик 22.09.2026 индексирует в программе по-настоящему; до этого
+  // единственный способ поправить запись был перенабрать её.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  // Где стояли до правки: страница, счёт, год, месяцы. После правки старой
+  // записи форма возвращается сюда, а не к странице той записи.
+  const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
+                               birthMonth: number | null; riteMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
@@ -306,7 +314,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     try {
       await invoke<number>("entry_save", {
         entry: {
-          id: null,
+          id: editingId,
           case_id: mkCase.id,
           section: 1,
           page,
@@ -324,13 +332,101 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         },
       });
       setSavedTimes((n) => n + 1);
-      next();
+      if (editingId !== null) restoreAfterEdit();
+      else next();
       refresh();
     } catch (e) {
-      report("Не удалось сохранить запись", e);
+      report(editingId ? "Не удалось сохранить изменения" : "Не удалось сохранить запись", e);
     } finally {
       setBusy(false);
     }
+  }
+
+  /** В форме уже что-то набрано — открывать поверх нельзя, потеряется. */
+  function formDirty(): boolean {
+    return [child, father.iof, mother.iof, god1.iof, god2.iof, god3.iof, god4.iof]
+      .some((v) => v.trim().length > 0);
+  }
+
+  type MentionOut = {
+    role_code: string; sort_order: number; surname: string | null; first_name: string | null;
+    patronymic: string | null; gender: string | null; rank: string | null;
+    confession: string | null; place: string | null; note: string | null;
+  };
+  type EntryFull = {
+    id: number; page: string | null; no_male: number | null; no_female: number | null;
+    event_day: number | null; event_month: number | null; event_year: number | null;
+    rite_day: number | null; rite_month: number | null; rite_year: number | null;
+    note: string | null; persons: MentionOut[];
+  };
+
+  /**
+   * Поднимает сохранённую запись в форму. Разбор ИОФ поля сделают сами —
+   * значения приходят строкой, как если бы их набрали.
+   */
+  async function openEntry(id: number) {
+    if (editingId === null && formDirty()) {
+      report("Сначала сохраните или очистите набранное",
+             "открыть запись для правки можно только с пустой формы — иначе набранное пропадёт");
+      return;
+    }
+    try {
+      const e = await invoke<EntryFull>("entry_load", { id });
+      if (editingId === null) beforeEdit.current = { page, count, year, birthMonth, riteMonth };
+      const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
+      const person = (m: MentionOut | undefined, base: Person): Person =>
+        m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
+              confession: m.confession ?? base.confession, note: m.note ?? "" }
+          : { ...base };
+      const by = (role: string) => e.persons.find((m) => m.role_code === role);
+      const ch = by("child");
+      setChild(ch ? iof(ch) : "");
+      setChildParsed(null);
+      setChildSexManual((ch?.gender as Sex | null | undefined) ?? null);
+      setAskSex(false);
+      setPage(e.page);
+      setCount(e.no_male ?? e.no_female ?? null);
+      setBirthDay(e.event_day);
+      setBirthMonth(e.event_month);
+      if (e.event_year !== null) setYear(e.event_year);
+      setRiteDay(e.rite_day);
+      setRiteMonth(e.rite_month);
+      setFatherState(person(by("father"), { ...NEW_FATHER }));
+      setMother(person(by("mother"), { ...NEW_MOTHER }));
+      setGod1(person(by("godparent1"), { ...EMPTY_PERSON }));
+      setGod2(person(by("godparent2"), { ...EMPTY_PERSON }));
+      setGod3(person(by("godparent3"), { ...EMPTY_PERSON }));
+      setGod4(person(by("godparent4"), { ...EMPTY_PERSON }));
+      setGodCount(by("godparent4") ? 4 : by("godparent3") ? 3 : 2);
+      setClergy1(person(by("clergy1"), { ...EMPTY_PERSON }));
+      setClergy2(person(by("clergy2"), { ...EMPTY_PERSON }));
+      setClergy3(person(by("clergy3"), { ...EMPTY_PERSON }));
+      setEditingId(e.id);
+      window.scrollTo({ top: 0 });
+      countField.current?.focus();
+    } catch (err) {
+      report("Не удалось открыть запись", err);
+    }
+  }
+
+  /** Вернуться туда, где стояли до правки. */
+  function restoreAfterEdit() {
+    const b = beforeEdit.current;
+    beforeEdit.current = null;
+    setEditingId(null);
+    next();
+    if (b) {
+      setPage(b.page);
+      setCount(b.count);
+      setYear(b.year);
+      setBirthMonth(b.birthMonth);
+      setRiteMonth(b.riteMonth);
+    }
+  }
+
+  /** Отменить правку: форма пустая, запись в базе не тронута. */
+  function cancelEdit() {
+    restoreAfterEdit();
   }
 
   /**
@@ -380,6 +476,13 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
   return (
     <div onKeyDown={hotkeys}>
+      {editingId !== null && (
+        <div className="editbar">
+          <b>Правка записи</b> — сохранённая запись открыта в форме. «Сохранить
+          изменения» перепишет её; «Отменить» оставит как была.
+          <button type="button" className="toggle" onClick={cancelEdit}>Отменить</button>
+        </div>
+      )}
       <section>
         <div className="row tight">
           <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
@@ -511,7 +614,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           и время, и рука на мыши, которой он просил избегать. */}
       <div className="savebar">
         <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
-          {busy ? "Сохраняю…" : "Сохранить и следующая"}
+          {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
           <span className="kbd">Ctrl+Enter</span>
         </button>
       </div>
@@ -519,10 +622,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       {saved.length > 0 && (
         <section>
           <h2>Набрано: {saved.length}</h2>
-          <table className="facts">
+          <p className="hint">Нажмите «Открыть», чтобы поправить запись. Форма при этом должна быть пустой.</p>
+          <table className="facts saved">
             <tbody>
-              {saved.slice(0, 10).map((e) => (
-                <tr key={e.id}>
+              {saved.map((e) => (
+                <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
                     {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.child || "без имени"}
                   </td>
@@ -534,6 +638,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
                     {e.no_male === null && e.no_female === null && "без №"}
                   </td>
                   <td>стр. {e.page ?? "—"}</td>
+                  <td>
+                    <button type="button" className="linkish" onClick={() => void openEntry(e.id)}>
+                      Открыть
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

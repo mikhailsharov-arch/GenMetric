@@ -1,3 +1,4 @@
+import { useState } from "react";
 import Suggest from "./Suggest";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
 import { focusNextField } from "./focus";
@@ -79,6 +80,7 @@ export default function PersonBlock({
    * до отчеств, да и то у родителей, а перечень званий у восприемников был
    * жёстко мужским.
    */
+  const [noteOpen, setNoteOpen] = useState(false);
   const sex = gender ?? (person.parsed?.gender as "М" | "Ж" | undefined) ?? undefined;
   const ranks = rankKind === "rank_clergy"
     ? "rank_clergy"
@@ -132,19 +134,31 @@ export default function PersonBlock({
           onChange={(confession) => set({ confession })}
         />
       )}
-      <div className="field">
-        <label>Прим.</label>
-        <div className="fieldbody">
-          <input
-            data-field
-            value={person.note}
-            onChange={(e) => set({ note: e.target.value })}
-            onKeyDown={plainKeys}
-            autoComplete="off"
-            spellCheck={false}
-          />
+      {/* «Прим.» свёрнуто, пока пусто: заказчик 22.09.2026 — «строку спрятать,
+          чтобы если требуется ввести примечание, строку можно было развернуть
+          кнопкой/значком». Пустая строка у каждой персоны — минус высота. */}
+      {(noteOpen || person.note) ? (
+        <div className="field">
+          <label>Прим.</label>
+          <div className="fieldbody">
+            <input
+              data-field
+              autoFocus={noteOpen && !person.note}
+              value={person.note}
+              onChange={(e) => set({ note: e.target.value })}
+              onKeyDown={plainKeys}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="noterow">
+          <button type="button" className="linkish" tabIndex={-1} onClick={() => setNoteOpen(true)}>
+            + примечание
+          </button>
+        </div>
+      )}
       {withMaiden && (
         <div className="field">
           <label>Девичья фамилия</label>

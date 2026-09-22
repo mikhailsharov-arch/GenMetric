@@ -243,10 +243,17 @@ export default function IofField({
     }
   }
 
-  const modern = [
-    parsed?.first_name_modern !== parsed?.first_name ? parsed?.first_name_modern : null,
-    parsed?.patronymic_modern !== parsed?.patronymic ? parsed?.patronymic_modern : null,
-  ].filter(Boolean).join(" ");
+  // Современное написание — целиком, «Василий Васильевич Промтов», а не
+  // одно изменившееся отчество. Заказчик 22.09.2026. Показывается, только
+  // если хоть что-то отличается от набранного.
+  const differs = parsed && (
+    (parsed.first_name_modern && parsed.first_name_modern !== parsed.first_name) ||
+    (parsed.patronymic_modern && parsed.patronymic_modern !== parsed.patronymic));
+  const modern = differs
+    ? [parsed.first_name_modern ?? parsed.first_name,
+       parsed.patronymic_modern ?? parsed.patronymic,
+       parsed.surname].filter(Boolean).join(" ")
+    : "";
 
   return (
     <div className="field">

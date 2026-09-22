@@ -22,7 +22,8 @@ Microsoft) и проходим путь Романа руками робота.
      появляется «Добавлено: персон …»;
   4. подсказка отца видит персону из архива;
   5. запись девочки сохраняется, и в списке «Набрано» у неё «№ ж.»;
-  6. после перезапуска приложения форма продолжает с места: счёт на месте.
+  6. после перезапуска приложения форма продолжает с места: счёт на месте;
+  7. сохранённая запись открывается в форму, правится и сохраняется без дублей.
 
 Запуск (в конвейере, см. .github/workflows/build.yml):
     python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite путь\\к\\msedgedriver.exe
@@ -93,7 +94,7 @@ def run(driver, wait, archive):
     print("\n2. Дело")
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Христорождественская"),
                          ("Село", "Борисоглебское"), ("Уезд", "Макарьевский"),
-                         ("Губерния", "Костромская"), ("Год начала", "1897")]:
+                         ("Губерния", "Костромская")]:
         fill(driver, label, value)
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
@@ -140,8 +141,8 @@ def run(driver, wait, archive):
     click(driver, "//div[contains(@class,'field')][./label[normalize-space()='Стр.']]//button[@aria-label='Больше']")
     page = field(driver, "Стр.").get_attribute("value")
     check("«+» на странице 938об-939 даёт 939об-940", page == "939об-940", f"«{page}»")
-    year = field(driver, "Год").get_attribute("value")
-    check("год на форме взят из дела: 1897", year == "1897", f"«{year}»")
+    # Год — только на форме (заказчик 22.09.2026: с «Дела» убран).
+    fill(driver, "Год", "1897")
     fill(driver, "Счёт", "7")
     fill(driver, "Ребёнок", "Мария")
     # Четвёртый восприемник — кнопкой, дважды.
@@ -276,6 +277,24 @@ def resumed(driver, wait):
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
     check("вторая запись после перезапуска сохранена", "Набрано: 2" in body, " | ".join(errorbar))
     check("у мальчика «№ м. 8»", "№ м. 8" in body)
+
+    print("\n7. Правка сохранённой записи (заказчик 22.09.2026)")
+    # Открываем последнюю (первую в списке — мальчик, счёт 8), меняем счёт на 9.
+    click(driver, "(//table[contains(@class,'saved')]//button[normalize-space()='Открыть'])[1]")
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".editbar")))
+    lifted = field(driver, "Ребёнок").get_attribute("value")
+    check("запись поднялась в форму: ребёнок «Иван»", lifted == "Иван", f"«{lifted}»")
+    fill(driver, "Счёт", "9")
+    click(driver, "//button[starts-with(normalize-space(),'Сохранить изменения')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "№ м. 9"))
+    except TimeoutException:
+        pass
+    body = driver.find_element(By.TAG_NAME, "body").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("изменения сохранены: «№ м. 9» в списке", "№ м. 9" in body, " | ".join(errorbar))
+    check("записей по-прежнему две — правка не плодит", "Набрано: 2" in body)
+    check("режим правки снят", not driver.find_elements(By.CSS_SELECTOR, ".editbar"))
 
 
 def main() -> int:
