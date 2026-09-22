@@ -359,6 +359,27 @@ def incident_20260918_razbor_stiraet_poslednyuyu_bukvu():
           "if (mine !== parseSeq.current) return;" in block)
 
 
+# ============================================================================
+
+def incident_20260922_prichjt_bez_imeni():
+    """Проверяющий 22.09.2026: после перезапуска (с 21.09) и при правке записи
+    персоны поднимались в форму без разбора ИОФ, а причт при этом свёрнут —
+    поле не смонтировано, разбора нет, payload() писал имя и фамилию NULL.
+    У Романа записи после перезапуска ушли с причтом «только звание».
+
+    Защита: перед сохранением персона без разбора разбирается той же командой
+    parse_iof (withParsed); число пострадавших записей считается при
+    обновлении и показывается на «О программе».
+    """
+    form = strip_comments(read("src/BirthForm.tsx"))
+    check("перед сохранением персоны без разбора разбираются", "async function withParsed(" in form)
+    i = form.find("async function save()")
+    check("save() ждёт разбор всех персон", i >= 0 and "map(withParsed)" in form[i:i + 1200])
+    check("записи с причтом без имени считаются при обновлении",
+          "repair_clergy_noname" in read("db/migrate.sql"))
+    check("… и показываются на «О программе»", "clergy_noname_entries" in read("src/App.tsx"))
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -382,6 +403,7 @@ def incident_20260918_razbor_stiraet_poslednyuyu_bukvu():
     incident_20260914_arhiv_ne_gruzitsya_na_windows,
     incident_20260915_neskolko_spiskov_razom,
     incident_20260918_razbor_stiraet_poslednyuyu_bukvu,
+    incident_20260922_prichjt_bez_imeni,
 ]
 
 

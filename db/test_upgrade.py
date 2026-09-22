@@ -110,6 +110,11 @@ def build_old_database(path: Path) -> None:
     db.executemany(
         "INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, gender) VALUES (?,'child',10,?,?)",
         [(2, "Татьяна", "Ж"), (3, "Иван", "М"), (4, "Мария", "Ж"), (5, "Зурбаган", None)])
+    # Причт без имени (сборки 21–22.09 после перезапуска) — в двух записях.
+    db.execute("INSERT INTO role (code, title, section, sort_order) VALUES ('clergy1','церковнослужитель 1',0,100)")
+    db.executemany(
+        "INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, surname, rank) VALUES (?,'clergy1',100,?,?,?)",
+        [(2, None, None, "священник"), (3, None, None, "псаломщик"), (4, "Александр", "Рождественский", "священник")])
     db.commit()
     db.close()
 
@@ -245,6 +250,8 @@ def main() -> int:
               one("SELECT value FROM setting WHERE key='repair_count_column'") == "1")
         check("ребёнок без пола с мужским номером посчитан отдельно: 1",
               one("SELECT value FROM setting WHERE key='repair_unknown_sex'") == "1")
+        check("записей с причтом без имени посчитано: 2",
+              one("SELECT value FROM setting WHERE key='repair_clergy_noname'") == "2")
 
         print("\n4. Целостность и повторный запуск")
         check("integrity_check", one("PRAGMA integrity_check") == "ok")

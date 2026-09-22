@@ -97,21 +97,25 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   const [askSex, setAskSex] = useState(false);
   const childSex: Sex | null =
     (childParsed?.gender as Sex | null | undefined) ?? childSexManual;
-  const [father, setFatherState] = useState<Person>(NEW_FATHER);
-  const [mother, setMother] = useState<Person>(NEW_MOTHER);
-  const [god1, setGod1] = useState<Person>(EMPTY_PERSON);
-  const [god2, setGod2] = useState<Person>(EMPTY_PERSON);
+  const [fatherRaw, setFatherState] = useState<Person>(NEW_FATHER);
+  const [motherRaw, setMother] = useState<Person>(NEW_MOTHER);
+  const [god1Raw, setGod1] = useState<Person>(EMPTY_PERSON);
+  const [god2Raw, setGod2] = useState<Person>(EMPTY_PERSON);
   // Восприемников по умолчанию два, кнопкой — до четырёх: «такое встречается
   // в метриках, и в шаблоне Familio присутствует 4 восприемника» (21.09.2026).
-  const [god3, setGod3] = useState<Person>(EMPTY_PERSON);
-  const [god4, setGod4] = useState<Person>(EMPTY_PERSON);
+  const [god3Raw, setGod3] = useState<Person>(EMPTY_PERSON);
+  const [god4Raw, setGod4] = useState<Person>(EMPTY_PERSON);
   const [godCount, setGodCount] = useState(2);
 
   // Причт держится между записями: в книге он один на весь разворот, а часто
   // и на всё дело. Очищать его каждую запись — заставлять набирать заново.
-  const [clergy1, setClergy1] = useState<Person>(EMPTY_PERSON);
-  const [clergy2, setClergy2] = useState<Person>(EMPTY_PERSON);
-  const [clergy3, setClergy3] = useState<Person>(EMPTY_PERSON);
+  const [clergy1Raw, setClergy1] = useState<Person>(EMPTY_PERSON);
+  const [clergy2Raw, setClergy2] = useState<Person>(EMPTY_PERSON);
+  const [clergy3Raw, setClergy3] = useState<Person>(EMPTY_PERSON);
+  // Вне save() персоны — как есть; save() работает с разобранными копиями.
+  const father = fatherRaw, mother = motherRaw, god1 = god1Raw, god2 = god2Raw,
+        god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
+        clergy3 = clergy3Raw;
 
   // Меняется после каждого сохранения: список причта должен пополняться сразу.
   const [savedTimes, setSavedTimes] = useState(0);
@@ -251,7 +255,30 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     };
   }
 
+  /**
+   * Персона с ИОФ, но без разбора — так приходят причт после перезапуска
+   * и все персоны при открытии записи на правку: поле в свёрнутом причте
+   * не смонтировано и разобрать строку некому. Без разбора payload() уронил
+   * бы имена в NULL (проверяющий 22.09.2026: так терялись имена причта
+   * с 21.09). Разбираем здесь, той же командой, что и поле.
+   */
+  async function withParsed(p: Person): Promise<Person> {
+    if (!p.iof.trim() || p.parsed) return p;
+    const parsed = await invoke<Parsed>("parse_iof", { text: p.iof });
+    return { ...p, parsed };
+  }
+
   async function save() {
+    let father = fatherRaw, mother = motherRaw, god1 = god1Raw, god2 = god2Raw,
+        god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
+        clergy3 = clergy3Raw;
+    try {
+      [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3] = await Promise.all(
+        [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3].map(withParsed));
+    } catch (e) {
+      report("Не удалось разобрать имена перед сохранением", e);
+      return;
+    }
     const persons: PersonPayload[] = [{
       role_code: "child",
       sort_order: 10,
@@ -295,6 +322,13 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // Счёт кладётся в колонку по полу ребёнка. Пол неизвестен и счёт есть —
     // не сохраняем и говорим почему; выбор «мальчик / девочка» стоит под полем
     // ребёнка. До 13.09.2026 здесь молча писалось в мужскую колонку.
+    // Год теперь только на форме; у нового дела он пуст, и запись без года
+    // молча ушла бы в базу (проверяющий 22.09.2026).
+    if (year === null) {
+      report("Не указан год", "год записи стоит в первой строке формы — заполните его один раз, дальше он держится сам");
+      document.querySelector<HTMLInputElement>(".row.tight input")?.focus();
+      return;
+    }
     const columns = splitCount(count, childSex);
     if (columns === null) {
       // Кнопки выбора пола есть только под набранным именем. Счёт без имени
@@ -365,6 +399,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
    * значения приходят строкой, как если бы их набрали.
    */
   async function openEntry(id: number) {
+    if (editingId !== null && editingId !== id) {
+      report("Сначала сохраните изменения или нажмите «Отменить»",
+             "открыта другая запись — её правки иначе пропадут");
+      return;
+    }
     if (editingId === null && formDirty()) {
       report("Сначала сохраните или очистите набранное",
              "открыть запись для правки можно только с пустой формы — иначе набранное пропадёт");

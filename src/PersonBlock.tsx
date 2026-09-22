@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Suggest from "./Suggest";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
 import { focusNextField } from "./focus";
@@ -81,6 +81,10 @@ export default function PersonBlock({
    * жёстко мужским.
    */
   const [noteOpen, setNoteOpen] = useState(false);
+  // Новая запись — примечание снова свёрнуто (проверяющий 22.09.2026).
+  useEffect(() => {
+    if (!person.iof && !person.note) setNoteOpen(false);
+  }, [person.iof, person.note]);
   const sex = gender ?? (person.parsed?.gender as "М" | "Ж" | undefined) ?? undefined;
   const ranks = rankKind === "rank_clergy"
     ? "rank_clergy"
@@ -154,7 +158,7 @@ export default function PersonBlock({
         </div>
       ) : (
         <div className="noterow">
-          <button type="button" className="linkish" tabIndex={-1} onClick={() => setNoteOpen(true)}>
+          <button type="button" className="linkish" onClick={() => setNoteOpen(true)}>
             + примечание
           </button>
         </div>

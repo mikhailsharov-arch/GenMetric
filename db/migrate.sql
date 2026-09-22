@@ -116,6 +116,16 @@ SELECT 'repair_unknown_sex', CAST(count(*) AS TEXT) FROM entry e
    AND EXISTS (SELECT 1 FROM person_mention m
                 WHERE m.entry_id = e.id AND m.role_code = 'child' AND m.gender IS NULL);
 
+-- Причт без имени: с 21.09 по 22.09 после перезапуска программа восстанавливала
+-- причт без разбора ИОФ и писала его в записи с пустыми именем и фамилией
+-- (звание оставалось). Имена не восстановить — считаем, показываем на
+-- «О программе», Роман открывает такие записи и выбирает причт заново.
+INSERT OR REPLACE INTO setting (key, value)
+SELECT 'repair_clergy_noname', CAST(count(DISTINCT m.entry_id) AS TEXT)
+  FROM person_mention m
+ WHERE m.role_code IN ('clergy1', 'clergy2', 'clergy3')
+   AND m.first_name IS NULL AND m.surname IS NULL AND m.rank IS NOT NULL;
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting

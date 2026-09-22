@@ -83,6 +83,8 @@ struct DbInfo {
     /// Записи до 13.09 с ребёнком без пола и номером в мужской колонке —
     /// их программа не чинит, человек правит сам.
     unknown_sex_entries: i64,
+    /// Записи с причтом без имени (сборки 21–22.09 после перезапуска).
+    clergy_noname_entries: i64,
 }
 
 #[derive(Serialize)]
@@ -313,6 +315,12 @@ fn db_info(handle: tauri::AppHandle, app: State<App>) -> Result<DbInfo, String> 
                 .unwrap_or(0),
             unknown_sex_entries: conn
                 .query_row("SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'repair_unknown_sex'",
+                           [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .unwrap_or(0),
+            clergy_noname_entries: conn
+                .query_row("SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'repair_clergy_noname'",
                            [], |r| r.get(0))
                 .optional()
                 .map_err(|e| e.to_string())?

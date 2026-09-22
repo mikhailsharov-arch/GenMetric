@@ -284,6 +284,10 @@ def resumed(driver, wait):
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".editbar")))
     lifted = field(driver, "Ребёнок").get_attribute("value")
     check("запись поднялась в форму: ребёнок «Иван»", lifted == "Иван", f"«{lifted}»")
+    # Запись «Иван» сохранена после перезапуска с восстановленным причтом —
+    # имя причта обязано быть в базе (инцидент 22.09.2026: терялось).
+    body = driver.find_element(By.TAG_NAME, "body").text
+    check("у записи после перезапуска причт с именем", "Александр Рождественский" in body)
     fill(driver, "Счёт", "9")
     click(driver, "//button[starts-with(normalize-space(),'Сохранить изменения')]")
     try:

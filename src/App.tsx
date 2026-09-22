@@ -26,6 +26,7 @@ type DbInfo = {
   seed_stamp: string;
   repaired_entries: number;
   unknown_sex_entries: number;
+  clergy_noname_entries: number;
 };
 
 /**
@@ -192,6 +193,14 @@ export default function App() {
               Записей, где пол ребёнка не определён, а номер стоит в мужской колонке:{" "}
               {info.unknown_sex_entries}. Их программа не трогала — угадывать нельзя.
               В списке «Набрано» у них «№ м.»; если это девочки, скажите — поправим.
+            </p>
+          )}
+          {info.clergy_noname_entries > 0 && (
+            <p className="hint">
+              Записей, где у церковнослужителя осталось только звание без имени:{" "}
+              {info.clergy_noname_entries}. Так писала сборка 21–22 сентября после
+              перезапуска. Откройте эти записи из списка «Набрано» и выберите причт
+              из списка заново — имена восстановятся.
             </p>
           )}
 
