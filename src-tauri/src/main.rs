@@ -709,6 +709,7 @@ struct EntryBrief {
     event_year: Option<i64>,
     rite_month: Option<i64>,
     child: Option<String>,
+    clergy_noname: bool,
 }
 
 #[tauri::command]
@@ -1210,7 +1211,7 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
                 Ok(EntryBrief {
                     id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
-                    rite_month: r.get(7)?, child: r.get(8)?,
+                    rite_month: r.get(7)?, child: r.get(8)?, clergy_noname: r.get::<_, i64>(9)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;

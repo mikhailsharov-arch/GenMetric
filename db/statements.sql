@@ -92,7 +92,11 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
                     || ' ' || coalesce(m.surname, ''))
           FROM person_mention m
-         WHERE m.entry_id = e.id AND m.role_code = 'child') AS child
+         WHERE m.entry_id = e.id AND m.role_code = 'child') AS child,
+       -- Причт без имени (сборки 21–22.09) — пометить в списке, чтобы найти и поправить.
+       EXISTS (SELECT 1 FROM person_mention c
+                WHERE c.entry_id = e.id AND c.role_code IN ('clergy1','clergy2','clergy3')
+                  AND c.first_name IS NULL AND c.surname IS NULL AND c.rank IS NOT NULL) AS clergy_noname
   FROM entry e
  WHERE e.case_id = :case_id AND e.section = :section
  ORDER BY e.id DESC;

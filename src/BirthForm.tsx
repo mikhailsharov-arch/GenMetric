@@ -54,6 +54,7 @@ type Brief = {
   event_year: number | null;
   rite_month: number | null;
   child: string | null;
+  clergy_noname: boolean;
 };
 
 type PersonPayload = {
@@ -95,8 +96,6 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   // Пытались сохранить, а пол ребёнка неизвестен: подсветить выбор у поля.
   // Полоса ошибок для этого не годится — она говорит «пришлите текст Михаилу».
   const [askSex, setAskSex] = useState(false);
-  const childSex: Sex | null =
-    (childParsed?.gender as Sex | null | undefined) ?? childSexManual;
   const [fatherRaw, setFatherState] = useState<Person>(NEW_FATHER);
   const [motherRaw, setMother] = useState<Person>(NEW_MOTHER);
   const [god1Raw, setGod1] = useState<Person>(EMPTY_PERSON);
@@ -125,8 +124,12 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   const [editingId, setEditingId] = useState<number | null>(null);
   // Где стояли до правки: страница, счёт, год, месяцы. После правки старой
   // записи форма возвращается сюда, а не к странице той записи.
+  // Причт — тоже: в открытой записи он может быть другим (или пустым у
+  // пострадавших записей), а после правки следующие записи должны идти
+  // с прежним (ревьюер 22.09.2026).
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
-                               birthMonth: number | null; riteMonth: number | null } | null>(null);
+                               birthMonth: number | null; riteMonth: number | null;
+                               clergy: [Person, Person, Person] } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
@@ -272,26 +275,31 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     let father = fatherRaw, mother = motherRaw, god1 = god1Raw, god2 = god2Raw,
         god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
         clergy3 = clergy3Raw;
+    let parsedChild = childParsed;
     try {
       [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3] = await Promise.all(
         [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3].map(withParsed));
+      // Ребёнок — тем же порядком: при открытии записи разбор обнуляется,
+      // а сохранить можно раньше, чем поле ответит (ревьюер 22.09.2026).
+      if (child.trim() && !parsedChild) parsedChild = await invoke<Parsed>("parse_iof", { text: child });
     } catch (e) {
       report("Не удалось разобрать имена перед сохранением", e);
       return;
     }
+    const sexForSave: Sex | null = (parsedChild?.gender as Sex | null | undefined) ?? childSexManual;
     const persons: PersonPayload[] = [{
       role_code: "child",
       sort_order: 10,
-      surname: childParsed?.surname ?? null,
-      first_name: childParsed?.first_name ?? null,
-      patronymic: childParsed?.patronymic ?? null,
+      surname: parsedChild?.surname ?? null,
+      first_name: parsedChild?.first_name ?? null,
+      patronymic: parsedChild?.patronymic ?? null,
       surname_modern: null,
-      first_name_modern: childParsed?.first_name_modern ?? null,
-      patronymic_modern: childParsed?.patronymic_modern ?? null,
+      first_name_modern: parsedChild?.first_name_modern ?? null,
+      patronymic_modern: parsedChild?.patronymic_modern ?? null,
       maiden_surname: null,
       // Пол, выбранный кнопками, тоже уходит в запись: по нему потом
       // отличают девочек при починке данных (migrate.sql, 21.09.2026).
-      gender: childSex,
+      gender: sexForSave,
       rank: null,
       confession: null,
       place: null,
@@ -329,7 +337,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       document.querySelector<HTMLInputElement>(".row.tight input")?.focus();
       return;
     }
-    const columns = splitCount(count, childSex);
+    const columns = splitCount(count, sexForSave);
     if (columns === null) {
       // Кнопки выбора пола есть только под набранным именем. Счёт без имени
       // ребёнка — отдельный случай, и молчать тут нельзя (ревьюер 13.09.2026).
@@ -411,7 +419,10 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
-      if (editingId === null) beforeEdit.current = { page, count, year, birthMonth, riteMonth };
+      if (editingId === null) {
+        beforeEdit.current = { page, count, year, birthMonth, riteMonth,
+                               clergy: [clergy1, clergy2, clergy3] };
+      }
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
         m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
@@ -460,6 +471,9 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       setYear(b.year);
       setBirthMonth(b.birthMonth);
       setRiteMonth(b.riteMonth);
+      setClergy1(b.clergy[0]);
+      setClergy2(b.clergy[1]);
+      setClergy3(b.clergy[2]);
     }
   }
 
@@ -679,7 +693,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
                   <td>стр. {e.page ?? "—"}</td>
                   <td>
                     <button type="button" className="linkish" onClick={() => void openEntry(e.id)}>
-                      Открыть
+                      {e.clergy_noname ? "Открыть — причт без имени" : "Открыть"}
                     </button>
                   </td>
                 </tr>

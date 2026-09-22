@@ -280,7 +280,7 @@ def resumed(driver, wait):
 
     print("\n7. Правка сохранённой записи (заказчик 22.09.2026)")
     # Открываем последнюю (первую в списке — мальчик, счёт 8), меняем счёт на 9.
-    click(driver, "(//table[contains(@class,'saved')]//button[normalize-space()='Открыть'])[1]")
+    click(driver, "(//table[contains(@class,'saved')]//button[starts-with(normalize-space(),'Открыть')])[1]")
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".editbar")))
     lifted = field(driver, "Ребёнок").get_attribute("value")
     check("запись поднялась в форму: ребёнок «Иван»", lifted == "Иван", f"«{lifted}»")
