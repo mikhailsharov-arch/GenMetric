@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { focusNextField, focusNextEmptyField } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
+import NameResolve from "./NameResolve";
 
 export type Parsed = {
   first_name: string | null;
@@ -13,7 +14,17 @@ export type Parsed = {
   gender: string | null;
   father_name: string | null;
   known_name: boolean;
+  /** Имя опознано по соответствию человека («Пискарь» → «Кесарь»). */
+  name_alias: string | null;
+  patr_alias: string | null;
+  /** Второе слово похоже на отчество, но словарю неизвестно. */
+  patr_unknown: string | null;
 };
+
+/** Пометка в примечание после сверки: как было написано в документе. */
+export function docNote(kind: "name" | "patr", word: string): string {
+  return `${kind === "patr" ? "Отчество" : "Имя"} в документе: ${word}`;
+}
 
 export type PersonHint = {
   iof: string;
@@ -53,10 +64,16 @@ type Props = {
    *  Нужен, чтобы не предлагать мужчине женское отчество. Для ребёнка
    *  и восприемников роль пола не задаёт — тогда берём из разбора имени. */
   gender?: "М" | "Ж";
+  /**
+   * Сверка со справочником решена: в поле — имя из словаря, в примечание —
+   * «Имя в документе: …». Родитель дописывает примечание персоне (или записи
+   * у ребёнка). Без обработчика поле просто меняет текст.
+   */
+  onResolved?: (iof: string, note: string) => void;
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef, gender,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -191,6 +208,129 @@ export default function IofField({
 
   const inputEl = useRef<HTMLInputElement | null>(null);
 
+  // --- Сверка со справочником при уходе из поля (заказчик 23.09.2026) ---
+  //
+  // Не при наборе: пока слово не дописано, оно почти всегда «неизвестно».
+  // И не при сохранении: Ctrl+Enter упёрся бы в окно посреди потока. Уход
+  // из поля — Enter, Tab, стрелка, клик мимо — момент, когда слово готово.
+  const [resolve, setResolve] = useState<{ word: string; kind: "name" | "patr" } | null>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  // После «Исправить набор» (Esc) окно не открывается снова, пока текст
+  // не изменится: иначе из поля не выйти.
+  const skipCheck = useRef(false);
+  useEffect(() => { skipCheck.current = false; }, [value]);
+  const onResolvedRef = useRef(onResolved);
+  onResolvedRef.current = onResolved;
+
+  /** Одно окно на всё приложение: второе поверх первого залипает без
+   *  клавиатуры (проверяющий 23.09.2026 — окно имени забирало фокус, поле
+   *  НП под ним получало blur и открывало карточку). */
+  function modalOpen(): boolean {
+    return document.querySelector(".modal") !== null;
+  }
+
+  /** Подставить слова из словаря и дописать пометки в примечание.
+   *  Замены — списком: имя и отчество могут прийти в один уход из поля. */
+  function applyWords(changes: { index: number; word: string; kind: "name" | "patr" }[]) {
+    const toks = valueRef.current.trim().split(/\s+/);
+    const notes: string[] = [];
+    for (const c of changes) {
+      notes.push(docNote(c.kind, toks[c.index]));
+      toks[c.index] = c.word;
+    }
+    const text = toks.join(" ");
+    justPicked.current = true;
+    if (onResolvedRef.current) onResolvedRef.current(text, notes.join("; "));
+    else onChangeRef.current(text, null);
+  }
+
+  async function checkOnLeave(related: EventTarget | null = document.body) {
+    // Потеря фокуса окном программы (клик в просмотрщик скана) — не уход
+    // из поля: человек вернётся и допишет слово (проверяющий 23.09.2026).
+    // Признак — фокус ушёл «в никуда» и окно не активно; по одному
+    // hasFocus() нельзя: на раннере e2e окно может быть не в фокусе,
+    // а Tab всё равно ведёт в следующее поле (ревьюер 23.09.2026).
+    if (related === null && !document.hasFocus()) return;
+    if (skipCheck.current || modalOpen()) return;
+    const text = valueRef.current.trim();
+    if (!text) return;
+    let p: Parsed;
+    try {
+      p = await invoke<Parsed>("parse_iof", { text });
+    } catch {
+      return; // ошибка разбора уже показана эффектом выше
+    }
+    if (valueRef.current.trim() !== text || modalOpen()) return; // пока ждали, набрали другое
+    const toks = text.split(/\s+/);
+    if (!p.known_name) {
+      setResolve({ word: toks[0], kind: "name" });
+      return;
+    }
+    const changes: { index: number; word: string; kind: "name" | "patr" }[] = [];
+    if (p.name_alias) changes.push({ index: 0, word: p.name_alias, kind: "name" });
+    if (p.patr_alias) changes.push({ index: 1, word: p.patr_alias, kind: "patr" });
+    if (changes.length) applyWords(changes);
+    if (p.patr_unknown) {
+      // Имя уже подставлено (если было чем), отчество — следующим окном:
+      // «Такой же принцип и с отчеством» (Роман 23.09.2026).
+      setResolve({ word: toks[1], kind: "patr" });
+    }
+  }
+
+  /** Заново разобрать то же значение — после «Новое имя» текст не менялся. */
+  function reparse() {
+    const mine = ++parseSeq.current;
+    invoke<Parsed>("parse_iof", { text: valueRef.current })
+      .then((result) => {
+        if (mine !== parseSeq.current) return;
+        parsedRef.current = result;
+        setParsed(result);
+        onChangeRef.current?.(valueRef.current, result);
+      })
+      .catch((e) => report("Не удалось разобрать имя, отчество и фамилию", e));
+  }
+
+  function afterResolve() {
+    setResolve(null);
+    const el = inputEl.current;
+    // Фокус — в следующее поле, и ещё одна сверка того же значения: после
+    // имени могло остаться несверенное отчество. Оба — после перерисовки.
+    if (el) setTimeout(() => { focusNextField(el); void checkOnLeave(); }, 0);
+  }
+
+  async function resolvePick(target: string) {
+    if (!resolve) return;
+    try {
+      await invoke("alias_save", { kind: resolve.kind, form: resolve.word, target, gender: null });
+    } catch (e) {
+      report(`Не удалось запомнить соответствие «${resolve.word}» → «${target}»`, e);
+      return;
+    }
+    applyWords([{ index: resolve.kind === "patr" ? 1 : 0, word: target, kind: resolve.kind }]);
+    afterResolve();
+  }
+
+  async function resolveNew(g: "М" | "Ж") {
+    if (!resolve) return;
+    try {
+      await invoke("alias_save", { kind: "name", form: resolve.word, target: null, gender: g });
+    } catch (e) {
+      report(`Не удалось запомнить новое имя «${resolve.word}»`, e);
+      return;
+    }
+    reparse();
+    afterResolve();
+  }
+
+  function resolveCancel() {
+    skipCheck.current = true;
+    setResolve(null);
+    const el = inputEl.current;
+    // Курсор в конец, не выделение: первая же буква иначе стирала бы всё.
+    if (el) setTimeout(() => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }, 0);
+  }
+
   /**
    * Выбор целой персоны заполняет ИОФ, НП и звание разом — значит и фокус
    * должен уйти дальше сразу, без второго Enter (заказчик 13.09.2026).
@@ -274,8 +414,21 @@ export default function IofField({
             onChange(e.target.value, parsed);
           }}
           onKeyDown={onKeyDown}
-          onBlur={() => closeSuggestions()}
+          onBlur={(e) => {
+            closeSuggestions();
+            void checkOnLeave(e.relatedTarget);
+          }}
         />
+        {resolve && (
+          <NameResolve
+            word={resolve.word}
+            kind={resolve.kind}
+            gender={gender}
+            onPick={(v) => void resolvePick(v)}
+            onNew={(g) => void resolveNew(g)}
+            onCancel={resolveCancel}
+          />
+        )}
         {/* Что программа поняла: современное написание и пол. Строка появляется
             только когда есть что сказать, чтобы не занимать высоту зря. */}
         {(modern || parsed?.gender) && (

@@ -59,11 +59,67 @@ VALUES (:entry_id, :role_code, :sort_order, :surname, :first_name, :patronymic,
 SELECT id FROM place WHERE name_norm = :name_norm LIMIT 1;
 
 -- @place_insert
--- Населённый пункт заводится по первому упоминанию. Подробности (губерния,
--- уезд, волость, ссылка на Familio) человек заполняет позже, перед выгрузкой:
--- в рабочем файле по Борисоглебскому у всех 159 пунктов ссылка проставлена,
--- значит это обязательный шаг, но не в момент набора записи.
+-- Населённый пункт заводится по первому упоминанию — запасной путь, если
+-- карточка (place_save) почему-то не открылась и НП дошёл до сохранения
+-- записи неизвестным. Подробности тогда пусты, дозаполняются позже.
 INSERT INTO place (name, name_norm, origin) VALUES (:name, :name_norm, 'user');
+
+-- @place_save
+-- Карточка населённого пункта при первом вводе (Роман, приоритет 2 от
+-- 23.09.2026): губерния и уезд по умолчанию из дела, тип, волость, ссылка
+-- на Familio. short/full_location собираются здесь же — как в place.csv
+-- из Excel, чтобы выгрузка не различала свои и перенесённые места.
+INSERT INTO place (name, name_norm, np_type, guberniya, uyezd, volost,
+                   short_location, full_location, familio_url, origin)
+VALUES (:name, :name_norm, :np_type, :guberniya, :uyezd, :volost,
+        trim(coalesce(:np_type, '') || ' ' || :name),
+        trim(coalesce(:np_type, '') || ' ' || :name)
+          || CASE WHEN :volost    IS NULL OR :volost    = '' THEN '' ELSE ', ' || :volost    || ' волость'  END
+          || CASE WHEN :uyezd     IS NULL OR :uyezd     = '' THEN '' ELSE ', ' || :uyezd     || ' уезд'     END
+          || CASE WHEN :guberniya IS NULL OR :guberniya = '' THEN '' ELSE ', ' || :guberniya || ' губерния' END,
+        :familio_url, 'user');
+
+-- @place_names
+-- Все названия для поиска похожих («Букарина» → «Бухарино»): расстояние
+-- считает приложение, здесь только перечень.
+SELECT name, name_norm FROM place;
+
+-- @alias_find
+SELECT target, gender FROM name_alias WHERE kind = :kind AND form_norm = :form_norm;
+
+-- @alias_save
+-- «Запомнить» в окне сверки: одно соответствие на написание, повторное
+-- решение заменяет прежнее.
+INSERT OR REPLACE INTO name_alias (kind, form, form_norm, target, gender)
+VALUES (:kind, :form, :form_norm, :target, :gender);
+
+-- @name_headwords
+-- Имена-основы словаря для поиска похожих. Разговорные формы с base_name
+-- («Марья» → «Мария») сюда не входят: соответствие ведёт к основе.
+SELECT DISTINCT name, name_norm, gender FROM name_dict WHERE coalesce(base_name, '') = '';
+
+-- @dict_name_prefix
+-- Поиск в окне сверки — только по словарю (основы, без разговорных форм):
+-- подсказка suggest_first_name смешивает словарь с набранным и с архивом
+-- Excel, а цель соответствия обязана быть словарным именем, иначе оно так
+-- и останется «не сверенным» (проверяющий 23.09.2026).
+SELECT DISTINCT name AS form, gender FROM name_dict
+ WHERE coalesce(base_name, '') = '' AND name_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender = :gender)
+ ORDER BY name LIMIT :limit;
+
+-- @dict_patr_prefix
+SELECT DISTINCT form, gender FROM name_form
+ WHERE kind IN ('patr_old_m', 'patr_old_f', 'patr_m', 'patr_f')
+   AND form_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender = :gender)
+ ORDER BY form LIMIT :limit;
+
+-- @patr_forms
+-- Формы отчеств для поиска похожих: старые («Иванов») и современные
+-- («Иванович»), по полу.
+SELECT DISTINCT form, form_norm, gender FROM name_form
+ WHERE kind IN ('patr_old_m', 'patr_old_f', 'patr_m', 'patr_f');
 
 -- @lookup_extend
 -- Автопополнение справочников: значение, которого нет в перечне, добавляется
@@ -93,6 +149,11 @@ SELECT e.id, e.page, e.no_male, e.no_female,
                     || ' ' || coalesce(m.surname, ''))
           FROM person_mention m
          WHERE m.entry_id = e.id AND m.role_code = 'child') AS child,
+       -- Отец в строке: правка отца иначе в списке не видна (Роман 23.09.2026).
+       (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
+                    || ' ' || coalesce(m.surname, ''))
+          FROM person_mention m
+         WHERE m.entry_id = e.id AND m.role_code = 'father') AS father,
        -- Причт без имени (сборки 21–22.09) — пометить в списке, чтобы найти и поправить.
        EXISTS (SELECT 1 FROM person_mention c
                 WHERE c.entry_id = e.id AND c.role_code IN ('clergy1','clergy2','clergy3')

@@ -101,7 +101,23 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
 
   // Свёрнутый вид: по строке на каждого, и у каждого своя кнопка выбора —
   // сменить причт можно, не разворачивая. Заказчик: сворачивание удобно,
-  // но кнопка нужна всегда. Пока причт пуст — блок открыт, иначе не заполнить.
+  // но кнопка нужна всегда. Пустой причт тоже сворачивается — заказчик
+  // 23.09.2026: «бывают пользователи, которые не набирают церковнослужителей,
+  // оставляя их поля пустыми, они должны иметь возможность свернуть причт,
+  // чтобы он не „мозолил“ глаза». Свёрнутый пустой — одна строка.
+  if (!open && filled.length === 0) {
+    return (
+      <section className="person">
+        <div className="clergyline">
+          <h2 className="inline">Церковнослужители</h2>
+          <span className="clergysummary">не указаны</span>
+          <button type="button" className="linkish" onClick={() => setOpen(true)}>
+            Развернуть
+          </button>
+        </div>
+      </section>
+    );
+  }
   if (!open && filled.length > 0) {
     return (
       <section className="person">
@@ -130,11 +146,9 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
     <section className="person">
       <div className="clergyline">
         <h2 className="inline">Церковнослужители</h2>
-        {filled.length > 0 && (
-          <button type="button" className="linkish" onClick={() => setOpen(false)}>
-            Свернуть
-          </button>
-        )}
+        <button type="button" className="linkish" onClick={() => setOpen(false)}>
+          Свернуть
+        </button>
       </div>
       <p className="hint">
         Набранное здесь переходит в следующую запись само и запоминается —

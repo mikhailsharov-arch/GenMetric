@@ -16,7 +16,7 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
 /// Версия схемы, которую понимает эта сборка.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
@@ -97,6 +97,15 @@ struct ParsedIof {
     gender: Option<String>,
     father_name: Option<String>,
     known_name: bool,
+    /// Имя опознано по соответствию, заведённому человеком в окне сверки
+    /// («Пискарь» → «Кесарь»): форма подставит целевое имя в поле и допишет
+    /// в примечание «Имя в документе: Пискарь» — как при первом решении.
+    name_alias: Option<String>,
+    /// То же для отчества.
+    patr_alias: Option<String>,
+    /// Второе слово не опознано как отчество, но похоже на него по окончанию
+    /// и за ним есть ещё слово — форма предложит сверить как отчество.
+    patr_unknown: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -210,6 +219,73 @@ fn with_conn<T>(
 fn normalize(input: &str) -> String {
     let lowered = input.trim().to_lowercase().replace('ё', "е");
     lowered.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Ключ для сверки одного слова ИОФ со словарём.
+///
+/// Книги — в дореформенной орфографии: «Иванъ», «Петровъ». Конечный «ъ»
+/// отбрасывается до поиска, и такое имя считается известным без окна сверки.
+/// Заказчик 28.08.2026: в упражнении 9 из 31 имени не опознались только
+/// из-за «ъ». Заодно «і» → «и» и «ѣ» → «е» — те же книги.
+fn normalize_name(input: &str) -> String {
+    let n = normalize(input).replace('і', "и").replace('ѣ', "е");
+    n.strip_suffix('ъ').map(str::to_string).unwrap_or(n)
+}
+
+/// Расстояние Дамерау — Левенштейна по символам (не байтам: кириллица).
+/// Для поиска похожих имён и названий: «Букарина» ↔ «Бухарино» = 2.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for i in 0..=n { d[i][0] = i; }
+    for j in 0..=m { d[0][j] = j; }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = v;
+        }
+    }
+    d[n][m]
+}
+
+/// Похожие из перечня (name_norm, значение, пол): сначала ближние по
+/// расстоянию, при равенстве — с более длинным общим началом, потом по
+/// алфавиту. Дальше max_dist не показываем: список из всего словаря никому
+/// не нужен. Порог задаёт вызывающий: имена — треть длины, не меньше 3
+/// (пример Романа «Пискарь» → «Кесарь» = 3); места — четверть, не меньше 2
+/// («Букарина» → «Бухарино» = 2, а «Неверовка» к «Новодеревенька» уже нет:
+/// в карточке Enter выбирает первое похожее, и ложное похожее опасно).
+fn rank_similar(query: &str, items: Vec<(String, String, Option<String>)>, limit: usize,
+                max_dist: usize) -> Vec<Similar>
+{
+    let q = query;
+    let mut scored: Vec<(usize, usize, String, Option<String>)> = items
+        .into_iter()
+        .filter_map(|(norm, value, gender)| {
+            let dist = edit_distance(q, &norm);
+            if dist > max_dist { return None; }
+            let prefix = q.chars().zip(norm.chars()).take_while(|(x, y)| x == y).count();
+            Some((dist, prefix, value, gender))
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    scored.dedup_by(|a, b| a.2 == b.2);
+    scored.into_iter().take(limit)
+        .map(|(dist, _, value, gender)| Similar { value, gender, distance: dist as i64 })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct Similar {
+    value: String,
+    gender: Option<String>,
+    distance: i64,
 }
 
 /// Экранирование спецсимволов LIKE, чтобы введённые % и _ искались буквально.
@@ -402,23 +478,64 @@ fn suggest(
 /// в 99,9%.
 #[tauri::command]
 fn parse_iof(app: State<App>, text: String) -> Result<ParsedIof, String> {
-    with_conn(&app, &format!("Разбор «{text}»"), |conn| {
-        let tokens: Vec<&str> = text.split_whitespace().collect();
-        let mut out = ParsedIof {
-            first_name: None,
-            first_name_modern: None,
-            patronymic: None,
-            patronymic_modern: None,
-            surname: None,
-            gender: None,
-            father_name: None,
-            known_name: false,
-        };
-        if tokens.is_empty() {
-            return Ok(out);
-        }
+    with_conn(&app, &format!("Разбор «{text}»"), |conn| parse_iof_in(conn, &text))
+}
 
-        out.first_name = Some(tokens[0].to_string());
+/// Похоже ли слово на отчество по окончанию — чтобы не сверять как отчество
+/// фамилию, стоящую второй в записи без отчества.
+fn looks_like_patronymic(word: &str) -> bool {
+    let w = normalize_name(word);
+    ["ов", "ев", "ин", "ова", "ева", "ина", "ич", "на", "ых", "их"]
+        .iter().any(|e| w.ends_with(e))
+}
+
+fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out = ParsedIof {
+        first_name: None,
+        first_name_modern: None,
+        patronymic: None,
+        patronymic_modern: None,
+        surname: None,
+        gender: None,
+        father_name: None,
+        known_name: false,
+        name_alias: None,
+        patr_alias: None,
+        patr_unknown: None,
+    };
+    if tokens.is_empty() {
+        return Ok(out);
+    }
+
+    let alias_find = statement("alias_find")?;
+    let alias = |kind: &str, word: &str| -> Result<Option<(Option<String>, Option<String>)>, String> {
+        conn.query_row(&alias_find,
+                       rusqlite::named_params! { ":kind": kind, ":form_norm": normalize_name(word) },
+                       |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(|e| e.to_string())
+    };
+
+    out.first_name = Some(tokens[0].to_string());
+    // Сначала соответствие, заведённое человеком: оно сильнее словаря.
+    // Целевое имя ищется в словаре как обычное — с полом и основой.
+    let mut lookup_word = tokens[0].to_string();
+    match alias("name", tokens[0])? {
+        Some((Some(target), _)) => {
+            out.name_alias = Some(target.clone());
+            lookup_word = target;
+        }
+        Some((None, gender)) => {
+            // «Новое имя»: словарь его не знает, но человек сказал, что оно есть.
+            out.known_name = true;
+            out.gender = gender;
+            // Современное — без конечного «ъ»: «Жданъ» → «Ждан» (ревьюер 23.09.2026).
+            out.first_name_modern = Some(tokens[0].trim_end_matches('ъ').to_string());
+        }
+        None => {}
+    }
+    if !out.known_name {
         // priority 0 — заголовочное написание, 1 — вариант: точное совпадение
         // с самостоятельным именем важнее совпадения с вариантом другого.
         let head: Option<(String, Option<String>, Option<String>)> = conn
@@ -427,47 +544,118 @@ fn parse_iof(app: State<App>, text: String) -> Result<ParsedIof, String> {
                    FROM name_form f JOIN name_dict d ON d.id = f.name_id
                   WHERE f.kind IN ('name','variant') AND f.form_norm = ?1
                   ORDER BY f.priority LIMIT 1",
-                [normalize(tokens[0])],
+                [normalize_name(&lookup_word)],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-
         if let Some((name, base, gender)) = head {
             out.known_name = true;
             out.gender = gender;
             out.first_name_modern = Some(base.unwrap_or(name));
         }
+    }
 
-        let mut rest = &tokens[1..];
-        if let Some(first_rest) = rest.first() {
-            let patr: Option<(String, String, String)> = conn
-                .query_row(
-                    "SELECT d.name,
-                            CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END,
-                            CASE WHEN f.kind LIKE '%_m' THEN 'М' ELSE 'Ж' END
-                       FROM name_form f JOIN name_dict d ON d.id = f.name_id
-                      WHERE f.kind LIKE 'patr%' AND f.form_norm = ?1
-                      ORDER BY f.priority LIMIT 1",
-                    [normalize(first_rest)],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            if let Some((father, modern, sex)) = patr {
-                out.patronymic = Some(first_rest.to_string());
-                out.patronymic_modern = Some(modern);
-                out.father_name = Some(father);
-                if out.gender.is_none() {
-                    out.gender = Some(sex);
-                }
-                rest = &rest[1..];
-            }
+    let mut rest = &tokens[1..];
+    if let Some(first_rest) = rest.first() {
+        let mut patr_word = first_rest.to_string();
+        if let Some((Some(target), _)) = alias("patr", first_rest)? {
+            out.patr_alias = Some(target.clone());
+            patr_word = target;
         }
-        if !rest.is_empty() {
-            out.surname = Some(rest.join(" "));
+        let patr: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT d.name,
+                        CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END,
+                        CASE WHEN f.kind LIKE '%_m' THEN 'М' ELSE 'Ж' END
+                   FROM name_form f JOIN name_dict d ON d.id = f.name_id
+                  WHERE f.kind LIKE 'patr%' AND f.form_norm = ?1
+                  ORDER BY f.priority LIMIT 1",
+                [normalize_name(&patr_word)],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some((father, modern, sex)) = patr {
+            out.patronymic = Some(first_rest.to_string());
+            out.patronymic_modern = Some(modern);
+            out.father_name = Some(father);
+            if out.gender.is_none() {
+                out.gender = Some(sex);
+            }
+            rest = &rest[1..];
+        } else if rest.len() >= 2 && looks_like_patronymic(first_rest) {
+            // «Иван Пискарев Сидоров»: второе слово не отчество по словарю,
+            // но стоит на месте отчества и выглядит как оно — форма спросит.
+            out.patr_unknown = Some(first_rest.to_string());
+        }
+    }
+    if !rest.is_empty() {
+        out.surname = Some(rest.join(" "));
+    }
+    Ok(out)
+}
+
+/// Похожие имена (kind = "name") или отчества ("patr") — для окна сверки.
+/// Пол сужает список, если известен.
+#[tauri::command]
+fn similar_names(app: State<App>, text: String, kind: String, gender: Option<String>,
+                 limit: Option<i64>) -> Result<Vec<Similar>, String> {
+    with_conn(&app, &format!("Похожие на «{text}»"), |conn| {
+        let sql = statement(if kind == "patr" { "patr_forms" } else { "name_headwords" })?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?,
+                                   r.get::<_, Option<String>>(2)?)))
+            .map_err(|e| e.to_string())?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (norm, value, g) = row.map_err(|e| e.to_string())?;
+            if let (Some(want), Some(have)) = (&gender, &g) {
+                if want != have { continue; }
+            }
+            items.push((norm, value, g));
+        }
+        let q = normalize_name(&text);
+        let max_dist = (q.chars().count() / 3).max(3);
+        Ok(rank_similar(&q, items, limit.unwrap_or(12).clamp(1, 50) as usize, max_dist))
+    })
+}
+
+/// Поиск по началу слова для окна сверки — только словарь, см. dict_name_prefix.
+#[tauri::command]
+fn dict_search(app: State<App>, prefix: String, kind: String, gender: Option<String>,
+               limit: Option<i64>) -> Result<Vec<Similar>, String> {
+    with_conn(&app, &format!("Словарь по «{prefix}»"), |conn| {
+        let sql = statement(if kind == "patr" { "dict_patr_prefix" } else { "dict_name_prefix" })?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! {
+                ":prefix": like_prefix(&normalize_name(&prefix)), ":gender": gender,
+                ":limit": limit.unwrap_or(12).clamp(1, 50),
+            }, |r| Ok(Similar { value: r.get(0)?, gender: r.get(1)?, distance: 0 }))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    })
+}
+
+/// «Запомнить» в окне сверки. target None — «новое имя» с полом.
+#[tauri::command]
+fn alias_save(app: State<App>, kind: String, form: String, target: Option<String>,
+              gender: Option<String>) -> Result<(), String> {
+    with_conn(&app, &format!("Соответствие «{form}»"), |conn| {
+        if kind != "name" && kind != "patr" {
+            return Err(format!("Неизвестный вид соответствия: {kind}"));
+        }
+        conn.execute(&statement("alias_save")?, rusqlite::named_params! {
+            ":kind": kind, ":form": form.trim(), ":form_norm": normalize_name(&form),
+            ":target": target, ":gender": gender,
+        }).map_err(|e| e.to_string())?;
+        Ok(())
     })
 }
 
@@ -709,6 +897,7 @@ struct EntryBrief {
     event_year: Option<i64>,
     rite_month: Option<i64>,
     child: Option<String>,
+    father: Option<String>,
     clergy_noname: bool,
 }
 
@@ -1074,6 +1263,83 @@ fn suggest_spouse(app: State<App>, husband: String) -> Result<Option<SpouseHint>
     })
 }
 
+#[derive(Serialize)]
+struct PlaceCheck {
+    known: bool,
+    similar: Vec<Similar>,
+}
+
+/// Известен ли населённый пункт, и на что он похож, если нет. Форма
+/// спрашивает при уходе из поля НП: неизвестный — карточка, похожий —
+/// предложение выбрать («Букарина» → «Бухарино», Роман 13.09.2026).
+#[tauri::command]
+fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
+    with_conn(&app, &format!("Проверка НП «{name}»"), |conn| {
+        let norm = normalize(&name);
+        if norm.is_empty() {
+            return Ok(PlaceCheck { known: true, similar: vec![] });
+        }
+        let known = conn
+            .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
+                       |r| r.get::<_, i64>(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if known {
+            return Ok(PlaceCheck { known: true, similar: vec![] });
+        }
+        let mut stmt = conn.prepare(&statement("place_names")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?, None)))
+            .map_err(|e| e.to_string())?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row.map_err(|e| e.to_string())?);
+        }
+        let max_dist = (norm.chars().count() / 4).max(2);
+        Ok(PlaceCheck { known: false, similar: rank_similar(&norm, items, 8, max_dist) })
+    })
+}
+
+#[derive(Deserialize)]
+struct PlaceCard {
+    name: String,
+    np_type: Option<String>,
+    guberniya: Option<String>,
+    uyezd: Option<String>,
+    volost: Option<String>,
+    familio_url: Option<String>,
+}
+
+/// Карточка населённого пункта при первом вводе. Уже известное название
+/// не задваивается — возвращается прежний id.
+#[tauri::command]
+fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
+    with_conn(&app, &format!("Карточка НП «{}»", card.name), |conn| {
+        let name = card.name.trim().to_string();
+        if name.is_empty() {
+            return Err("Название населённого пункта пустое".to_string());
+        }
+        let norm = normalize(&name);
+        if let Some(id) = conn
+            .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
+                       |r| r.get::<_, i64>(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(id);
+        }
+        let blank = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        conn.execute(&statement("place_save")?, rusqlite::named_params! {
+            ":name": name, ":name_norm": norm,
+            ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
+            ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
+            ":familio_url": blank(&card.familio_url),
+        }).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    })
+}
+
 /// Находит населённый пункт по названию или заводит новый.
 fn place_id_for(conn: &Connection, name: &str) -> Result<i64, String> {
     let norm = normalize(name);
@@ -1211,7 +1477,8 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
                 Ok(EntryBrief {
                     id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
-                    rite_month: r.get(7)?, child: r.get(8)?, clergy_noname: r.get::<_, i64>(9)? != 0,
+                    rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
+                    clergy_noname: r.get::<_, i64>(10)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1306,6 +1573,11 @@ fn main() {
             set_setting,
             suggest,
             parse_iof,
+            similar_names,
+            dict_search,
+            alias_save,
+            place_check,
+            place_save,
             set_always_on_top
         ])
         .run(tauri::generate_context!())

@@ -69,26 +69,6 @@ CREATE TABLE name_form (
 CREATE INDEX ix_name_form_kind ON name_form (kind, form_norm);
 CREATE INDEX ix_name_form_norm ON name_form (form_norm, priority);
 
--- Соответствия, заведённые человеком при сверке имён (23.09.2026, проект
--- Романа): «Пискарь» в книге → «Кесарь» из словаря. target — заголовочное
--- имя (kind = 'name') или форма отчества (kind = 'patr') из словаря;
--- target NULL — «новое имя», которого в словаре нет, с указанным полом.
---
--- Своя таблица, не строки в name_form: обновление стирает и перезаливает
--- name_dict/name_form из поставки (migrate.sql), и всё заведённое человеком
--- там бы пропало. Связь — по тексту, не по id: id словаря между поставками
--- не обещаны.
-CREATE TABLE name_alias (
-  id          INTEGER PRIMARY KEY,
-  kind        TEXT    NOT NULL CHECK (kind IN ('name','patr')),
-  form        TEXT    NOT NULL,           -- как в документе
-  form_norm   TEXT    NOT NULL,
-  target      TEXT,                       -- имя или отчество из словаря
-  gender      TEXT    CHECK (gender IN ('М','Ж')),
-  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (kind, form_norm)
-);
-
 -- Плоские перечни: архивы, церкви, губернии, уезды, звания, вероисповедания,
 -- причины смерти, типы населённых пунктов, окончания фамилий и прочее.
 -- kind — техническое имя перечня, см. таблицу lookup_kind.

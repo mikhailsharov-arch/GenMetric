@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, type Person } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, appendNote, type Person } from "./PersonBlock";
+import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
@@ -54,6 +55,7 @@ type Brief = {
   event_year: number | null;
   rite_month: number | null;
   child: string | null;
+  father: string | null;
   clergy_noname: boolean;
 };
 
@@ -90,6 +92,10 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
   const [child, setChild] = useState("");
   const [childParsed, setChildParsed] = useState<Parsed | null>(null);
+  // Примечание записи: у ребёнка нет своего «Прим.», и пометка «Имя в
+  // документе: …» после сверки идёт сюда (entry.note).
+  const [entryNote, setEntryNote] = useState("");
+  const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
   // Пол ребёнка, указанный руками — только когда по имени его не понять.
   // Пол из разбора имени важнее: он есть у 99,7% имён на данных Романа.
   const [childSexManual, setChildSexManual] = useState<Sex | null>(null);
@@ -286,6 +292,28 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       report("Не удалось разобрать имена перед сохранением", e);
       return;
     }
+    // Имя вне справочника не сохраняется: заказчик 28.08 и 23.09.2026 —
+    // «нельзя пропускать несуществующие имена». Окно сверки открывается при
+    // уходе из поля; сюда доходит только то, что осталось несверенным.
+    const unknown = [
+      ["ребёнка", child.trim() ? parsedChild : null],
+      ["отца", father.iof.trim() ? father.parsed : null],
+      ["матери", mother.iof.trim() ? mother.parsed : null],
+      ["восприемника", god1.iof.trim() ? god1.parsed : null],
+      ["восприемника", god2.iof.trim() ? god2.parsed : null],
+      ["восприемника", god3.iof.trim() ? god3.parsed : null],
+      ["восприемника", god4.iof.trim() ? god4.parsed : null],
+      ["причта", clergy1.iof.trim() ? clergy1.parsed : null],
+      ["причта", clergy2.iof.trim() ? clergy2.parsed : null],
+      ["причта", clergy3.iof.trim() ? clergy3.parsed : null],
+    ].find(([, p]) => p && !(p as Parsed).known_name) as [string, Parsed] | undefined;
+    if (unknown) {
+      report(`Имя ${unknown[0]} «${unknown[1].first_name}» не сверено со справочником`,
+             unknown[0] === "причта"
+               ? "нажмите «Изменить» у причта и выйдите из поля ИОФ — откроется окно сверки (ревьюер 23.09.2026: свёрнутый причт поля не показывает)"
+               : "выйдите из поля ИОФ — откроется окно сверки; выберите имя из словаря или «Новое имя»");
+      return;
+    }
     const sexForSave: Sex | null = (parsedChild?.gender as Sex | null | undefined) ?? childSexManual;
     const persons: PersonPayload[] = [{
       role_code: "child",
@@ -368,7 +396,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           rite_day: riteDay,
           rite_month: riteMonth,
           rite_year: year,
-          note: null,
+          note: entryNote.trim() || null,
           uncertain: null,
           persons,
         },
@@ -441,6 +469,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       if (e.event_year !== null) setYear(e.event_year);
       setRiteDay(e.rite_day);
       setRiteMonth(e.rite_month);
+      setEntryNote(e.note ?? "");
       setFatherState(person(by("father"), { ...NEW_FATHER }));
       setMother(person(by("mother"), { ...NEW_MOTHER }));
       setGod1(person(by("godparent1"), { ...EMPTY_PERSON }));
@@ -498,6 +527,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   function next() {
     setChild("");
     setChildParsed(null);
+    setEntryNote("");
     setChildSexManual(null);
     setAskSex(false);
     setFatherState({ ...NEW_FATHER });
@@ -564,7 +594,22 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
             setChildParsed(parsed);
           }}
           placeholder="имя"
+          onResolved={(text, note) => {
+            setChild(text);
+            setChildParsed(null);
+            setEntryNote((n) => appendNote(n, note));
+          }}
         />
+        {entryNote && (
+          <div className="field">
+            <label>Прим.</label>
+            <div className="fieldbody">
+              <input data-field value={entryNote} onChange={(e) => setEntryNote(e.target.value)}
+                     autoComplete="off" spellCheck={false}
+                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); } }} />
+            </div>
+          </div>
+        )}
         {child.trim() && childParsed && !childParsed.gender && (
           <div className="field">
             <label>Пол</label>
@@ -598,6 +643,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         person={father}
         onChange={setFather}
         rankKind="rank"
+        placeDefaults={placeDefaults}
         withConfession
         gender="М"
         onPickPerson={pickFather}
@@ -607,6 +653,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         person={mother}
         onChange={setMother}
         rankKind="rank"
+        placeDefaults={placeDefaults}
         withConfession
         gender="Ж"
         onPickPerson={pickInto(setMother)}
@@ -616,6 +663,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         person={god1}
         onChange={setGod1}
         rankKind="rank"
+        placeDefaults={placeDefaults}
         onPickPerson={pickInto(setGod1)}
       />
       <PersonBlock
@@ -623,6 +671,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         person={god2}
         onChange={setGod2}
         rankKind="rank"
+        placeDefaults={placeDefaults}
         onPickPerson={pickInto(setGod2)}
       />
       {godCount >= 3 && (
@@ -631,6 +680,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           person={god3}
           onChange={setGod3}
           rankKind="rank"
+        placeDefaults={placeDefaults}
           onPickPerson={pickInto(setGod3)}
         />
       )}
@@ -640,6 +690,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           person={god4}
           onChange={setGod4}
           rankKind="rank"
+        placeDefaults={placeDefaults}
           onPickPerson={pickInto(setGod4)}
         />
       )}
@@ -682,6 +733,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
                     {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.child || "без имени"}
+                    {/* Отец в строке: правка отца иначе в списке не видна (Роман 23.09.2026). */}
+                    {e.father && <span className="sub"> · отец {e.father}</span>}
                   </td>
                   {/* Номер с колонкой — единственное место, где видно, что счёт
                       лёг по полу ребёнка (инцидент 13.09.2026). */}

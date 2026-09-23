@@ -16,6 +16,9 @@ type Props = {
    *  Заказчик 21.09.2026 про архив: «в индексаторе Excel же есть список
    *  архивов, надо сделать, чтобы можно было выбрать из выпадающего списка». */
   browse?: boolean;
+  /** Уход из поля (Enter, Tab, клик мимо) — с текущим значением. Поле НП
+   *  по нему проверяет, известен ли пункт, и открывает карточку. */
+  onLeave?: (value: string, related: EventTarget | null) => void;
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -34,7 +37,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -131,8 +134,12 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
     justPicked.current = true;
     closeList();
     onChange(item.value);
+    // Фокус уходит сразу, до перерисовки: onBlur ниже увидел бы ещё старое
+    // значение («Бух» вместо «Бухарино») и открыл бы карточку НП на обрывок.
+    pickedValue.current = item.value;
     if (inputRef.current) focusNextField(inputRef.current);
   }
+  const pickedValue = useRef<string | null>(null);
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     const listOpen = open && items.length > 0;
@@ -187,7 +194,12 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           onChange(e.target.value);
         }}
         onKeyDown={onKeyDown}
-        onBlur={() => closeList()}
+        onBlur={(e) => {
+          closeList();
+          const leaving = pickedValue.current ?? value;
+          pickedValue.current = null;
+          onLeave?.(leaving, e.relatedTarget);
+        }}
       />
       {browse && (
         <button

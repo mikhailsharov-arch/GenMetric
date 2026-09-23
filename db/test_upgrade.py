@@ -35,8 +35,8 @@ REPO = DB_DIR.parent
 # С какой версии поднимаемся. Ровно та, что стоит сейчас у Романа: он ставит
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
-FROM_VERSION = 3
-TO_VERSION = 4
+FROM_VERSION = 4
+TO_VERSION = 5
 
 ok_count = 0
 fail_count = 0
@@ -163,9 +163,10 @@ def main() -> int:
         db = sqlite3.connect(user)
         check(f"схема версии {FROM_VERSION}",
               db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == FROM_VERSION)
-        has_clergy = db.execute(
-            "SELECT count(*) FROM sqlite_master WHERE name='clergy_index'").fetchone()[0]
-        check("памяти о причте ещё нет", has_clergy == 0)
+        # Со схемы 4 (сборка #32) до 5 (23.09.2026) новая только name_alias.
+        has_alias = db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='name_alias'").fetchone()[0]
+        check("таблицы соответствий имён ещё нет", has_alias == 0)
         check("звания в чужих перечнях у него есть",
               db.execute("SELECT count(*) FROM lookup WHERE "
                          "(kind='rank_f' AND value='крестьянский сын') OR "
@@ -188,6 +189,12 @@ def main() -> int:
         # Новое в версии 4: причт, который можно выбрать списком, а не набирать.
         check("появилась память о причте",
               one("SELECT count(*) FROM sqlite_master WHERE name='clergy_index'") == 1)
+        # Новое в версии 5: соответствия имён из окна сверки (23.09.2026).
+        # Своя таблица — обновление её не трогает, в отличие от name_form.
+        check("появилась таблица соответствий имён",
+              one("SELECT count(*) FROM sqlite_master WHERE name='name_alias'") == 1)
+        db.execute("INSERT INTO name_alias (kind, form, form_norm, target) VALUES ('name','Пискарь','пискарь','Кесарь')")
+        db.commit()
         n_forms = one("SELECT count(*) FROM name_form")
         check("таблица форм имён заполнена", n_forms > 12000, f"{n_forms} написаний")
         check("имена перенесены", one("SELECT count(*) FROM name_dict") > 3000)
@@ -273,6 +280,10 @@ def main() -> int:
               db.execute("SELECT count(*) FROM name_dict").fetchone()[0] == 3112)
         check("повторная починка ничего не нашла и счётчик не вырос",
               db.execute("SELECT value FROM setting WHERE key='repair_count_column'").fetchone()[0] == "1")
+        # Соответствия имён — пользовательские, обновление их не трогает
+        # (в отличие от name_form, которая перезаливается целиком).
+        check("соответствие «Пискарь» → «Кесарь» пережило обновление",
+              db.execute("SELECT target FROM name_alias WHERE form_norm='пискарь'").fetchone() == ("Кесарь",))
         db.close()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}\n")

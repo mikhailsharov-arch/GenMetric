@@ -300,6 +300,86 @@ def resumed(driver, wait):
     check("записей по-прежнему две — правка не плодит", "Набрано: 2" in body)
     check("режим правки снят", not driver.find_elements(By.CSS_SELECTOR, ".editbar"))
 
+    print("\n8. Сверка имени со справочником (заказчик 23.09.2026)")
+    father = "//section[.//h2[normalize-space()='Отец']]//"
+    iof = field(driver, "ИОФ", father)
+    iof.send_keys("Пискарь Иванов Сидоров")
+    iof.send_keys(Keys.ESCAPE)
+    iof.send_keys(Keys.TAB)  # уход из поля — момент сверки
+    try:
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='resolve-name']")))
+        opened = True
+    except TimeoutException:
+        opened = False
+    check("окно сверки открылось на уходе из поля", opened,
+          "" if opened else "полоса: " + " | ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")))
+    if opened:
+        modal = driver.find_element(By.CSS_SELECTOR, ".modal[data-modal='resolve-name']").text
+        check("в заголовке — «Пискарь»", "«Пискарь»" in modal, modal.split("\n")[0])
+        check("среди похожих — «Кесарь»", "Кесарь" in modal, modal.replace("\n", " | ")[:200])
+        active = driver.switch_to.active_element
+        check("фокус в поле поиска окна", active.tag_name == "input" and active.find_elements(By.XPATH, "ancestor::div[contains(@class,'modal')]"))
+        active.send_keys(Keys.ENTER)  # первое похожее = Кесарь
+        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
+        value = field(driver, "ИОФ", father).get_attribute("value")
+        check("в поле — «Кесарь Иванов Сидоров»", value == "Кесарь Иванов Сидоров", f"«{value}»")
+        note = field(driver, "Прим.", father).get_attribute("value")
+        check("в примечании — «Имя в документе: Пискарь»", "Имя в документе: Пискарь" in note, f"«{note}»")
+
+    print("\n9. Карточка населённого пункта (заказчик 23.09.2026)")
+    np = field(driver, "НП", father)
+    np.send_keys("Букарина")
+    np.send_keys(Keys.ESCAPE)
+    np.send_keys(Keys.TAB)
+    try:
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place']")))
+        opened = True
+    except TimeoutException:
+        opened = False
+    check("карточка открылась для «Букарина»", opened)
+    if opened:
+        modal = driver.find_element(By.CSS_SELECTOR, ".modal[data-modal='place']").text
+        check("похожее — «Бухарино»", "Бухарино" in modal, modal.replace("\n", " | ")[:200])
+        driver.switch_to.active_element.send_keys(Keys.ENTER)  # выбрать похожее
+        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
+        value = field(driver, "НП", father).get_attribute("value")
+        check("в поле — «Бухарино»", value == "Бухарино", f"«{value}»")
+    god1 = "//section[.//h2[normalize-space()='Восприемник 1']]//"
+    field(driver, "ИОФ", god1).send_keys("Анна Иванова")
+    field(driver, "ИОФ", god1).send_keys(Keys.ESCAPE)
+    np = field(driver, "НП", god1)
+    np.send_keys("Новодеревенька")
+    np.send_keys(Keys.ESCAPE)
+    np.send_keys(Keys.TAB)
+    try:
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place']")))
+        opened = True
+    except TimeoutException:
+        opened = False
+    check("карточка нового НП открылась", opened)
+    if opened:
+        gub = field(driver, "Губерния", "//div[contains(@class,'modal')]//").get_attribute("value")
+        check("губерния подставлена из дела", gub == "Костромская", f"«{gub}»")
+        for _ in range(5):  # тип, губерния, уезд, волость, Familio → сохранить
+            driver.switch_to.active_element.send_keys(Keys.ENTER)
+            time.sleep(0.2)
+        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
+        value = field(driver, "НП", god1).get_attribute("value")
+        check("НП остался в поле", value == "Новодеревенька", f"«{value}»")
+    fill(driver, "Счёт", "10")
+    fill(driver, "Ребёнок", "Анна")
+    child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
+    wait.until(EC.text_to_be_present_in_element((By.XPATH, child + "//*[contains(@class,'parsedline')]"), "Ж"))
+    click(driver, "//button[starts-with(normalize-space(),'Сохранить и следующая')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Набрано: 3"))
+    except TimeoutException:
+        pass
+    body = driver.find_element(By.TAG_NAME, "body").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("третья запись сохранена", "Набрано: 3" in body, " | ".join(errorbar))
+    check("в списке виден отец", "отец Кесарь Иванов Сидоров" in body)
+
 
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):

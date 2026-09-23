@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
+import PlaceCard, { type Similar } from "./PlaceCard";
 import { focusNextField } from "./focus";
+import { report } from "./errors";
 
 /**
  * Блок одной персоны в записи.
@@ -61,14 +64,61 @@ type Props = {
    * запись помещается на 85%, и терять это ради трёх рамок нельзя.
    */
   compact?: boolean;
+  /** Губерния и уезд дела — по умолчанию в карточку нового НП. */
+  placeDefaults?: { guberniya: string; uyezd: string };
 };
+
+/** Дописать пометку в примечание, не повторяя её. */
+export function appendNote(note: string, add: string): string {
+  if (!add || note.includes(add)) return note;
+  return note.trim() ? `${note.trim()}; ${add}` : add;
+}
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, compact,
+  inputRef, gender, compact, placeDefaults,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   const Frame = compact ? "div" : "section";
+
+  // Карточка населённого пункта при первом вводе — по уходу из поля НП.
+  // После «Исправить название» (Esc) не открывается снова, пока название
+  // не изменится.
+  const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[] } | null>(null);
+  const placeSkip = useRef(false);
+  useEffect(() => { placeSkip.current = false; }, [person.place]);
+  const placeRef = useRef<HTMLInputElement | null>(null);
+  const placeNow = useRef(person.place);
+  placeNow.current = person.place;
+
+  async function checkPlace(name: string, related: EventTarget | null) {
+    const text = name.trim();
+    // Не при потере фокуса окном и не поверх другого окна — см. IofField.
+    if ((related === null && !document.hasFocus()) || document.querySelector(".modal")) return;
+    if (!text || placeSkip.current || placeCard) return;
+    try {
+      const r = await invoke<{ known: boolean; similar: Similar[] }>("place_check", { name: text });
+      // Пока ждали ответ, поле могло измениться — карточка на прежнее не нужна.
+      if (r.known || placeNow.current.trim() !== text || document.querySelector(".modal")) return;
+      setPlaceCard({ name: text, similar: r.similar });
+    } catch (e) {
+      report(`Не удалось проверить населённый пункт «${text}»`, e);
+    }
+  }
+
+  function placeDone(name: string) {
+    setPlaceCard(null);
+    set({ place: name });
+    const el = placeRef.current;
+    if (el) setTimeout(() => focusNextField(el), 0);
+  }
+
+  function placeCancel() {
+    placeSkip.current = true;
+    setPlaceCard(null);
+    const el = placeRef.current;
+    if (el) setTimeout(() => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }, 0);
+  }
 
   /**
    * Пол персоны. У отца и матери его задаёт роль, у ребёнка и восприемников —
@@ -112,16 +162,29 @@ export default function PersonBlock({
         label="ИОФ"
         value={person.iof}
         onChange={(iof, parsed) => set({ iof, parsed })}
+        onResolved={(iof, note) => set({ iof, parsed: null, note: appendNote(person.note, note) })}
         onPickPerson={onPickPerson}
         inputRef={inputRef}
         gender={sex}
       />
       {!compact && (
         <Suggest
+          ref={placeRef}
           label="НП"
           kind="place"
           value={person.place}
           onChange={(place) => set({ place })}
+          onLeave={(v, related) => void checkPlace(v, related)}
+        />
+      )}
+      {placeCard && (
+        <PlaceCard
+          name={placeCard.name}
+          similar={placeCard.similar}
+          defaults={placeDefaults ?? { guberniya: "", uyezd: "" }}
+          onPick={placeDone}
+          onSaved={placeDone}
+          onCancel={placeCancel}
         />
       )}
       <Suggest

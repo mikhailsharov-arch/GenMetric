@@ -29,7 +29,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.app { padding: 0.4em 0.75em 0.5em; max-width: 40em; margin: 0 auto; }
+/* Ширина: 64em вместо 40 — на широком экране по бокам была пустота (Роман,
+   бэклог п. 7, 23.09.2026). Поля тянутся, узкие держат свою ширину. */
+.app { padding: 0.4em 0.75em 0.5em; max-width: 64em; margin: 0 auto; }
 
 header { margin-bottom: 0.4em; }
 h1 { margin: 0; font-size: 1.15rem; letter-spacing: 0.013em; color: var(--accent); }
@@ -312,6 +314,9 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 /* Числовые поля в строке: две пары «день / месяц» рядом. */
 .row { display: flex; gap: 0.5em; align-items: start; }
 .row .field { flex: 1; grid-template-columns: 5.5em 1fr; }
+/* Дни и месяцы на широком окне не растягиваются: числовому полю ширина
+   не нужна, а строке — да (64em с 23.09.2026). */
+.row .field:has(.numrow) { flex: 0 0 13em; }
 /* Первая строка формы — три поля: год, страница-разворот, счёт. Подписи
    короткие, страница шире («939об-940» — девять знаков). Проверяющий
    21.09.2026: с обычной сеткой год показывал «189», страница — «939». */
@@ -443,3 +448,43 @@ button.linkish {
 .editbar .toggle { margin-left: auto; }
 .facts.saved { display: block; max-height: 14em; overflow-y: auto; }
 .facts.saved tr.editing td { background: #fff7e0; }
+
+/* ============================================================================
+   Модальные окна: сверка имени со справочником, карточка населённого пункта
+   (23.09.2026). Поверх формы, с клавиатуры целиком: Esc закрывает, Enter
+   ходит по полям окна, не выходя из него (data-focus-scope в focus.ts).
+   ============================================================================ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 3em 1em;
+  background: rgba(30, 40, 60, 0.35);
+}
+.modal {
+  width: 100%;
+  max-width: 34em;
+  max-height: calc(100vh - 6em);
+  overflow-y: auto;
+  padding: 0.8em 1em 0.9em;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 0.6em 2em rgba(0, 0, 0, 0.25);
+}
+.modal h2 { margin: 0 0 0.4em; font-size: 1rem; }
+.modal .field { grid-template-columns: 5.5em 1fr; }
+.modalbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  flex-wrap: wrap;
+  margin-top: 0.6em;
+}
+.modalbar button { width: auto; flex: 1 1 auto; }
+.suggest.resolve { max-height: 12em; overflow-y: auto; }
+.suggest.resolve:focus { outline: 0.15em solid var(--accent); outline-offset: 0.1em; }
+.suggest.resolve li .linkish { font-size: inherit; color: var(--ink); }
