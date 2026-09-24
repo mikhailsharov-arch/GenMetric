@@ -226,9 +226,10 @@ fn normalize(input: &str) -> String {
 /// Книги — в дореформенной орфографии: «Иванъ», «Петровъ». Конечный «ъ»
 /// отбрасывается до поиска, и такое имя считается известным без окна сверки.
 /// Заказчик 28.08.2026: в упражнении 9 из 31 имени не опознались только
-/// из-за «ъ». Заодно «і» → «и» и «ѣ» → «е» — те же книги.
+/// из-за «ъ». Заодно «і» → «и», «ѣ» → «е», «ѳ» → «ф» — те же книги
+/// («Ѳома» → «Фома», ревьюер 23.09.2026).
 fn normalize_name(input: &str) -> String {
-    let n = normalize(input).replace('і', "и").replace('ѣ', "е");
+    let n = normalize(input).replace('і', "и").replace('ѣ', "е").replace('ѳ', "ф");
     n.strip_suffix('ъ').map(str::to_string).unwrap_or(n)
 }
 
@@ -559,9 +560,17 @@ fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
     let mut rest = &tokens[1..];
     if let Some(first_rest) = rest.first() {
         let mut patr_word = first_rest.to_string();
-        if let Some((Some(target), _)) = alias("patr", first_rest)? {
-            out.patr_alias = Some(target.clone());
-            patr_word = target;
+        // Соответствие отчества без цели — «Это не отчество»: человек сказал,
+        // что второе слово — часть фамилии; больше не спрашивать (техдолг,
+        // ревьюер 23.09 и проверяющий 24.09.2026).
+        let mut not_patr = false;
+        match alias("patr", first_rest)? {
+            Some((Some(target), _)) => {
+                out.patr_alias = Some(target.clone());
+                patr_word = target;
+            }
+            Some((None, _)) => not_patr = true,
+            None => {}
         }
         let patr: Option<(String, String, String)> = conn
             .query_row(
@@ -584,7 +593,7 @@ fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
                 out.gender = Some(sex);
             }
             rest = &rest[1..];
-        } else if rest.len() >= 2 && looks_like_patronymic(first_rest) {
+        } else if !not_patr && rest.len() >= 2 && looks_like_patronymic(first_rest) {
             // «Иван Пискарев Сидоров»: второе слово не отчество по словарю,
             // но стоит на месте отчества и выглядит как оно — форма спросит.
             out.patr_unknown = Some(first_rest.to_string());
@@ -1311,6 +1320,51 @@ struct PlaceCard {
     familio_url: Option<String>,
 }
 
+#[derive(Serialize)]
+struct PlaceInfo {
+    id: i64,
+    name: String,
+    np_type: Option<String>,
+    guberniya: Option<String>,
+    uyezd: Option<String>,
+    volost: Option<String>,
+    familio_url: Option<String>,
+    origin: String,
+}
+
+/// Карточка известного пункта — на правку. None, если пункта нет.
+#[tauri::command]
+fn place_get(app: State<App>, name: String) -> Result<Option<PlaceInfo>, String> {
+    with_conn(&app, &format!("Карточка НП «{name}»"), |conn| {
+        conn.query_row(&statement("place_get")?,
+                       rusqlite::named_params! { ":name_norm": normalize(&name) },
+                       |r| Ok(PlaceInfo {
+                           id: r.get(0)?, name: r.get(1)?, np_type: r.get(2)?, guberniya: r.get(3)?,
+                           uyezd: r.get(4)?, volost: r.get(5)?, familio_url: r.get(6)?, origin: r.get(7)?,
+                       }))
+            .optional()
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Правка карточки известного пункта (Роман 24.09.2026). Название не меняется.
+#[tauri::command]
+fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String> {
+    with_conn(&app, &format!("Правка НП «{}»", card.name), |conn| {
+        let blank = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let n = conn.execute(&statement("place_update")?, rusqlite::named_params! {
+            ":id": id,
+            ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
+            ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
+            ":familio_url": blank(&card.familio_url),
+        }).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("Населённого пункта с id {id} нет"));
+        }
+        Ok(())
+    })
+}
+
 /// Карточка населённого пункта при первом вводе. Уже известное название
 /// не задваивается — возвращается прежний id.
 #[tauri::command]
@@ -1490,6 +1544,20 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
     })
 }
 
+/// Растянуть окно по высоте рабочей области монитора и прижать к её верху.
+fn fit_height(win: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let Some(monitor) = win.current_monitor()? else { return Ok(()) };
+    let area = monitor.work_area();
+    let outer = win.outer_size()?;
+    let inner = win.inner_size()?;
+    let frame = outer.height.saturating_sub(inner.height);
+    let height = area.size.height.saturating_sub(frame).max(400);
+    win.set_size(tauri::PhysicalSize::new(inner.width, height))?;
+    let pos = win.outer_position()?;
+    win.set_position(tauri::PhysicalPosition::new(pos.x, area.position.y))?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -1519,6 +1587,7 @@ fn main() {
                 }
             };
 
+            let log_for_window = log_path.clone();
             app.manage(App {
                 conn: Mutex::new(conn),
                 db_path: db_path.to_string_lossy().to_string(),
@@ -1551,7 +1620,16 @@ fn main() {
                      --remote-debugging-port={port}"
                 ));
             }
-            builder.build()?;
+            let win = builder.build()?;
+            // Высота окна — по рабочей области экрана (без панели задач):
+            // Роман 24.09.2026, «программа при открытии становилась по высоте
+            // экрана пользователя». Ширина прежняя. Любая ошибка здесь не
+            // мешает запуску.
+            // Высота по экрану — удобство, не условие запуска: ошибка в журнал,
+            // окно остаётся прежнего размера (ревьюер 24.09.2026).
+            if let Err(e) = fit_height(&win) {
+                write_log(&log_for_window, &format!("Высота окна по экрану не выставлена: {e}"));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1578,6 +1656,8 @@ fn main() {
             alias_save,
             place_check,
             place_save,
+            place_get,
+            place_update,
             set_always_on_top
         ])
         .run(tauri::generate_context!())

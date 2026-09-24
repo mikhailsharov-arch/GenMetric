@@ -79,6 +79,26 @@ VALUES (:name, :name_norm, :np_type, :guberniya, :uyezd, :volost,
           || CASE WHEN :guberniya IS NULL OR :guberniya = '' THEN '' ELSE ', ' || :guberniya || ' губерния' END,
         :familio_url, 'user');
 
+-- @place_get
+-- Карточка известного пункта на правку (Роман 24.09.2026: «должна быть
+-- возможность отредактировать НП, вдруг при вводе пользователь совершил ошибку»).
+SELECT id, name, np_type, guberniya, uyezd, volost, familio_url, origin
+  FROM place WHERE name_norm = :name_norm LIMIT 1;
+
+-- @place_update
+-- Правка карточки: название не меняется (на него ссылаются записи по id,
+-- но подсказки и слияние архива идут по name_norm), остальное — как в
+-- place_save, включая пересборку short/full_location.
+UPDATE place
+   SET np_type = :np_type, guberniya = :guberniya, uyezd = :uyezd, volost = :volost,
+       familio_url = :familio_url,
+       short_location = trim(coalesce(:np_type, '') || ' ' || name),
+       full_location = trim(coalesce(:np_type, '') || ' ' || name)
+          || CASE WHEN :volost    IS NULL OR :volost    = '' THEN '' ELSE ', ' || :volost    || ' волость'  END
+          || CASE WHEN :uyezd     IS NULL OR :uyezd     = '' THEN '' ELSE ', ' || :uyezd     || ' уезд'     END
+          || CASE WHEN :guberniya IS NULL OR :guberniya = '' THEN '' ELSE ', ' || :guberniya || ' губерния' END
+ WHERE id = :id;
+
 -- @place_names
 -- Все названия для поиска похожих («Букарина» → «Бухарино»): расстояние
 -- считает приложение, здесь только перечень.

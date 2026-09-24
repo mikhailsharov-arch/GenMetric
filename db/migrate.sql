@@ -57,12 +57,17 @@ SELECT code, title, section, sort_order, gender, age_min, age_max FROM seed.role
 INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin)
 SELECT kind, value, value_norm, sort_order, origin FROM seed.lookup;
 
+-- Пункт из поставки, который человек поправил в карточке (тип, уезд,
+-- губерния — части UNIQUE), не заводится заново: сверка по name_norm, как
+-- в import_archive.sql (проверяющий и ревьюер 24.09.2026 — иначе правка
+-- тихо откатывалась вторым «Бухарино» в подсказках).
 INSERT OR IGNORE INTO place
     (name, name_norm, np_type, guberniya, uyezd, volost,
      short_location, full_location, familio_url, origin)
 SELECT name, name_norm, np_type, guberniya, uyezd, volost,
        short_location, full_location, familio_url, origin
-  FROM seed.place;
+  FROM seed.place s
+ WHERE NOT EXISTS (SELECT 1 FROM main.place p WHERE p.name_norm = s.name_norm);
 
 -- Исправление прошлой поставки. Два звания были перенесены из Excel не в тот
 -- перечень: «крестьянский сын» попал к женским, «крестьянская вдова после

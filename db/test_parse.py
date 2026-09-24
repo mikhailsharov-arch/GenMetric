@@ -64,7 +64,7 @@ def norm(value) -> str:
 
 def normalize_name(word: str) -> str:
     """Копия normalize_name из main.rs."""
-    n = norm(word).replace("і", "и").replace("ѣ", "е")
+    n = norm(word).replace("і", "и").replace("ѣ", "е").replace("ѳ", "ф")
     return n[:-1] if n.endswith("ъ") else n
 
 
@@ -169,10 +169,13 @@ def main() -> int:
 
     print("\n0. Запросы и правило на месте")
     for required in ("alias_find", "alias_save", "name_headwords", "patr_forms",
-                     "place_save", "place_names", "place_find"):
+                     "place_save", "place_names", "place_find", "place_get", "place_update"):
         check(f"блок {required} на месте", required in sql)
     check("main.rs: normalize_name отбрасывает конечный «ъ»",
           "strip_suffix('ъ')" in rust)
+    check("main.rs: «Это не отчество» (соответствие без цели) больше не спрашивает",
+          "Some((None, _)) => not_patr = true" in rust and "!not_patr && rest.len() >= 2" in rust)
+    check("main.rs: normalize_name знает «ѳ»", ".replace('ѳ', \"ф\")" in rust)
     check("main.rs: разбор ищет по normalize_name, не normalize",
           "[normalize_name(&lookup_word)]" in rust and "[normalize_name(&patr_word)]" in rust)
     check("main.rs: порог похожести имён — треть длины, не меньше 3",
@@ -203,6 +206,8 @@ def main() -> int:
         check("современное — «Иван»", p["modern"] == "Иван", p["modern"])
         check("«Петровъ» — отчество", p["patronymic"] == "Петровъ", p["patronymic"])
         check("пол М", p["gender"] == "М")
+        p = parse(db, sql, "Ѳома")
+        check("«Ѳома» через ѳ → «Фома», известен", p["known"] and p["modern"] == "Фома", str(p))
         p = parse(db, sql, "Іоаннъ")
         check("«Іоаннъ» через і → известен", p["known"], str(p))
 
@@ -235,6 +240,12 @@ def main() -> int:
                                            target="Кесарев", gender=None))
         p = parse(db, sql, "Иван Пискарев Сидоров")
         check("соответствие отчества: «Пискарев» опознано", p["patronymic"] == "Пискарев")
+
+        db.execute(sql["alias_save"], dict(kind="patr", form="Зорянова",
+                                           form_norm=normalize_name("Зорянова"),
+                                           target=None, gender=None))
+        check("«Это не отчество» запомнено: соответствие без цели",
+              db.execute(sql["alias_find"], dict(kind="patr", form_norm="зорянова")).fetchone() == (None, None))
 
         print("\n3. Похожие")
         check("расстояние букарина ↔ бухарино = 2",
@@ -276,6 +287,16 @@ def main() -> int:
         db.execute(sql["place_save"], card2)
         row = one("SELECT short_location, full_location FROM place WHERE name_norm=?", card2["name_norm"])
         check("карточка без подробностей — без хвостов", row == ("Пустошь", "Пустошь"), str(row))
+        got = one(sql["place_get"], card["name_norm"])
+        check("place_get отдаёт карточку", got is not None and got[1] == "Новодеревенька" and got[3] == "Костромская", str(got))
+        db.execute(sql["place_update"], dict(id=got[0], np_type="с.", guberniya="Ярославская",
+                                             uyezd="Любимский", volost=None, familio_url="https://familio.org/x"))
+        row = one("SELECT name, np_type, guberniya, full_location, familio_url FROM place WHERE id=?", got[0])
+        check("place_update: название не тронуто, поля новые",
+              row[0] == "Новодеревенька" and row[1] == "с." and row[2] == "Ярославская", str(row))
+        check("place_update пересобрал full_location",
+              row[3] == "с. Новодеревенька, Любимский уезд, Ярославская губерния", row[3])
+        check("place_update: ссылка", row[4] == "https://familio.org/x")
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

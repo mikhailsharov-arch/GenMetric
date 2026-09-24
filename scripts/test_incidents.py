@@ -380,6 +380,45 @@ def incident_20260922_prichjt_bez_imeni():
     check("… и показываются на «О программе»", "clergy_noname_entries" in read("src/App.tsx"))
 
 
+def incident_20260924_sverka_ne_vezde():
+    """Роман 24.09.2026: сверка имени не срабатывала у матери и восприемников —
+    поле заполнялось не с клавиатуры (жена по мужу, персона из подсказки),
+    фокус уходил к следующему пустому полю, «выхода из поля» не было.
+    И Ctrl+Enter в окне сверки подставлял первое похожее имя, а следующий
+    Ctrl+Enter сохранял запись с ним.
+
+    Защита: разбор, пришедший не с клавиатуры, сразу идёт в ту же проверку
+    (decide), что и уход из поля; в окне Enter с Ctrl/Cmd не выбирает.
+    """
+    iof = strip_comments(read("src/IofField.tsx"))
+    check("разбор не с клавиатуры сверяется сразу",
+          "if (!byKeyboard && value.trim()) decide(" in iof)
+    check("уход из поля и автоподстановка — одна логика decide()",
+          "function decide(" in iof and "decide(p, text)" in iof)
+    res = strip_comments(read("src/NameResolve.tsx"))
+    check("Ctrl+Enter в окне сверки не выбирает", "if (!e.ctrlKey && !e.metaKey) pick()" in res)
+    check("кнопки «Новое имя» нет (имена только из справочника)", "Новое имя" not in res)
+
+
+def incident_20260924_pravka_sterla_pometku():
+    """Проверяющий 24.09.2026, до выкладки: первая версия чистки пометок сверки
+    помнила слово из прошлой записи и при открытии другой записи на правку
+    стирала её «Имя в документе: …» — после сохранения пометка пропадала из
+    базы. И при стирании отца уходил любой НП матери, совпадающий с отцовским,
+    а при перенаборе отца не возвращался.
+
+    Защита: трогается только та пометка, что дописана в этом блоке, и только
+    пока она есть в примечании; НП матери убирается, только если он был
+    скопирован от отца, при перенаборе отца копируется снова.
+    """
+    pb = strip_comments(read("src/PersonBlock.tsx"))
+    check("чистка пометки сверяет её точный текст", "parts.includes(want.note)" in pb)
+    form = strip_comments(read("src/BirthForm.tsx"))
+    check("НП матери помнит, что скопирован от отца", "copiedPlace.current" in form)
+    check("при новой или открытой записи память сбрасывается",
+          form.count("copiedPlace.current = null") >= 2 and form.count("childDocFor.current = {}") >= 2)
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -390,6 +429,8 @@ def incident_20260922_prichjt_bez_imeni():
 ]
 
 ИНЦИДЕНТЫ = [
+    incident_20260924_sverka_ne_vezde,
+    incident_20260924_pravka_sterla_pometku,
     incident_20260813_baza_ne_doehala,
     incident_20260813_molchalivyj_perehvat,
     incident_20260817_kirillica_i_lower,

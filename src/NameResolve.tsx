@@ -16,26 +16,28 @@ import { report } from "./errors";
  *
  * Пока поле поиска пусто — похожие (расстояние Дамерау — Левенштейна,
  * similar_names). Набор в поле — обычный поиск по началу слова, по полу.
- * «Новое имя» — для имени, которого в словаре и правда нет: с полом, если
- * его не задаёт роль. Esc — назад в поле, поправить набор.
+ * Кнопки «Новое имя» нет намеренно — Роман 24.09.2026: «у пользователя не
+ * должно быть возможности добавить в справочник новое имя, имена должны
+ * быть универсализированы под каноничное написание». Esc — назад в поле,
+ * поправить набор.
  */
 type Props = {
   word: string;
   kind: "name" | "patr";
   gender?: "М" | "Ж";
   onPick: (value: string) => void;
-  onNew: (gender: "М" | "Ж") => void;
   onCancel: () => void;
+  /** «Это не отчество» — запомнить и больше не спрашивать. */
+  onNotPatr?: () => void;
 };
 
 type Row = { value: string; gender: string | null };
 
-export default function NameResolve({ word, kind, gender, onPick, onNew, onCancel }: Props) {
+export default function NameResolve({ word, kind, gender, onPick, onCancel, onNotPatr }: Props) {
   const [query, setQuery] = useState("");
   const [similar, setSimilar] = useState<Row[]>([]);
   const [found, setFound] = useState<Row[]>([]);
   const [active, setActive] = useState(0);
-  const [askGender, setAskGender] = useState(false);
   const seq = useRef(0);
   const what = kind === "patr" ? "отчеству" : "имени";
 
@@ -75,7 +77,9 @@ export default function NameResolve({ word, kind, gender, onPick, onNew, onCance
       if (list.length) setActive((i) => (i - 1 + list.length) % list.length);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      pick();
+      // Ctrl+Enter — не выбор: он подставлял первое похожее, а следующий
+      // Ctrl+Enter сохранял запись с ним (Роман 24.09.2026).
+      if (!e.ctrlKey && !e.metaKey) pick();
     }
   }
 
@@ -115,34 +119,17 @@ export default function NameResolve({ word, kind, gender, onPick, onNew, onCance
           </li>
         ))}
       </ul>
-      {askGender ? (
-        <div className="modalbar">
-          <span>Пол для нового имени:</span>
-          <button type="button" className="primary" autoFocus onClick={() => onNew("М")}>мужское</button>
-          <button type="button" className="primary" onClick={() => onNew("Ж")}>женское</button>
-          <button type="button" className="toggle" onClick={() => setAskGender(false)}>назад</button>
-        </div>
-      ) : (
-        <div className="modalbar">
-          <button type="button" className="primary" disabled={!list.length} onClick={pick}>
-            Запомнить
+      <div className="modalbar">
+        <button type="button" className="primary" disabled={!list.length} onClick={pick}>
+          Запомнить
+        </button>
+        {kind === "patr" && (
+          <button type="button" className="toggle" onClick={onNotPatr ?? onCancel}>
+            Это не отчество
           </button>
-          {kind === "name" ? (
-            <button
-              type="button"
-              className="toggle"
-              onClick={() => (gender ? onNew(gender) : setAskGender(true))}
-            >
-              Новое имя — в справочнике его нет
-            </button>
-          ) : (
-            <button type="button" className="toggle" onClick={onCancel}>
-              Это не отчество
-            </button>
-          )}
-          <button type="button" className="toggle" onClick={onCancel}>Исправить набор (Esc)</button>
-        </div>
-      )}
+        )}
+        <button type="button" className="toggle" onClick={onCancel}>Исправить набор (Esc)</button>
+      </div>
     </Modal>
   );
 }

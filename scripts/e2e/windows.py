@@ -90,6 +90,10 @@ def run(driver, wait, archive):
     body = driver.find_element(By.TAG_NAME, "body").text
     check("база справочников открылась", "База не открылась" not in body)
     check("экран «Дело» на месте", "Сохранить дело" in body)
+    # Высота окна по экрану (заказчик 24.09.2026) — печатаем для лога сборки;
+    # экран раннера неизвестен, поэтому не проверка, а наблюдение.
+    sizes = driver.execute_script("return [window.outerHeight, screen.availHeight, window.screenY]")
+    print(f"  [инфо]   окно: высота {sizes[0]}, рабочая область экрана {sizes[1]}, верх {sizes[2]}")
 
     print("\n2. Дело")
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Христорождественская"),
@@ -379,6 +383,36 @@ def resumed(driver, wait):
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
     check("третья запись сохранена", "Набрано: 3" in body, " | ".join(errorbar))
     check("в списке виден отец", "отец Кесарь Иванов Сидоров" in body)
+
+    print("\n10. Запись без отца (заказчик, приоритет № 3 от 23.09.2026)")
+    mother = "//section[.//h2[normalize-space()='Мать']]//"
+    rank = field(driver, "Звание", mother).get_attribute("value")
+    check("у новой записи звание матери пусто", rank == "", f"«{rank}»")
+    fill(driver, "Счёт", "11")
+    fill(driver, "Ребёнок", "Мария")
+    field(driver, "ИОФ", mother).send_keys("Анна Иванова")
+    field(driver, "ИОФ", mother).send_keys(Keys.ESCAPE)
+    # Ждём разбор матери (метка пола под её ИОФ), а не ребёнка — иначе
+    # проверка звания пройдёт до разбора (ревьюер 24.09.2026).
+    wait.until(EC.text_to_be_present_in_element(
+        (By.XPATH, mother + "div[contains(@class,'field')][./label[normalize-space()='ИОФ']]"
+                   "//*[contains(@class,'parsedline')]"), "Ж"))
+    rank = field(driver, "Звание", mother).get_attribute("value")
+    check("без отца у матери нет «законная жена его»", rank == "", f"«{rank}»")
+    click(driver, "//button[starts-with(normalize-space(),'Сохранить и следующая')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Набрано: 4"))
+    except TimeoutException:
+        pass
+    body = driver.find_element(By.TAG_NAME, "body").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("запись без отца сохранена", "Набрано: 4" in body, " | ".join(errorbar))
+    father = "//section[.//h2[normalize-space()='Отец']]//"
+    field(driver, "ИОФ", father).send_keys("Пётр Сидоров")
+    field(driver, "ИОФ", father).send_keys(Keys.ESCAPE)
+    time.sleep(0.5)
+    rank = field(driver, "Звание", mother).get_attribute("value")
+    check("набрали отца — у матери «законная жена его»", rank == "законная жена его", f"«{rank}»")
 
 
 def main() -> int:

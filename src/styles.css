@@ -425,6 +425,11 @@ button.linkish {
   color: var(--muted); background: transparent; border: 0; cursor: pointer;
 }
 .fieldbody .browse:hover { color: var(--ink); }
+/* Ссылка «карточка» у поля НП — правка известного пункта (24.09.2026). */
+/* Под ссылку «карточка» справа — отступ, чтобы длинное название не уходило
+   под неё (проверяющий 24.09.2026). */
+.fieldbody input.withaction { padding-right: 4.5em; }
+.fieldbody .browse.action { font-size: 0.75em; line-height: 1.4; padding-top: 0.15em; text-decoration: underline; }
 
 /* «Добавить восприемника» — между блоками, без лишней высоты. */
 .addrow { display: flex; justify-content: flex-end; margin: 0.15em 0 0.3em; }

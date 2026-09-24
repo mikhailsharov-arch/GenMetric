@@ -115,6 +115,10 @@ def build_old_database(path: Path) -> None:
     db.executemany(
         "INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, surname, rank) VALUES (?,'clergy1',100,?,?,?)",
         [(2, None, None, "священник"), (3, None, None, "псаломщик"), (4, "Александр", "Рождественский", "священник")])
+    # Пункт поставки, поправленный человеком в карточке (24.09.2026): другой
+    # уезд — часть UNIQUE, и прежний INSERT OR IGNORE завёл бы второй.
+    db.execute("INSERT INTO place (name, name_norm, np_type, guberniya, uyezd, volost, origin) "
+               "VALUES ('Бухарино', 'бухарино', 'с.', 'Костромская', 'Кинешемский', 'Завражная', 'seed')")
     db.commit()
     db.close()
 
@@ -282,6 +286,10 @@ def main() -> int:
               db.execute("SELECT value FROM setting WHERE key='repair_count_column'").fetchone()[0] == "1")
         # Соответствия имён — пользовательские, обновление их не трогает
         # (в отличие от name_form, которая перезаливается целиком).
+        check("поправленный в карточке пункт поставки не задвоен",
+              db.execute("SELECT count(*) FROM place WHERE name_norm='бухарино'").fetchone()[0] == 1)
+        check("и правка человека не откатилась",
+              db.execute("SELECT uyezd FROM place WHERE name_norm='бухарино'").fetchone()[0] == "Кинешемский")
         check("соответствие «Пискарь» → «Кесарь» пережило обновление",
               db.execute("SELECT target FROM name_alias WHERE form_norm='пискарь'").fetchone() == ("Кесарь",))
         db.close()

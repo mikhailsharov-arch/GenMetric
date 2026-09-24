@@ -110,12 +110,19 @@ export default function IofField({
   const parseSeq = useRef(0);
   useEffect(() => {
     const mine = ++parseSeq.current;
+    // Флаг набора читается здесь, до эффекта подсказок, который его снимает.
+    const byKeyboard = typed.current;
     invoke<Parsed>("parse_iof", { text: value })
       .then((result) => {
         if (mine !== parseSeq.current) return; // поле уже изменилось
         parsedRef.current = result;
         setParsed(result);
         onChangeRef.current?.(value, result);
+        // Заполнено не с клавиатуры — жена от мужа, персона из архива,
+        // запись на правку: из поля никто не выйдет, и сверка при уходе не
+        // сработает (Роман 24.09.2026: «у матери не отрабатывает с
+        // отчеством», «у восприемников не отрабатывает имя»). Сверяем сразу.
+        if (!byKeyboard && value.trim()) decide(result, value.trim());
       })
       .catch((e) => {
         parsedRef.current = null;
@@ -261,7 +268,13 @@ export default function IofField({
     } catch {
       return; // ошибка разбора уже показана эффектом выше
     }
-    if (valueRef.current.trim() !== text || modalOpen()) return; // пока ждали, набрали другое
+    if (valueRef.current.trim() !== text) return; // пока ждали, набрали другое
+    decide(p, text);
+  }
+
+  /** Что делать с разобранным: алиас — подставить, неизвестное — окно. */
+  function decide(p: Parsed, text: string) {
+    if (modalOpen() || valueRef.current.trim() !== text) return;
     const toks = text.split(/\s+/);
     if (!p.known_name) {
       setResolve({ word: toks[0], kind: "name" });
@@ -276,19 +289,6 @@ export default function IofField({
       // «Такой же принцип и с отчеством» (Роман 23.09.2026).
       setResolve({ word: toks[1], kind: "patr" });
     }
-  }
-
-  /** Заново разобрать то же значение — после «Новое имя» текст не менялся. */
-  function reparse() {
-    const mine = ++parseSeq.current;
-    invoke<Parsed>("parse_iof", { text: valueRef.current })
-      .then((result) => {
-        if (mine !== parseSeq.current) return;
-        parsedRef.current = result;
-        setParsed(result);
-        onChangeRef.current?.(valueRef.current, result);
-      })
-      .catch((e) => report("Не удалось разобрать имя, отчество и фамилию", e));
   }
 
   function afterResolve() {
@@ -311,16 +311,33 @@ export default function IofField({
     afterResolve();
   }
 
-  async function resolveNew(g: "М" | "Ж") {
+  /** Разобрать то же значение заново — после записи соответствия текст не
+   *  менялся, и эффект разбора сам не сработает. */
+  function reparseAfterAlias() {
+    const mine = ++parseSeq.current;
+    invoke<Parsed>("parse_iof", { text: valueRef.current })
+      .then((result) => {
+        if (mine !== parseSeq.current) return;
+        parsedRef.current = result;
+        setParsed(result);
+        onChangeRef.current?.(valueRef.current, result);
+      })
+      .catch((e) => report("Не удалось разобрать имя, отчество и фамилию", e));
+  }
+
+  /** «Это не отчество»: запомнить, поле не меняется, фокус дальше. */
+  async function resolveNotPatr() {
     if (!resolve) return;
     try {
-      await invoke("alias_save", { kind: "name", form: resolve.word, target: null, gender: g });
+      await invoke("alias_save", { kind: "patr", form: resolve.word, target: null, gender: null });
     } catch (e) {
-      report(`Не удалось запомнить новое имя «${resolve.word}»`, e);
+      report(`Не удалось запомнить «${resolve.word}» как не отчество`, e);
       return;
     }
-    reparse();
-    afterResolve();
+    reparseAfterAlias();
+    setResolve(null);
+    const el = inputEl.current;
+    if (el) setTimeout(() => focusNextField(el), 0);
   }
 
   function resolveCancel() {
@@ -425,8 +442,8 @@ export default function IofField({
             kind={resolve.kind}
             gender={gender}
             onPick={(v) => void resolvePick(v)}
-            onNew={(g) => void resolveNew(g)}
             onCancel={resolveCancel}
+            onNotPatr={() => void resolveNotPatr()}
           />
         )}
         {/* Что программа поняла: современное написание и пол. Строка появляется

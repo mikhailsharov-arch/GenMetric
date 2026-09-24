@@ -20,21 +20,29 @@ import { focusNextField } from "./focus";
  */
 export type Similar = { value: string; distance: number };
 
+/** Карточка известного пункта из базы — режим правки (Роман 24.09.2026). */
+export type PlaceInfo = {
+  id: number; name: string; np_type: string | null; guberniya: string | null;
+  uyezd: string | null; volost: string | null; familio_url: string | null; origin: string;
+};
+
 type Props = {
   name: string;
   similar: Similar[];
   defaults: { guberniya: string; uyezd: string };
+  /** Есть — правка известного пункта: поля из базы, похожих нет, place_update. */
+  existing?: PlaceInfo;
   onPick: (name: string) => void;
   onSaved: (name: string) => void;
   onCancel: () => void;
 };
 
-export default function PlaceCard({ name, similar, defaults, onPick, onSaved, onCancel }: Props) {
-  const [npType, setNpType] = useState("д.");
-  const [guberniya, setGuberniya] = useState(defaults.guberniya);
-  const [uyezd, setUyezd] = useState(defaults.uyezd);
-  const [volost, setVolost] = useState("");
-  const [url, setUrl] = useState("");
+export default function PlaceCard({ name, similar, defaults, existing, onPick, onSaved, onCancel }: Props) {
+  const [npType, setNpType] = useState(existing ? existing.np_type ?? "" : "д.");
+  const [guberniya, setGuberniya] = useState(existing ? existing.guberniya ?? "" : defaults.guberniya);
+  const [uyezd, setUyezd] = useState(existing ? existing.uyezd ?? "" : defaults.uyezd);
+  const [volost, setVolost] = useState(existing?.volost ?? "");
+  const [url, setUrl] = useState(existing?.familio_url ?? "");
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
 
@@ -42,9 +50,9 @@ export default function PlaceCard({ name, similar, defaults, onPick, onSaved, on
     if (busy) return;
     setBusy(true);
     try {
-      await invoke<number>("place_save", {
-        card: { name: name.trim(), np_type: npType, guberniya, uyezd, volost, familio_url: url },
-      });
+      const card = { name: name.trim(), np_type: npType, guberniya, uyezd, volost, familio_url: url };
+      if (existing) await invoke("place_update", { id: existing.id, card });
+      else await invoke<number>("place_save", { card });
       onSaved(name.trim());
     } catch (e) {
       report(`Не удалось сохранить населённый пункт «${name}»`, e);
@@ -54,8 +62,15 @@ export default function PlaceCard({ name, similar, defaults, onPick, onSaved, on
   }
 
   return (
-    <Modal title={`Новый населённый пункт: «${name}»`} kind="place" onClose={onCancel}>
-      {similar.length > 0 && (
+    <Modal title={existing ? `Населённый пункт: «${name}»` : `Новый населённый пункт: «${name}»`}
+           kind={existing ? "place-edit" : "place"} onClose={onCancel}>
+      {existing && (
+        <p className="hint">
+          Поправьте, что нужно, — Enter ведёт по полям, на последнем сохраняет.
+          {existing.origin === "archive" && " Пункт пришёл из архива Excel без губернии и уезда."}
+        </p>
+      )}
+      {!existing && similar.length > 0 && (
         <>
           <p className="hint">Похожие названия уже есть в справочнике. Если это одно из них — Enter подставит его, карточка не понадобится. Tab — заполнить карточку нового.</p>
           {/* Список с фокусом: ↑/↓ выбирают, Enter подставляет, Tab уводит в
@@ -84,10 +99,12 @@ export default function PlaceCard({ name, similar, defaults, onPick, onSaved, on
           </ul>
         </>
       )}
-      <p className="hint">
-        {similar.length ? "Или заполните карточку нового:" : "Такого названия в справочнике нет — заполните карточку:"}
-        {" "}губерния и уезд подставлены из дела, волость и ссылку можно оставить пустыми.
-      </p>
+      {!existing && (
+        <p className="hint">
+          {similar.length ? "Или заполните карточку нового:" : "Такого названия в справочнике нет — заполните карточку:"}
+          {" "}губерния и уезд подставлены из дела, волость и ссылку можно оставить пустыми.
+        </p>
+      )}
       <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse />
       <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse />
       <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse />
@@ -104,14 +121,14 @@ export default function PlaceCard({ name, similar, defaults, onPick, onSaved, on
         <div className="fieldbody">
           <input data-field value={url} onChange={(e) => setUrl(e.target.value)}
                  placeholder="ссылка, если есть" autoComplete="off" spellCheck={false}
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } }} />
+                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (!e.ctrlKey && !e.metaKey) void save(); } }} />
         </div>
       </div>
       <div className="modalbar">
         <button type="button" className="primary" disabled={busy} onClick={() => void save()}>
-          {busy ? "Сохраняю…" : "Сохранить населённый пункт"}
+          {busy ? "Сохраняю…" : existing ? "Сохранить изменения" : "Сохранить населённый пункт"}
         </button>
-        <button type="button" className="toggle" onClick={onCancel}>Исправить название (Esc)</button>
+        <button type="button" className="toggle" onClick={onCancel}>{existing ? "Отменить (Esc)" : "Исправить название (Esc)"}</button>
       </div>
     </Modal>
   );

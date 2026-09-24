@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
-import PlaceCard, { type Similar } from "./PlaceCard";
+import PlaceCard, { type PlaceInfo, type Similar } from "./PlaceCard";
 import { focusNextField } from "./focus";
 import { report } from "./errors";
 
@@ -74,17 +74,69 @@ export function appendNote(note: string, add: string): string {
   return note.trim() ? `${note.trim()}; ${add}` : add;
 }
 
+const DOC_PREFIX = { name: "Имя в документе:", patr: "Отчество в документе:" } as const;
+
+/** Какую пометку сверки и к какому слову поля она относится. */
+export type DocFor = { name?: { word: string; note: string }; patr?: { word: string; note: string } };
+
+/** Убрать из примечания ровно одну пометку. */
+function removePart(note: string, part: string): string {
+  return note.split(";").map((s) => s.trim()).filter((s) => s && s !== part).join("; ");
+}
+
+/**
+ * Пометка сверки держится, пока в поле стоит то слово, ради которого она
+ * написана. Сменили человека («Кесарь …» → «Иван …») — пометка «Имя в
+ * документе: Пискарь» ему не принадлежит и уходит (техдолг 23.09.2026).
+ * Недописанное слово — префикс прежнего — пометку не трогает.
+ *
+ * Трогается только та самая пометка, что дописана в этом блоке, и только
+ * пока она есть в примечании: при открытии другой записи память о прежней
+ * пометке сбрасывается, чужое примечание не правится (проверяющий
+ * 24.09.2026 — первая версия стирала пометку записи, открытой на правку).
+ */
+export function staleDocNotes(note: string, iof: string, docFor: DocFor): string {
+  const toks = iof.trim().split(/\s+/);
+  let out = note;
+  (["name", "patr"] as const).forEach((kind, i) => {
+    const want = docFor[kind];
+    if (!want) return;
+    const parts = out.split(";").map((s) => s.trim());
+    if (!parts.includes(want.note)) {
+      delete docFor[kind];
+      return;
+    }
+    const have = toks[i] ?? "";
+    if (have !== want.word && !want.word.startsWith(have)) {
+      out = removePart(out, want.note);
+      delete docFor[kind];
+    }
+  });
+  return out;
+}
+
+/** Запомнить, к каким словам поля относятся только что дописанные пометки. */
+export function markDocNotes(iof: string, note: string, docFor: DocFor) {
+  const toks = iof.trim().split(/\s+/);
+  for (const part of note.split(";").map((s) => s.trim())) {
+    if (part.startsWith(DOC_PREFIX.name)) docFor.name = { word: toks[0], note: part };
+    if (part.startsWith(DOC_PREFIX.patr)) docFor.patr = { word: toks[1], note: part };
+  }
+}
+
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
+  // Слова поля, к которым относятся пометки сверки в примечании.
+  const docFor = useRef<DocFor>({});
   const Frame = compact ? "div" : "section";
 
   // Карточка населённого пункта при первом вводе — по уходу из поля НП.
   // После «Исправить название» (Esc) не открывается снова, пока название
   // не изменится.
-  const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[] } | null>(null);
+  const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[]; existing?: PlaceInfo } | null>(null);
   const placeSkip = useRef(false);
   useEffect(() => { placeSkip.current = false; }, [person.place]);
   const placeRef = useRef<HTMLInputElement | null>(null);
@@ -103,6 +155,23 @@ export default function PersonBlock({
       setPlaceCard({ name: text, similar: r.similar });
     } catch (e) {
       report(`Не удалось проверить населённый пункт «${text}»`, e);
+    }
+  }
+
+  /** «Карточка» у поля НП: известный пункт — на правку, иначе обычный путь. */
+  async function openPlaceCard() {
+    const text = person.place.trim();
+    if (!text || document.querySelector(".modal")) return;
+    try {
+      const existing = await invoke<PlaceInfo | null>("place_get", { name: text });
+      if (existing) {
+        setPlaceCard({ name: existing.name, similar: [], existing });
+        return;
+      }
+      const r = await invoke<{ known: boolean; similar: Similar[] }>("place_check", { name: text });
+      setPlaceCard({ name: text, similar: r.similar });
+    } catch (e) {
+      report(`Не удалось открыть карточку «${text}»`, e);
     }
   }
 
@@ -161,8 +230,11 @@ export default function PersonBlock({
       <IofField
         label="ИОФ"
         value={person.iof}
-        onChange={(iof, parsed) => set({ iof, parsed })}
-        onResolved={(iof, note) => set({ iof, parsed: null, note: appendNote(person.note, note) })}
+        onChange={(iof, parsed) => set({ iof, parsed, note: staleDocNotes(person.note, iof, docFor.current) })}
+        onResolved={(iof, note) => {
+          markDocNotes(iof, note, docFor.current);
+          set({ iof, parsed: null, note: appendNote(person.note, note) });
+        }}
         onPickPerson={onPickPerson}
         inputRef={inputRef}
         gender={sex}
@@ -175,12 +247,14 @@ export default function PersonBlock({
           value={person.place}
           onChange={(place) => set({ place })}
           onLeave={(v, related) => void checkPlace(v, related)}
+          action={{ label: "карточка", onClick: () => void openPlaceCard() }}
         />
       )}
       {placeCard && (
         <PlaceCard
           name={placeCard.name}
           similar={placeCard.similar}
+          existing={placeCard.existing}
           defaults={placeDefaults ?? { guberniya: "", uyezd: "" }}
           onPick={placeDone}
           onSaved={placeDone}

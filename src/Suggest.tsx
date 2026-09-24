@@ -19,6 +19,8 @@ type Props = {
   /** Уход из поля (Enter, Tab, клик мимо) — с текущим значением. Поле НП
    *  по нему проверяет, известен ли пункт, и открывает карточку. */
   onLeave?: (value: string, related: EventTarget | null) => void;
+  /** Ссылка справа в поле (например, «карточка» у НП), только при непустом значении. */
+  action?: { label: string; onClick: () => void };
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -37,7 +39,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse, onLeave },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -185,6 +187,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           else if (ref) ref.current = el;
         }}
         data-field
+        className={action && value.trim() ? "withaction" : undefined}
         value={value}
         placeholder={placeholder}
         autoComplete="off"
@@ -215,6 +218,16 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           }}
         >
           ▾
+        </button>
+      )}
+      {action && value.trim() && (
+        <button
+          type="button"
+          className="browse action"
+          tabIndex={-1}
+          onMouseDown={(e) => { e.preventDefault(); action.onClick(); }}
+        >
+          {action.label}
         </button>
       )}
       {hint && <div className="fieldhint">{hint}</div>}

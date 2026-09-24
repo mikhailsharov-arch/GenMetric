@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, appendNote, type Person } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person } from "./PersonBlock";
 import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
@@ -43,7 +43,10 @@ const MOTHER_RANK = "законная жена его";
 const CONFESSION = "православного";
 
 const NEW_FATHER = { ...EMPTY_PERSON, confession: CONFESSION };
-const NEW_MOTHER = { ...EMPTY_PERSON, rank: MOTHER_RANK, confession: CONFESSION };
+// Звание матери не с самого начала, а когда появится отец: в записи без
+// отца (незаконнорождённые) «законная жена его» и НП приходилось стирать
+// (Роман, приоритет № 3 от 23.09.2026). Подстановка — в setFather.
+const NEW_MOTHER = { ...EMPTY_PERSON, confession: CONFESSION };
 
 type Brief = {
   id: number;
@@ -95,6 +98,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   // Примечание записи: у ребёнка нет своего «Прим.», и пометка «Имя в
   // документе: …» после сверки идёт сюда (entry.note).
   const [entryNote, setEntryNote] = useState("");
+  const childDocFor = useRef<DocFor>({});
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
   // Пол ребёнка, указанный руками — только когда по имени его не понять.
   // Пол из разбора имени важнее: он есть у 99,7% имён на данных Романа.
@@ -202,11 +206,45 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
    * Свой НП матери не затирается: как только он отличается от отцовского,
    * значит его поставили руками, и трогать его нельзя.
    */
+  // НП матери, скопированный от отца, — чтобы при стирании отца убрать
+  // именно его, а не набранный руками (проверяющий 24.09.2026: уходил любой
+  // НП матери, совпадающий с отцовским, и при перенаборе не возвращался).
+  const copiedPlace = useRef<string | null>(null);
+
   function setFather(next: Person) {
     const prev = father;
+    const hadFather = prev.iof.trim().length > 0;
+    const hasFather = next.iof.trim().length > 0;
     if (next.place !== prev.place) {
-      setMother((m) =>
-        !m.place || m.place === prev.place ? { ...m, place: next.place } : m);
+      setMother((m) => {
+        if (m.place && m.place !== prev.place) return m;
+        copiedPlace.current = next.place || null;
+        return { ...m, place: next.place };
+      });
+    }
+    // Отец появился — матери «законная жена его», если звание пусто, и НП
+    // отца, если у матери пусто (перенабрали отца после стирания).
+    // Отца стёрли — подставленное звание и скопированный НП уходят;
+    // набранное руками остаётся. Приоритет № 3 Романа от 23.09.2026.
+    if (!hadFather && hasFather) {
+      setMother((m) => {
+        let out = m.rank ? m : { ...m, rank: MOTHER_RANK };
+        if (!out.place && next.place) {
+          copiedPlace.current = next.place;
+          out = { ...out, place: next.place };
+        }
+        return out;
+      });
+    } else if (hadFather && !hasFather) {
+      setMother((m) => {
+        const copied = copiedPlace.current !== null && m.place === copiedPlace.current;
+        if (copied) copiedPlace.current = null;
+        return {
+          ...m,
+          rank: m.rank === MOTHER_RANK ? "" : m.rank,
+          place: copied ? "" : m.place,
+        };
+      });
     }
     setFatherState(next);
   }
@@ -218,6 +256,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       place: hint.place ?? f.place,
       rank: hint.rank ?? f.rank,
     }));
+    if (hint.place) copiedPlace.current = hint.place;
     setMother((m) => ({
       ...m,
       place: hint.place ?? m.place,
@@ -472,6 +511,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       setEntryNote(e.note ?? "");
       setFatherState(person(by("father"), { ...NEW_FATHER }));
       setMother(person(by("mother"), { ...NEW_MOTHER }));
+      copiedPlace.current = null;
+      childDocFor.current = {};
       setGod1(person(by("godparent1"), { ...EMPTY_PERSON }));
       setGod2(person(by("godparent2"), { ...EMPTY_PERSON }));
       setGod3(person(by("godparent3"), { ...EMPTY_PERSON }));
@@ -525,6 +566,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
    * Страница, месяц и причт остаются: они меняются реже, чем раз в запись.
    */
   function next() {
+    copiedPlace.current = null;
+    childDocFor.current = {};
     setChild("");
     setChildParsed(null);
     setEntryNote("");
@@ -592,9 +635,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           onChange={(text, parsed) => {
             setChild(text);
             setChildParsed(parsed);
+            setEntryNote((n) => staleDocNotes(n, text, childDocFor.current));
           }}
           placeholder="имя"
           onResolved={(text, note) => {
+            markDocNotes(text, note, childDocFor.current);
             setChild(text);
             setChildParsed(null);
             setEntryNote((n) => appendNote(n, note));
