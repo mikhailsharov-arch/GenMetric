@@ -70,10 +70,14 @@ type Props = {
    * у ребёнка). Без обработчика поле просто меняет текст.
    */
   onResolved?: (iof: string, note: string) => void;
+  /** Два слова — это имя и фамилия, отчество не спрашивать. У причта так
+   *  почти всегда («Александр Рождественский», «Иван Скворцов»); у прочих
+   *  второе слово — обычно отчество (Роман 25.09.2026, «Иван Пискарев»). */
+  surnameSecond?: boolean;
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, surnameSecond,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -284,7 +288,7 @@ export default function IofField({
     if (p.name_alias) changes.push({ index: 0, word: p.name_alias, kind: "name" });
     if (p.patr_alias) changes.push({ index: 1, word: p.patr_alias, kind: "patr" });
     if (changes.length) applyWords(changes);
-    if (p.patr_unknown) {
+    if (p.patr_unknown && !(surnameSecond && toks.length === 2)) {
       // Имя уже подставлено (если было чем), отчество — следующим окном:
       // «Такой же принцип и с отчеством» (Роман 23.09.2026).
       setResolve({ word: toks[1], kind: "patr" });

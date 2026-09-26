@@ -161,7 +161,8 @@ def main() -> int:
         blank = dict(surname=None, first_name=None, patronymic=None, surname_modern=None,
                      first_name_modern=None, patronymic_modern=None, maiden_surname=None,
                      gender=None, rank=None, confession=None, place_id=None, note=None,
-                     uncertain=None, birth_year_from=None, birth_year_to=None)
+                     uncertain=None, birth_year_from=None, birth_year_to=None,
+                     age_years=None, marriage_order=None, kinship=None)
         for p in persons:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": entry_id})
         check("персоны сохранены", one("SELECT count(*) FROM person_mention")[0] == 5)
@@ -274,6 +275,41 @@ def main() -> int:
         check("пара не задвоилась", one("SELECT count(*) FROM spouse_index")[0] == 1)
         check("у незнакомого мужа жены нет",
               db.execute(sql["spouse_lookup"], {"husband_norm": norm("Иван Петров")}).fetchone() is None)
+
+        print("\n9б. Запись о браке (25.09.2026)")
+        # Состав — как лист «2» Excel Романа: жених и невеста (НП, звание, ИОФ,
+        # вероисповедание, каким браком, лет), родственник («отец») каждого,
+        # поручители по жениху и по невесте, причт.
+        db.execute(sql["entry_insert"], dict(
+            case_id=1, section=2, page="894", no_male=1, no_female=None,
+            event_day=31, event_month=1, event_year=1886,
+            rite_day=None, rite_month=None, rite_year=None,
+            note=None, uncertain=None, created_by="Роман Чистов"))
+        mid = one("SELECT max(id) FROM entry")[0]
+        for p in [
+            dict(role_code="groom", sort_order=10, first_name="Михаил", patronymic="Дмитриев",
+                 gender="М", rank="крестьянский сын", confession="православного",
+                 place_id=place_id, age_years=22, marriage_order="Первым браком"),
+            dict(role_code="bride", sort_order=20, first_name="Евдокия", patronymic="Савельева",
+                 gender="Ж", rank="крестьянская дочь-девица", confession="православного",
+                 age_years=23, marriage_order="Первым браком"),
+            dict(role_code="groom_relative", sort_order=30, kinship="отец"),
+            dict(role_code="bride_relative", sort_order=50, kinship="отец"),
+            dict(role_code="witness1", sort_order=60, first_name="Иван", patronymic="Константинов",
+                 gender="М", rank="крестьянин", note="по жениху"),
+        ]:
+            db.execute(sql["mention_insert"], {**blank, **p, "entry_id": mid})
+        ms = db.execute(sql["mentions_of_entry"], {"entry_id": mid}).fetchall()
+        groom = next(m for m in ms if m[0] == "groom")
+        check("жених: лет и каким браком читаются", groom[15] == 22 and groom[16] == "Первым браком", str(groom[15:]))
+        rel = next(m for m in ms if m[0] == "groom_relative")
+        check("родственник: родство «отец» без имени", rel[17] == "отец" and rel[3] is None, str(rel))
+        rows = db.execute(sql["entry_list"], {"case_id": 1, "section": 2}).fetchall()
+        check("в списке браков одна запись", len(rows) == 1)
+        check("в строке — жених и невеста", rows[0][11] == "Михаил Дмитриев" and rows[0][12] == "Евдокия Савельева",
+              str(rows[0][11:]))
+        check("список рождений браки не видит",
+              all(r[0] != mid for r in db.execute(sql["entry_list"], {"case_id": 1, "section": 1})))
 
         print("\n10. Целостность")
         check("integrity_check", one("PRAGMA integrity_check")[0] == "ok")

@@ -143,15 +143,6 @@ CREATE TABLE place (
 );
 CREATE INDEX ix_place_norm ON place (name_norm);
 
--- Прежние названия переименованных человеком пунктов (схема 6, 25.09.2026):
--- обновление не заводит пункт поставки заново под старым названием. Ссылки
--- Familio для этого мало — у части пунктов её нет, человек мог её стереть
--- (ревьюер 25.09.2026).
-CREATE TABLE place_renamed (
-  old_norm    TEXT PRIMARY KEY,
-  renamed_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 -- ============================================================================
 --  ДАННЫЕ ПОЛЬЗОВАТЕЛЯ
 -- ============================================================================
@@ -269,7 +260,6 @@ CREATE TABLE person_mention (
   age_days          INTEGER,
   death_cause       TEXT,
   marriage_order    TEXT,          -- каким браком
-  kinship           TEXT,          -- родство: «отец» у родственника жениха/невесты (схема 6)
 
   birth_year_from   INTEGER,       -- прогноз по возрастному коридору роли
   birth_year_to     INTEGER,

@@ -66,7 +66,36 @@ type Props = {
   compact?: boolean;
   /** Губерния и уезд дела — по умолчанию в карточку нового НП. */
   placeDefaults?: { guberniya: string; uyezd: string };
+  /** Пункт переименован в карточке — форма меняет старое название у всех
+   *  персон записи, иначе при сохранении старое название завело бы дубль. */
+  onPlaceRenamed?: (oldName: string, newName: string) => void;
+  /** Рядом с заголовком — сторона поручителя («по жениху» ⇄ «по невесте»):
+   *  отдельная строка «Прим.» у четырёх поручителей стоила бы четыре строки
+   *  высоты (проверяющий 25.09.2026: форма браков 1908 px). */
+  titleExtra?: React.ReactNode;
+  /** Поля роли перед ИОФ — родство у родственника в браке (как в Excel). */
+  before?: React.ReactNode;
+  /** Поля роли после вероисповедания — «каким браком» и «лет» у жениха
+   *  и невесты (лист «2» Excel, 25.09.2026). */
+  extra?: React.ReactNode;
 };
+
+/** Событие окна: пункт переименован в карточке; слушают обе формы. */
+export const PLACE_RENAMED = "genmetric:place-renamed";
+
+/** Подписка формы на переименование пункта где угодно в программе. */
+export function usePlaceRenamed(apply: (oldName: string, newName: string) => void) {
+  const ref = useRef(apply);
+  ref.current = apply;
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<{ oldName: string; newName: string }>).detail;
+      ref.current(d.oldName, d.newName);
+    };
+    window.addEventListener(PLACE_RENAMED, on);
+    return () => window.removeEventListener(PLACE_RENAMED, on);
+  }, []);
+}
 
 /** Дописать пометку в примечание, не повторяя её. */
 export function appendNote(note: string, add: string): string {
@@ -126,7 +155,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, compact, placeDefaults,
+  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
@@ -226,7 +255,8 @@ export default function PersonBlock({
 
   return (
     <Frame className={compact ? "person flat" : "person"}>
-      {title && (compact ? <h3>{title}</h3> : <h2>{title}</h2>)}
+      {title && (compact ? <h3>{title}{titleExtra}</h3> : <h2>{title}{titleExtra}</h2>)}
+      {before}
       <IofField
         label="ИОФ"
         value={person.iof}
@@ -238,6 +268,7 @@ export default function PersonBlock({
         onPickPerson={onPickPerson}
         inputRef={inputRef}
         gender={sex}
+        surnameSecond={rankKind === "rank_clergy"}
       />
       {!compact && (
         <Suggest
@@ -257,7 +288,17 @@ export default function PersonBlock({
           existing={placeCard.existing}
           defaults={placeDefaults ?? { guberniya: "", uyezd: "" }}
           onPick={placeDone}
-          onSaved={placeDone}
+          onSaved={(saved) => {
+            const old = placeCard.existing?.name;
+            if (old && old !== saved) {
+              onPlaceRenamed?.(old, saved);
+              // И во все формы разом: рождения и браки живут рядом, и
+              // недонабранная запись в другой форме со старым названием
+              // при сохранении завела бы пункт заново (проверяющий 25.09.2026).
+              window.dispatchEvent(new CustomEvent(PLACE_RENAMED, { detail: { oldName: old, newName: saved } }));
+            }
+            placeDone(saved);
+          }}
           onCancel={placeCancel}
         />
       )}
@@ -275,6 +316,7 @@ export default function PersonBlock({
           onChange={(confession) => set({ confession })}
         />
       )}
+      {extra}
       {/* «Прим.» свёрнуто, пока пусто: заказчик 22.09.2026 — «строку спрятать,
           чтобы если требуется ввести примечание, строку можно было развернуть
           кнопкой/значком». Пустая строка у каждой персоны — минус высота. */}

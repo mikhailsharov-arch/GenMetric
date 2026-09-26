@@ -67,7 +67,12 @@ INSERT OR IGNORE INTO place
 SELECT name, name_norm, np_type, guberniya, uyezd, volost,
        short_location, full_location, familio_url, origin
   FROM seed.place s
- WHERE NOT EXISTS (SELECT 1 FROM main.place p WHERE p.name_norm = s.name_norm);
+ WHERE NOT EXISTS (SELECT 1 FROM main.place p WHERE p.name_norm = s.name_norm)
+   -- Переименованный человеком пункт поставки узнаётся по ссылке Familio
+   -- (25.09.2026: название в карточке теперь правится).
+   AND NOT EXISTS (SELECT 1 FROM main.place p
+                    WHERE s.familio_url IS NOT NULL AND p.familio_url = s.familio_url)
+   AND NOT EXISTS (SELECT 1 FROM main.place_renamed r WHERE r.old_norm = s.name_norm);
 
 -- Исправление прошлой поставки. Два звания были перенесены из Excel не в тот
 -- перечень: «крестьянский сын» попал к женским, «крестьянская вдова после

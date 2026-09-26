@@ -35,8 +35,8 @@ REPO = DB_DIR.parent
 # С какой версии поднимаемся. Ровно та, что стоит сейчас у Романа: он ставит
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
-FROM_VERSION = 4
-TO_VERSION = 5
+FROM_VERSION = 5
+TO_VERSION = 6
 
 ok_count = 0
 fail_count = 0
@@ -119,6 +119,18 @@ def build_old_database(path: Path) -> None:
     # уезд — часть UNIQUE, и прежний INSERT OR IGNORE завёл бы второй.
     db.execute("INSERT INTO place (name, name_norm, np_type, guberniya, uyezd, volost, origin) "
                "VALUES ('Бухарино', 'бухарино', 'с.', 'Костромская', 'Кинешемский', 'Завражная', 'seed')")
+    # Пункт поставки, переименованный человеком (правка названия, 25.09.2026):
+    # узнаётся по ссылке Familio, «Кнышево» заново не заводится.
+    db.execute("INSERT INTO place (name, name_norm, np_type, familio_url, origin) "
+               "VALUES ('Кнышевка', 'кнышевка', 'д.', "
+               "'https://familio.org/settlements/4a669185-0095-494a-8373-71cd6470c0d6', 'seed')")
+    # Переименован и ссылку стёр — узнаётся по памяти переименований
+    # (ревьюер 25.09.2026). В схеме 5 этой таблицы нет — заводим, как
+    # сделала бы сборка #35 при правке до обновления.
+    db.execute("CREATE TABLE IF NOT EXISTS place_renamed (old_norm TEXT PRIMARY KEY, "
+               "renamed_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    db.execute("INSERT INTO place (name, name_norm, np_type, origin) VALUES ('Логинцево-2', 'логинцево-2', 'д.', 'seed')")
+    db.execute("INSERT INTO place_renamed (old_norm) VALUES ('логинцево')")
     db.commit()
     db.close()
 
@@ -129,10 +141,18 @@ def upgrade(user_db: Path, seed_db: Path) -> None:
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("ATTACH DATABASE ? AS seed", (str(seed_db),))
 
-    # 1. Создаём недостающие таблицы и индексы по образцу из поставки.
-    #    Так закрываются миграции вида «добавилась таблица». Изменение состава
-    #    колонок в существующей таблице этим способом НЕ покрывается — такие
-    #    правки придётся писать отдельным шагом и отдельным тестом.
+    # 0. Сначала недостающие колонки в существующих таблицах (схема 6: kinship),
+    #    потом (1) недостающие таблицы и индексы — как upgrade() в main.rs.
+    for (table,) in conn.execute(
+            "SELECT name FROM seed.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+        have = [r[1] for r in conn.execute(f'PRAGMA main.table_info("{table}")')]
+        if not have:
+            continue
+        for r in conn.execute(f'PRAGMA seed.table_info("{table}")').fetchall():
+            if r[1] not in have:
+                conn.execute(f'ALTER TABLE main."{table}" ADD COLUMN "{r[1]}" {r[2]}')
+    # 1. Недостающие таблицы и индексы по образцу из поставки.
+
     items = conn.execute(
         "SELECT name, sql FROM seed.sqlite_master "
         "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'").fetchall()
@@ -167,10 +187,10 @@ def main() -> int:
         db = sqlite3.connect(user)
         check(f"схема версии {FROM_VERSION}",
               db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == FROM_VERSION)
-        # Со схемы 4 (сборка #32) до 5 (23.09.2026) новая только name_alias.
-        has_alias = db.execute(
-            "SELECT count(*) FROM sqlite_master WHERE name='name_alias'").fetchone()[0]
-        check("таблицы соответствий имён ещё нет", has_alias == 0)
+        # Со схемы 5 (сборки #33–#34) до 6 (25.09.2026) новая только колонка
+        # person_mention.kinship — её создаёт шаг «недостающие колонки».
+        cols = [r[1] for r in db.execute("PRAGMA table_info(person_mention)")]
+        check("колонки «родство» (kinship) ещё нет", "kinship" not in cols)
         check("звания в чужих перечнях у него есть",
               db.execute("SELECT count(*) FROM lookup WHERE "
                          "(kind='rank_f' AND value='крестьянский сын') OR "
@@ -195,6 +215,8 @@ def main() -> int:
               one("SELECT count(*) FROM sqlite_master WHERE name='clergy_index'") == 1)
         # Новое в версии 5: соответствия имён из окна сверки (23.09.2026).
         # Своя таблица — обновление её не трогает, в отличие от name_form.
+        cols = [r[1] for r in db.execute("PRAGMA table_info(person_mention)")]
+        check("появилась колонка «родство» (kinship) в person_mention", "kinship" in cols)
         check("появилась таблица соответствий имён",
               one("SELECT count(*) FROM sqlite_master WHERE name='name_alias'") == 1)
         db.execute("INSERT INTO name_alias (kind, form, form_norm, target) VALUES ('name','Пискарь','пискарь','Кесарь')")
@@ -288,6 +310,10 @@ def main() -> int:
         # (в отличие от name_form, которая перезаливается целиком).
         check("поправленный в карточке пункт поставки не задвоен",
               db.execute("SELECT count(*) FROM place WHERE name_norm='бухарино'").fetchone()[0] == 1)
+        check("переименованный пункт поставки не вернулся под старым названием",
+              db.execute("SELECT count(*) FROM place WHERE name_norm='кнышево'").fetchone()[0] == 0)
+        check("переименованный без ссылки пункт не вернулся (память переименований)",
+              db.execute("SELECT count(*) FROM place WHERE name_norm='логинцево'").fetchone()[0] == 0)
         check("и правка человека не откатилась",
               db.execute("SELECT uyezd FROM place WHERE name_norm='бухарино'").fetchone()[0] == "Кинешемский")
         check("соответствие «Пискарь» → «Кесарь» пережило обновление",

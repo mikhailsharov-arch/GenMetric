@@ -370,6 +370,24 @@ def resumed(driver, wait):
         wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
         value = field(driver, "НП", god1).get_attribute("value")
         check("НП остался в поле", value == "Новодеревенька", f"«{value}»")
+        # Правка названия в карточке (заказчик 25.09.2026). В собранной
+        # программе переименование падало на лишнем параметре SQL — ревьюер
+        # нашёл до выкладки; этот шаг ходит через настоящий Rust.
+        click(driver, god1 + "div[contains(@class,'field')][./label[normalize-space()='НП']]"
+                             "//button[contains(@class,'action')]")
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place-edit']")))
+        title = field(driver, "Название", "//div[contains(@class,'modal')]//")
+        title.send_keys(Keys.CONTROL, "a")
+        title.send_keys("Новодеревенька Малая")
+        click(driver, "//div[contains(@class,'modal')]//button[normalize-space()='Сохранить изменения']")
+        try:
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
+        except TimeoutException:
+            pass
+        errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+        value = field(driver, "НП", god1).get_attribute("value")
+        check("переименование НП прошло через Rust", value == "Новодеревенька Малая" and not errorbar,
+              f"«{value}» | " + " | ".join(errorbar))
     fill(driver, "Счёт", "10")
     fill(driver, "Ребёнок", "Анна")
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
@@ -413,6 +431,33 @@ def resumed(driver, wait):
     time.sleep(0.5)
     rank = field(driver, "Звание", mother).get_attribute("value")
     check("набрали отца — у матери «законная жена его»", rank == "законная жена его", f"«{rank}»")
+
+    print("\n11. Браки (заказчик 25.09.2026)")
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Браки']").click()
+    m = "//div[contains(@class,'marriage')]//"
+    wait.until(EC.visibility_of_element_located((By.XPATH, m + "section[.//h2[normalize-space()='Жених']]")))
+    groom = m + "section[.//h2[normalize-space()='Жених']]//"
+    bride = m + "section[.//h2[normalize-space()='Невеста']]//"
+    order = field(driver, "Каким браком", groom).get_attribute("value")
+    check("у жениха заготовка «Первым браком»", order == "Первым браком", f"«{order}»")
+    fill(driver, "Год", "1886", m)
+    fill(driver, "Счёт", "1", m)
+    field(driver, "ИОФ", groom).send_keys("Михаил Дмитриев")
+    field(driver, "ИОФ", groom).send_keys(Keys.ESCAPE)
+    field(driver, "ИОФ", bride).send_keys("Евдокия Савельева")
+    field(driver, "ИОФ", bride).send_keys(Keys.ESCAPE)
+    time.sleep(0.8)  # разбор ИОФ — асинхронный
+    click(driver, m + "button[starts-with(normalize-space(),'Сохранить и следующая')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".marriage"), "Набрано браков: 1"))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, ".marriage").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("запись о браке сохранена", "Набрано браков: 1" in block, " | ".join(errorbar))
+    check("в строке жених и невеста", "Михаил Дмитриев" in block and "Евдокия Савельева" in block)
+    count = field(driver, "Счёт", m).get_attribute("value")
+    check("счёт браков вырос до 2", count == "2", f"«{count}»")
 
 
 def main() -> int:

@@ -16,7 +16,7 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
 /// Версия схемы, которую понимает эта сборка.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
@@ -233,6 +233,11 @@ fn normalize_name(input: &str) -> String {
     n.strip_suffix('ъ').map(str::to_string).unwrap_or(n)
 }
 
+/// normalize_name для каждого слова: «крестьянскій сынъ» → «крестьянский сын».
+fn normalize_words(input: &str) -> String {
+    input.split_whitespace().map(normalize_name).collect::<Vec<_>>().join(" ")
+}
+
 /// Расстояние Дамерау — Левенштейна по символам (не байтам: кириллица).
 /// Для поиска похожих имён и названий: «Букарина» ↔ «Бухарино» = 2.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -419,7 +424,13 @@ fn suggest(
     limit: Option<i64>,
     gender: Option<String>,
 ) -> Result<Vec<Suggestion>, String> {
-    let pattern = like_prefix(&prefix);
+    // Звания в книгах — в старой орфографии («крестьянинъ»): каждое слово
+    // без конечного «ъ», с «і», «ѣ», «ѳ» по-современному (техдолг 23.09.2026).
+    let pattern = if kind.starts_with("rank") {
+        like_prefix(&normalize_words(&prefix))
+    } else {
+        like_prefix(&prefix)
+    };
     // До 200: «весь перечень» по кнопке ▾ — губерний 115, архивов 59.
     // Проверяющий 21.09.2026: с пределом 50 из перечня пропадали «ЦГА Москвы»
     // и «Московская губерния», а тест этого не видел — он не ходит через Rust.
@@ -593,9 +604,12 @@ fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
                 out.gender = Some(sex);
             }
             rest = &rest[1..];
-        } else if !not_patr && rest.len() >= 2 && looks_like_patronymic(first_rest) {
-            // «Иван Пискарев Сидоров»: второе слово не отчество по словарю,
-            // но стоит на месте отчества и выглядит как оно — форма спросит.
+        } else if !not_patr && looks_like_patronymic(first_rest) {
+            // «Иван Пискарев Сидоров» и «Иван Пискарев» без фамилии: второе
+            // слово не отчество по словарю, но стоит на месте отчества и
+            // выглядит как оно — форма спросит. Без фамилии тоже (Роман
+            // 25.09.2026: «считает, что это фамилия»); если это правда
+            // фамилия — «Это не отчество» запомнит ответ.
             out.patr_unknown = Some(first_rest.to_string());
         }
     }
@@ -762,12 +776,43 @@ fn backup(conn: &Connection, db_path: &Path) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Колонки, которых нет в таблицах пользователя, — по образцу поставки
+/// (схема 6, 25.09.2026: `person_mention.kinship` для браков). Шаг
+/// «недостающие таблицы» новую колонку в старой таблице не видит; этот —
+/// видит. Только добавление: тип из поставки, без ограничений и значений по
+/// умолчанию — SQLite не даёт ALTER ADD COLUMN с ними в общем случае.
+/// Тот же шаг повторяет db/test_upgrade.py.
+fn add_missing_columns(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    let tables: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT name FROM seed.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for table in tables {
+        let cols = |schema: &str| -> Result<Vec<(String, String)>, rusqlite::Error> {
+            let mut stmt = conn.prepare(&format!("PRAGMA {schema}.table_info(\"{table}\")"))?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+            rows.collect()
+        };
+        let have: Vec<String> = cols("main")?.into_iter().map(|(n, _)| n).collect();
+        if have.is_empty() {
+            continue; // таблицы нет — её создал шаг выше или она не нужна
+        }
+        for (name, ty) in cols("seed")? {
+            if !have.contains(&name) {
+                conn.execute_batch(&format!("ALTER TABLE main.\"{table}\" ADD COLUMN \"{name}\" {ty}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Обновление базы пользователя до текущей версии поставки.
 ///
-/// Шаг первый: создаём недостающие таблицы и индексы по образцу из поставки.
-/// Так закрываются миграции вида «добавилась таблица». Изменение состава
-/// колонок в существующей таблице этим способом НЕ покрывается — такие правки
-/// придётся писать отдельным шагом и отдельным тестом.
+/// Шаг первый: недостающие колонки в существующих таблицах (add_missing_columns,
+/// схема 6), затем недостающие таблицы и индексы по образцу из поставки.
+/// Колонки добавляются только простые: без NOT NULL и DEFAULT из поставки.
 ///
 /// Шаг второй: обновляем справочники по db/migrate.sql. Тот же файл прогоняет
 /// тест db/test_upgrade.py, поэтому логика обновления проверена по-настоящему.
@@ -796,6 +841,10 @@ fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<dyn s
         }
         out
     };
+    // Сначала колонки в существующих таблицах, потом недостающие таблицы и
+    // индексы: будущий индекс по новой колонке иначе уронил бы обновление
+    // (ревьюер 25.09.2026). Таблиц, которых ещё нет, шаг колонок не трогает.
+    add_missing_columns(conn)?;
     for sql in missing {
         conn.execute_batch(&sql)?;
     }
@@ -858,6 +907,13 @@ struct PersonInput {
     place: Option<String>,
     note: Option<String>,
     uncertain: Option<String>,
+    // Браки (25.09.2026). У рождений не приходят — serde отдаёт None.
+    #[serde(default)]
+    age_years: Option<i64>,
+    #[serde(default)]
+    marriage_order: Option<String>,
+    #[serde(default)]
+    kinship: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -908,6 +964,8 @@ struct EntryBrief {
     child: Option<String>,
     father: Option<String>,
     clergy_noname: bool,
+    groom: Option<String>,
+    bride: Option<String>,
 }
 
 #[tauri::command]
@@ -1019,7 +1077,15 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                     ":rank": person.rank, ":confession": person.confession,
                     ":place_id": place_id, ":note": person.note, ":uncertain": person.uncertain,
                     ":birth_year_from": Option::<i64>::None, ":birth_year_to": Option::<i64>::None,
+                    ":age_years": person.age_years, ":marriage_order": person.marriage_order,
+                    ":kinship": person.kinship,
                 }).map_err(|e| e.to_string())?;
+                if let Some(v) = person.marriage_order.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    remember(conn, "marriage_order", v, entry.case_id, &parish)?;
+                }
+                if let Some(v) = person.kinship.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    remember(conn, "kinship", v, entry.case_id, &parish)?;
+                }
 
                 // Звание — в справочник и в статистику. Перечень выбирается
                 // по полу: у женщин свой список, это разные перечни.
@@ -1070,6 +1136,21 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                     conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
                         ":husband_norm": normalize(&husband), ":wife_iof": wife,
                         ":wife_place": m.place, ":wife_rank": m.rank,
+                    }).map_err(|e| e.to_string())?;
+                }
+            }
+            // Венчание — тоже пара: в рождениях после него жена подставится
+            // по мужу. Жить она будет у мужа — НП жениха; звание невесты
+            // («дочь-девица») жене не годится — пусто, форма поставит своё.
+            let groom = entry.persons.iter().find(|p| p.role_code == "groom");
+            let bride = entry.persons.iter().find(|p| p.role_code == "bride");
+            if let (Some(g), Some(b)) = (groom, bride) {
+                let husband = person_iof(g);
+                let wife = person_iof(b);
+                if !husband.is_empty() && !wife.is_empty() {
+                    conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
+                        ":husband_norm": normalize(&husband), ":wife_iof": wife,
+                        ":wife_place": g.place, ":wife_rank": Option::<String>::None,
                     }).map_err(|e| e.to_string())?;
                 }
             }
@@ -1347,20 +1428,75 @@ fn place_get(app: State<App>, name: String) -> Result<Option<PlaceInfo>, String>
     })
 }
 
-/// Правка карточки известного пункта (Роман 24.09.2026). Название не меняется.
+/// Правка карточки известного пункта (Роман 24.09.2026), включая название
+/// (25.09.2026). Всё одной транзакцией: пункт и текстовые копии названия в
+/// памяти подсказок.
 #[tauri::command]
 fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String> {
     with_conn(&app, &format!("Правка НП «{}»", card.name), |conn| {
+        let name = card.name.trim().to_string();
+        if name.is_empty() {
+            return Err("Название населённого пункта пустое".to_string());
+        }
+        let norm = normalize(&name);
+        let old_name: String = conn
+            .query_row("SELECT name FROM place WHERE id = ?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Населённого пункта с id {id} нет"))?;
+        let renamed = normalize(&old_name) != norm;
+        // Совпадение с другим пунктом — понятными словами, а не «UNIQUE
+        // constraint failed» (техдолг, ревьюер 24.09.2026). Только при смене
+        // названия: правка уезда у пункта, у которого в базе есть тёзка,
+        // не должна запрещаться (проверяющий 25.09.2026).
+        if renamed {
+            if let Some(other) = conn
+                .query_row(&statement("place_name_taken")?,
+                           rusqlite::named_params! { ":name_norm": norm, ":id": id },
+                           |r| r.get::<_, String>(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+            {
+                return Err(format!("Пункт «{other}» уже есть в справочнике — выберите его в поле НП, а не переименовывайте этот"));
+            }
+        }
         let blank = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-        let n = conn.execute(&statement("place_update")?, rusqlite::named_params! {
-            ":id": id,
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute(&statement("place_update")?, rusqlite::named_params! {
+            ":id": id, ":name": name, ":name_norm": norm,
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
             ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
             ":familio_url": blank(&card.familio_url),
-        }).map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Err(format!("Населённого пункта с id {id} нет"));
+        }).map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                format!("Пункт «{name}» с такими типом, уездом и губернией уже есть в справочнике")
+            } else {
+                e.to_string()
+            }
+        })?;
+        if old_name != name {
+            // Каждому блоку — ровно его параметры: rusqlite на лишний
+            // именованный параметр отвечает ошибкой (ревьюер 25.09.2026 —
+            // так переименование падало всегда, а Python-тест лишнее прощал).
+            tx.execute(&statement("place_rename_persons")?, rusqlite::named_params! {
+                ":name": name, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
+            tx.execute(&statement("place_rename_spouses")?, rusqlite::named_params! {
+                ":name": name, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
+            tx.execute(&statement("place_rename_usage")?, rusqlite::named_params! {
+                ":name": name, ":name_norm": norm, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
         }
+        if renamed {
+            // Прежнее название — в память переименований: при обновлении
+            // пункт поставки под ним не вернётся (ревьюер 25.09.2026 — без
+            // ссылки Familio возвращался).
+            tx.execute(&statement("place_renamed_remember")?, rusqlite::named_params! {
+                ":old_norm": normalize(&old_name),
+            }).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     })
 }
@@ -1417,6 +1553,19 @@ fn place_id_for(conn: &Connection, name: &str) -> Result<i64, String> {
 fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &str)
     -> Result<(), String>
 {
+    // Звание в старой орфографии, которое в перечне уже есть по-современному,
+    // перечень не пополняет и частоту наращивает прежнему («крестьянинъ» →
+    // «крестьянин»). В записи остаётся как набрано.
+    let canonical: Option<String> = if kind.starts_with("rank") {
+        conn.query_row(&statement("lookup_by_norm")?,
+                       rusqlite::named_params! { ":kind": kind, ":value_norm": normalize_words(value) },
+                       |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    let value = canonical.as_deref().unwrap_or(value);
     let norm = normalize(value);
     conn.execute(&statement("lookup_extend")?, rusqlite::named_params! {
         ":kind": kind, ":value": value, ":value_norm": norm,
@@ -1445,6 +1594,9 @@ struct MentionOut {
     confession: Option<String>,
     place: Option<String>,
     note: Option<String>,
+    age_years: Option<i64>,
+    marriage_order: Option<String>,
+    kinship: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1486,6 +1638,7 @@ fn entry_load(app: State<App>, id: i64) -> Result<EntryFull, String> {
                     role_code: r.get(0)?, sort_order: r.get(1)?, surname: r.get(2)?,
                     first_name: r.get(3)?, patronymic: r.get(4)?, gender: r.get(9)?,
                     rank: r.get(10)?, confession: r.get(11)?, place: r.get(12)?, note: r.get(13)?,
+                    age_years: r.get(15)?, marriage_order: r.get(16)?, kinship: r.get(17)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1533,6 +1686,7 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
                     rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
                     clergy_noname: r.get::<_, i64>(10)? != 0,
+                    groom: r.get(11)?, bride: r.get(12)?,
                 })
             })
             .map_err(|e| e.to_string())?;

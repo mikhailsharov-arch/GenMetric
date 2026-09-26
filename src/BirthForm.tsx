@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person } from "./PersonBlock";
 import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
@@ -99,6 +99,17 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   // документе: …» после сверки идёт сюда (entry.note).
   const [entryNote, setEntryNote] = useState("");
   const childDocFor = useRef<DocFor>({});
+  const motherIof = useRef<HTMLInputElement>(null);
+  const god1Iof = useRef<HTMLInputElement>(null);
+
+  /** Пункт переименован в карточке — то же название у всех персон записи. */
+  function renamePlace(oldName: string, newName: string) {
+    const fix = (p: Person) => (p.place === oldName ? { ...p, place: newName } : p);
+    for (const set of [setFatherState, setMother, setGod1, setGod2, setGod3, setGod4])
+      set((p: Person) => fix(p));
+    if (copiedPlace.current === oldName) copiedPlace.current = newName;
+  }
+  usePlaceRenamed(renamePlace);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
   // Пол ребёнка, указанный руками — только когда по имени его не понять.
   // Пол из разбора имени важнее: он есть у 99,7% имён на данных Романа.
@@ -273,6 +284,17 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           place: wife.place ?? m.place,
           rank: wife.rank ?? m.rank,
         }));
+        // Мать подставилась — курсор сразу к первому восприемнику (Роман
+        // 25.09.2026). После выбора отца он уходит к первому пустому полю —
+        // это ИОФ матери, пока жена ещё не пришла; если он там и остался,
+        // переносим. Открывшееся окно сверки матери фокус не отдаёт.
+        setTimeout(() => {
+          const active = document.activeElement;
+          if (active && active === motherIof.current && !document.querySelector(".modal")) {
+            god1Iof.current?.focus();
+            god1Iof.current?.select();
+          }
+        }, 0);
       })
       .catch((e) => report("Не удалось найти жену по отцу", e));
   }
@@ -689,6 +711,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         onChange={setFather}
         rankKind="rank"
         placeDefaults={placeDefaults}
+        onPlaceRenamed={renamePlace}
         withConfession
         gender="М"
         onPickPerson={pickFather}
@@ -697,8 +720,10 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         title="Мать"
         person={mother}
         onChange={setMother}
+        inputRef={motherIof}
         rankKind="rank"
         placeDefaults={placeDefaults}
+        onPlaceRenamed={renamePlace}
         withConfession
         gender="Ж"
         onPickPerson={pickInto(setMother)}
@@ -707,8 +732,10 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         title="Восприемник 1"
         person={god1}
         onChange={setGod1}
+        inputRef={god1Iof}
         rankKind="rank"
         placeDefaults={placeDefaults}
+        onPlaceRenamed={renamePlace}
         onPickPerson={pickInto(setGod1)}
       />
       <PersonBlock
@@ -717,6 +744,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         onChange={setGod2}
         rankKind="rank"
         placeDefaults={placeDefaults}
+        onPlaceRenamed={renamePlace}
         onPickPerson={pickInto(setGod2)}
       />
       {godCount >= 3 && (
@@ -726,6 +754,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           onChange={setGod3}
           rankKind="rank"
         placeDefaults={placeDefaults}
+        onPlaceRenamed={renamePlace}
           onPickPerson={pickInto(setGod3)}
         />
       )}
@@ -736,6 +765,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           onChange={setGod4}
           rankKind="rank"
         placeDefaults={placeDefaults}
+        onPlaceRenamed={renamePlace}
           onPickPerson={pickInto(setGod4)}
         />
       )}

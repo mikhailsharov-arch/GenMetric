@@ -4,6 +4,7 @@ import ErrorBar from "./ErrorBar";
 import FontScale from "./FontScale";
 import CaseHeader, { type Case } from "./CaseHeader";
 import BirthForm from "./BirthForm";
+import MarriageForm from "./MarriageForm";
 import { report } from "./errors";
 
 type Startup = {
@@ -41,7 +42,7 @@ export default function App() {
   const [startup, setStartup] = useState<Startup | null>(null);
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
-  const [screen, setScreen] = useState<"case" | "births" | "about">("case");
+  const [screen, setScreen] = useState<"case" | "births" | "marriages" | "about">("case");
 
   useEffect(() => {
     invoke<Startup>("startup_state")
@@ -118,6 +119,14 @@ export default function App() {
           >
             Рождения
           </button>
+          <button
+            className={screen === "marriages" ? "on" : ""}
+            onClick={() => setScreen("marriages")}
+            disabled={!mkCase || !mkCase.id}
+            title={mkCase && mkCase.id ? "" : "Сначала заполните дело"}
+          >
+            Браки
+          </button>
           <button className={screen === "about" ? "on" : ""} onClick={() => setScreen("about")}>
             О программе
           </button>
@@ -136,6 +145,12 @@ export default function App() {
       {mkCase && mkCase.id > 0 && (
         <div hidden={screen !== "births"}>
           <BirthForm mkCase={mkCase} />
+        </div>
+      )}
+      {/* Браки (25.09.2026) — так же: не размонтируются при переключении. */}
+      {mkCase && mkCase.id > 0 && (
+        <div hidden={screen !== "marriages"}>
+          <MarriageForm mkCase={mkCase} />
         </div>
       )}
       {screen === "about" && info && (

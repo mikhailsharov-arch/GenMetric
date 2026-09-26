@@ -419,6 +419,66 @@ def incident_20260924_pravka_sterla_pometku():
           form.count("copiedPlace.current = null") >= 2 and form.count("childDocFor.current = {}") >= 2)
 
 
+def incident_20260925_otchestvo_bez_familii():
+    """Роман 25.09.2026: «Иван Пискарев» без фамилии не сверялся — второе
+    слово считалось фамилией; с фамилией сверялось. Курсор после выбора отца
+    и подстановки матери вставал в ИОФ матери, а не восприемника. «Стр.» на
+    100% показывала «93» вместо «938об-939».
+
+    Защита: отчество спрашивается и без фамилии; после подстановки жены
+    курсор переносится к восприемнику; первая строка — узкие год и счёт,
+    страница не уже 10em, при нехватке места перенос строки.
+    """
+    rust = strip_comments(read("src-tauri/src/main.rs"))
+    check("отчество без фамилии сверяется", "rest.len() >= 2 && looks_like_patronymic" not in rust
+          and "!not_patr && looks_like_patronymic(first_rest)" in rust)
+    form = strip_comments(read("src/BirthForm.tsx"))
+    check("после подстановки жены — к первому восприемнику", "god1Iof.current?.focus()" in form)
+    css = read("src/styles.css")
+    check("«Стр.» не уже 10em, строка переносится",
+          ".row.tight .field.wide { flex: 1 1 10em; min-width: 10em; }" in css and ".row.tight { flex-wrap: wrap;" in css)
+
+
+def incident_20260925_lishnij_parametr():
+    """Ревьюер 25.09.2026, до выкладки: переименование НП в собранной программе
+    падало всегда — во все три блока place_rename_* передавался :name_norm, а
+    в двух его нет; rusqlite на лишний именованный параметр отвечает ошибкой
+    (InvalidParameterName). Python-тест те же блоки гонял через sqlite3, а он
+    лишние ключи словаря прощает — «тест, который не ходит через Rust».
+
+    Защита — механическая, на весь класс: у каждого вызова
+    statement("X") … named_params! { … } в main.rs набор параметров обязан
+    входить в набор параметров блока X в statements.sql.
+    """
+    rust = read("src-tauri/src/main.rs")
+    text = read("db/statements.sql")
+    blocks, name, buf = {}, None, []
+    for line in text.splitlines():
+        m = line.strip()
+        if m.startswith("-- @"):
+            if name:
+                blocks[name] = "\n".join(buf)
+            name, buf = m[4:].strip(), []
+        elif name is not None and not m.startswith("--"):
+            buf.append(re.sub(r"'[^']*'", "''", line))
+    if name:
+        blocks[name] = "\n".join(buf)
+    calls = re.findall(r'statement\("(\w+)"\)\?[^;]{0,200}?named_params!\s*\{(.*?)\}', rust, re.S)
+    check("вызовы с именованными параметрами найдены", len(calls) >= 20, f"{len(calls)}")
+    bad = []
+    for block, params in calls:
+        passed = set(re.findall(r'":(\w+)"', params))
+        declared = set(re.findall(r":(\w+)", blocks.get(block, "")))
+        extra = passed - declared
+        if block not in blocks or extra:
+            bad.append(f"{block}: {sorted(extra) or 'нет блока'}")
+    check("ни одному блоку не передаётся лишний параметр", not bad, "; ".join(bad))
+    # Имя блока переменной (как было в цикле по place_rename_*) проверка выше
+    # не видит — такие вызовы только без параметров или с выбором из литералов.
+    loose = [m for m in re.findall(r"statement\((\w+)\)", rust) if m not in ("name",)]
+    check("имя блока в statement() — литерал, не переменная", not loose, ", ".join(loose))
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -429,6 +489,8 @@ def incident_20260924_pravka_sterla_pometku():
 ]
 
 ИНЦИДЕНТЫ = [
+    incident_20260925_lishnij_parametr,
+    incident_20260925_otchestvo_bez_familii,
     incident_20260924_sverka_ne_vezde,
     incident_20260924_pravka_sterla_pometku,
     incident_20260813_baza_ne_doehala,

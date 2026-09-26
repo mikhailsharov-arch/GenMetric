@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DB_DIR = Path(__file__).resolve().parent
 SEED_DIR = DB_DIR / "seed"
 

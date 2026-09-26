@@ -49,11 +49,11 @@ INSERT INTO person_mention
     (entry_id, role_code, sort_order, surname, first_name, patronymic,
      surname_modern, first_name_modern, patronymic_modern, maiden_surname,
      gender, rank, confession, place_id, note, uncertain,
-     birth_year_from, birth_year_to)
+     birth_year_from, birth_year_to, age_years, marriage_order, kinship)
 VALUES (:entry_id, :role_code, :sort_order, :surname, :first_name, :patronymic,
         :surname_modern, :first_name_modern, :patronymic_modern, :maiden_surname,
         :gender, :rank, :confession, :place_id, :note, :uncertain,
-        :birth_year_from, :birth_year_to);
+        :birth_year_from, :birth_year_to, :age_years, :marriage_order, :kinship);
 
 -- @place_find
 SELECT id FROM place WHERE name_norm = :name_norm LIMIT 1;
@@ -82,22 +82,49 @@ VALUES (:name, :name_norm, :np_type, :guberniya, :uyezd, :volost,
 -- @place_get
 -- Карточка известного пункта на правку (Роман 24.09.2026: «должна быть
 -- возможность отредактировать НП, вдруг при вводе пользователь совершил ошибку»).
+-- Порядок: если строк с одним названием несколько (поставка и архив), берётся
+-- самая полная — не из архива, самая ранняя (техдолг, ревьюер 24.09.2026).
 SELECT id, name, np_type, guberniya, uyezd, volost, familio_url, origin
-  FROM place WHERE name_norm = :name_norm LIMIT 1;
+  FROM place WHERE name_norm = :name_norm
+ ORDER BY (origin = 'archive'), id LIMIT 1;
 
 -- @place_update
--- Правка карточки: название не меняется (на него ссылаются записи по id,
--- но подсказки и слияние архива идут по name_norm), остальное — как в
--- place_save, включая пересборку short/full_location.
+-- Правка карточки, включая название (Роман 25.09.2026: «да, вдруг
+-- пользователь допустил ошибку в названии»). Записи ссылаются на пункт по id
+-- и получают новое название сами; short/full_location пересобираются.
 UPDATE place
-   SET np_type = :np_type, guberniya = :guberniya, uyezd = :uyezd, volost = :volost,
+   SET name = :name, name_norm = :name_norm,
+       np_type = :np_type, guberniya = :guberniya, uyezd = :uyezd, volost = :volost,
        familio_url = :familio_url,
-       short_location = trim(coalesce(:np_type, '') || ' ' || name),
-       full_location = trim(coalesce(:np_type, '') || ' ' || name)
+       short_location = trim(coalesce(:np_type, '') || ' ' || :name),
+       full_location = trim(coalesce(:np_type, '') || ' ' || :name)
           || CASE WHEN :volost    IS NULL OR :volost    = '' THEN '' ELSE ', ' || :volost    || ' волость'  END
           || CASE WHEN :uyezd     IS NULL OR :uyezd     = '' THEN '' ELSE ', ' || :uyezd     || ' уезд'     END
           || CASE WHEN :guberniya IS NULL OR :guberniya = '' THEN '' ELSE ', ' || :guberniya || ' губерния' END
  WHERE id = :id;
+
+-- @place_name_taken
+-- Другой пункт с тем же названием — переименование в него запрещено.
+SELECT name FROM place WHERE name_norm = :name_norm AND id <> :id LIMIT 1;
+
+-- @place_renamed_remember
+INSERT OR IGNORE INTO place_renamed (old_norm) VALUES (:old_norm);
+
+-- @place_rename_persons
+-- Память подсказок хранит название текстом: персоны с местом, жёны, частоты
+-- (три блока ниже). Без этого выбор персоны подставлял бы старое название,
+-- которого в справочнике уже нет, и открывал карточку нового пункта.
+UPDATE person_index SET place = :name WHERE place = :old_name
+   AND NOT EXISTS (SELECT 1 FROM person_index p2
+                    WHERE p2.iof = person_index.iof AND p2.place = :name
+                      AND p2.rank IS person_index.rank);
+
+-- @place_rename_spouses
+UPDATE spouse_index SET wife_place = :name WHERE wife_place = :old_name;
+
+-- @place_rename_usage
+UPDATE OR IGNORE usage_stat SET value = :name, value_norm = :name_norm
+ WHERE kind = 'place' AND value = :old_name;
 
 -- @place_names
 -- Все названия для поиска похожих («Букарина» → «Бухарино»): расстояние
@@ -141,6 +168,11 @@ SELECT DISTINCT form, gender FROM name_form
 SELECT DISTINCT form, form_norm, gender FROM name_form
  WHERE kind IN ('patr_old_m', 'patr_old_f', 'patr_m', 'patr_f');
 
+-- @lookup_by_norm
+-- Значение перечня по ключу — для званий в старой орфографии (main.rs remember).
+SELECT value FROM lookup WHERE kind = :kind AND value_norm = :value_norm
+ ORDER BY origin = 'user', id LIMIT 1;
+
 -- @lookup_extend
 -- Автопополнение справочников: значение, которого нет в перечне, добавляется
 -- при сохранении записи. Пункт 3 отчёта Романа о тестировании.
@@ -177,7 +209,16 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        -- Причт без имени (сборки 21–22.09) — пометить в списке, чтобы найти и поправить.
        EXISTS (SELECT 1 FROM person_mention c
                 WHERE c.entry_id = e.id AND c.role_code IN ('clergy1','clergy2','clergy3')
-                  AND c.first_name IS NULL AND c.surname IS NULL AND c.rank IS NOT NULL) AS clergy_noname
+                  AND c.first_name IS NULL AND c.surname IS NULL AND c.rank IS NOT NULL) AS clergy_noname,
+       -- Браки (25.09.2026): жених и невеста в строке списка.
+       (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
+                    || ' ' || coalesce(m.surname, ''))
+          FROM person_mention m
+         WHERE m.entry_id = e.id AND m.role_code = 'groom') AS groom,
+       (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
+                    || ' ' || coalesce(m.surname, ''))
+          FROM person_mention m
+         WHERE m.entry_id = e.id AND m.role_code = 'bride') AS bride
   FROM entry e
  WHERE e.case_id = :case_id AND e.section = :section
  ORDER BY e.id DESC;
@@ -195,7 +236,7 @@ SELECT m.role_code, m.sort_order, m.surname, m.first_name, m.patronymic,
        m.surname_modern, m.first_name_modern, m.patronymic_modern, m.maiden_surname,
        m.gender, m.rank, m.confession,
        (SELECT p.name FROM place p WHERE p.id = m.place_id) AS place,
-       m.note, m.uncertain
+       m.note, m.uncertain, m.age_years, m.marriage_order, m.kinship
   FROM person_mention m
  WHERE m.entry_id = :entry_id
  ORDER BY m.sort_order;

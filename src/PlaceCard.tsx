@@ -38,6 +38,9 @@ type Props = {
 };
 
 export default function PlaceCard({ name, similar, defaults, existing, onPick, onSaved, onCancel }: Props) {
+  // Название правится только у известного пункта (Роман 25.09.2026: «вдруг
+  // пользователь допустил ошибку в названии»); у нового оно уже в заголовке.
+  const [title, setTitle] = useState(existing?.name ?? name);
   const [npType, setNpType] = useState(existing ? existing.np_type ?? "" : "д.");
   const [guberniya, setGuberniya] = useState(existing ? existing.guberniya ?? "" : defaults.guberniya);
   const [uyezd, setUyezd] = useState(existing ? existing.uyezd ?? "" : defaults.uyezd);
@@ -50,10 +53,11 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
     if (busy) return;
     setBusy(true);
     try {
-      const card = { name: name.trim(), np_type: npType, guberniya, uyezd, volost, familio_url: url };
+      const finalName = (existing ? title : name).trim();
+      const card = { name: finalName, np_type: npType, guberniya, uyezd, volost, familio_url: url };
       if (existing) await invoke("place_update", { id: existing.id, card });
       else await invoke<number>("place_save", { card });
-      onSaved(name.trim());
+      onSaved(finalName);
     } catch (e) {
       report(`Не удалось сохранить населённый пункт «${name}»`, e);
     } finally {
@@ -66,7 +70,8 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
            kind={existing ? "place-edit" : "place"} onClose={onCancel}>
       {existing && (
         <p className="hint">
-          Поправьте, что нужно, — Enter ведёт по полям, на последнем сохраняет.
+          Поправьте, что нужно, включая название, — Enter ведёт по полям, на последнем
+          сохраняет. Записи с этим пунктом получат новое название сами.
           {existing.origin === "archive" && " Пункт пришёл из архива Excel без губернии и уезда."}
         </p>
       )}
@@ -104,6 +109,16 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
           {similar.length ? "Или заполните карточку нового:" : "Такого названия в справочнике нет — заполните карточку:"}
           {" "}губерния и уезд подставлены из дела, волость и ссылку можно оставить пустыми.
         </p>
+      )}
+      {existing && (
+        <div className="field">
+          <label>Название</label>
+          <div className="fieldbody">
+            <input data-field value={title} onChange={(e) => setTitle(e.target.value)}
+                   autoComplete="off" spellCheck={false}
+                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); } }} />
+          </div>
+        </div>
       )}
       <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse />
       <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse />

@@ -168,13 +168,18 @@ def main() -> int:
     rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
 
     print("\n0. Запросы и правило на месте")
+    rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
     for required in ("alias_find", "alias_save", "name_headwords", "patr_forms",
-                     "place_save", "place_names", "place_find", "place_get", "place_update"):
+                     "place_save", "place_names", "place_find", "place_get", "place_update",
+                     "place_name_taken", "place_rename_persons", "place_rename_spouses",
+                     "place_rename_usage"):
         check(f"блок {required} на месте", required in sql)
     check("main.rs: normalize_name отбрасывает конечный «ъ»",
           "strip_suffix('ъ')" in rust)
     check("main.rs: «Это не отчество» (соответствие без цели) больше не спрашивает",
-          "Some((None, _)) => not_patr = true" in rust and "!not_patr && rest.len() >= 2" in rust)
+          "Some((None, _)) => not_patr = true" in rust and "!not_patr && looks_like_patronymic(first_rest)" in rust)
+    check("main.rs: отчество без фамилии тоже сверяется («Иван Пискарев»)",
+          "rest.len() >= 2 && looks_like_patronymic" not in rust)
     check("main.rs: normalize_name знает «ѳ»", ".replace('ѳ', \"ф\")" in rust)
     check("main.rs: разбор ищет по normalize_name, не normalize",
           "[normalize_name(&lookup_word)]" in rust and "[normalize_name(&patr_word)]" in rust)
@@ -197,7 +202,7 @@ def main() -> int:
         one = lambda q, *a: db.execute(q, a).fetchone()
 
         print("\n5. Схема 5: name_alias")
-        check("версия схемы 5", one("SELECT max(version) FROM schema_version")[0] == 5)
+        check("версия схемы 6", one("SELECT max(version) FROM schema_version")[0] == 6)
         check("таблица name_alias есть и пуста", one("SELECT count(*) FROM name_alias")[0] == 0)
 
         print("\n1. Конечный «ъ»")
@@ -289,14 +294,61 @@ def main() -> int:
         check("карточка без подробностей — без хвостов", row == ("Пустошь", "Пустошь"), str(row))
         got = one(sql["place_get"], card["name_norm"])
         check("place_get отдаёт карточку", got is not None and got[1] == "Новодеревенька" and got[3] == "Костромская", str(got))
-        db.execute(sql["place_update"], dict(id=got[0], np_type="с.", guberniya="Ярославская",
+        db.execute(sql["place_update"], dict(id=got[0], name="Новодеревенька", name_norm=norm("Новодеревенька"),
+                                             np_type="с.", guberniya="Ярославская",
                                              uyezd="Любимский", volost=None, familio_url="https://familio.org/x"))
         row = one("SELECT name, np_type, guberniya, full_location, familio_url FROM place WHERE id=?", got[0])
-        check("place_update: название не тронуто, поля новые",
+        check("place_update: поля новые",
               row[0] == "Новодеревенька" and row[1] == "с." and row[2] == "Ярославская", str(row))
         check("place_update пересобрал full_location",
               row[3] == "с. Новодеревенька, Любимский уезд, Ярославская губерния", row[3])
         check("place_update: ссылка", row[4] == "https://familio.org/x")
+
+        print("\n5б. Звания в старой орфографии (техдолг)")
+        words = lambda v: " ".join(normalize_name(w) for w in v.split())
+        check("«крестьянинъ» находит «крестьянин» в перечне",
+              one(sql["lookup_by_norm"], "rank_m", words("крестьянинъ")) == ("крестьянин",))
+        check("«крестьянскій сынъ» находит «крестьянский сын»",
+              one(sql["lookup_by_norm"], "rank_m", words("крестьянскій сынъ")) == ("крестьянский сын",))
+        check("main.rs: подсказка званий по normalize_words, remember — канонично",
+              "like_prefix(&normalize_words(&prefix))" in rust and '"lookup_by_norm"' in rust)
+
+        print("\n6. Переименование НП (Роман 25.09.2026)")
+        db.execute("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) "
+                   "VALUES ('Иван Петров', 'иван петров', 'Новодеревенька', 'крестьянин', 'М', 1)")
+        db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
+                   "VALUES ('place', 'global', '', 'Новодеревенька', 'новодеревенька', 3)")
+        check("название занято — другой пункт находится",
+              one(sql["place_name_taken"], norm("Бухарино"), got[0]) is not None)
+        check("своё же название не считается занятым",
+              one(sql["place_name_taken"], norm("Новодеревенька"), got[0]) is None)
+        params = dict(id=got[0], name="Новая Деревенька", name_norm=norm("Новая Деревенька"),
+                      np_type="д.", guberniya="Костромская", uyezd="Макарьевский", volost=None, familio_url=None)
+        db.execute(sql["place_update"], params)
+        db.execute(sql["place_rename_persons"], dict(name="Новая Деревенька", old_name="Новодеревенька"))
+        db.execute(sql["place_rename_spouses"], dict(name="Новая Деревенька", old_name="Новодеревенька"))
+        db.execute(sql["place_rename_usage"], dict(name="Новая Деревенька", name_norm=norm("Новая Деревенька"),
+                                                   old_name="Новодеревенька"))
+        db.execute(sql["place_renamed_remember"], dict(old_norm=norm("Новодеревенька")))
+        check("прежнее название запомнено для обновлений",
+              one("SELECT count(*) FROM place_renamed WHERE old_norm='новодеревенька'")[0] == 1)
+        row = one("SELECT name, name_norm, short_location FROM place WHERE id=?", got[0])
+        check("переименован: название, ключ поиска, краткая сборка",
+              row == ("Новая Деревенька", "новая деревенька", "д. Новая Деревенька"), str(row))
+        check("старое название не находится", one(sql["place_find"], norm("Новодеревенька")) is None)
+        check("персона в памяти — с новым названием",
+              one("SELECT place FROM person_index WHERE iof='Иван Петров'")[0] == "Новая Деревенька")
+        check("частоты подсказок — с новым названием",
+              one("SELECT count(*) FROM usage_stat WHERE kind='place' AND value='Новая Деревенька'")[0] == 1)
+        rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        check("main.rs: переименование одной транзакцией вместе с памятью",
+              "unchecked_transaction" in rust and 'statement("place_rename_usage")' in rust)
+        check("main.rs: «название занято» проверяется только при смене названия",
+              "if renamed {" in rust)
+        check("main.rs: занятое название — понятная ошибка, не UNIQUE",
+              "уже есть в справочнике" in rust)
+        check("place_get: не из архива первой",
+              "ORDER BY (origin = 'archive'), id" in sql["place_get"])
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0
