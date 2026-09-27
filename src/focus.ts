@@ -14,7 +14,13 @@
  * под ним. Окно помечается атрибутом data-focus-scope.
  */
 function fieldsAround(current: HTMLElement): HTMLInputElement[] {
-  const root: ParentNode = current.closest("[data-focus-scope]") ?? document;
+  const scope = current.closest("[data-focus-scope]");
+  // Открыто окно, а переход просят из формы под ним (отложенный переход
+  // после выбора персоны) — фокус остаётся в окне. Пока окно жило внутри
+  // поля, «следующим пустым» оказывалось его же поле поиска; с окном в body
+  // фокус уводило в форму, окно оставалось без клавиатуры (стенд #37).
+  if (!scope && document.querySelector(".modal")) return [];
+  const root: ParentNode = scope ?? document;
   return Array.from(
     root.querySelectorAll<HTMLInputElement>("input[data-field]"),
   ).filter((el) => !el.disabled && el.offsetParent !== null);
@@ -30,7 +36,12 @@ export function focusNextField(current: HTMLElement, step: 1 | -1 = 1): void {
   if (next) {
     next.focus();
     next.select();
+    return;
   }
+  // Последнее поле формы — дальше кнопка «Сохранить»: Enter на ней сохраняет.
+  // Раньше Enter на последнем поле стоял на месте (проверяющий 27.09.2026).
+  if (step === 1 && !current.closest("[data-focus-scope]"))
+    current.closest(".formroot")?.querySelector<HTMLButtonElement>(".savebar button")?.focus();
 }
 
 /**

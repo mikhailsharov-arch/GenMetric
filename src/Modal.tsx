@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Модальное окно поверх формы: сверка имени, карточка населённого пункта.
@@ -8,6 +9,10 @@ import { useEffect, useRef } from "react";
  * см. focus.ts), чтобы не уйти в форму под ним. Ctrl+Enter — сохранение
  * записи — внутри окна не действует: событие не пускается выше.
  */
+/** Сколько после открытия окно не принимает набор, мс. Человек замечает
+ *  окно и останавливается примерно за полсекунды. */
+const GUARD_MS = 350;
+
 type Props = {
   title: string;
   onClose: () => void;
@@ -18,16 +23,28 @@ type Props = {
 
 export default function Modal({ title, onClose, children, kind }: Props) {
   const box = useRef<HTMLDivElement | null>(null);
+  const openedAt = useRef(performance.now());
 
   useEffect(() => {
     // Первым — список похожих, если он есть (Enter выбирает), иначе первое
     // поле. Кнопки внизу фокус при открытии не получают.
+    // То же для ввода, пришедшего без нажатия клавиши (раскладка, вставка,
+    // IME): beforeinput. Первые GUARD_MS окно текст не принимает.
+    const el = box.current;
+    const guard = (e: Event) => {
+      if (performance.now() - openedAt.current < GUARD_MS) e.preventDefault();
+    };
+    el?.addEventListener("beforeinput", guard, true);
     const first = box.current?.querySelector<HTMLElement>("[data-similar], input");
     first?.focus();
     if (first instanceof HTMLInputElement) first.select();
+    return () => el?.removeEventListener("beforeinput", guard, true);
   }, []);
 
-  return (
+  // Окно — прямо в body, а не внутри блока персоны: иначе его положение
+  // и размер зависят от предков (container queries, будущие transform) —
+  // на macOS/WKWebView не проверено (ревьюер 27.09.2026).
+  return createPortal(
     <div
       className="overlay"
       onMouseDown={(e) => {
@@ -41,6 +58,16 @@ export default function Modal({ title, onClose, children, kind }: Props) {
         data-focus-scope
         data-modal={kind}
         ref={box}
+        onKeyDownCapture={(e) => {
+          // Первые мгновения после открытия буквы и Enter в окно не идут: это
+          // быстрый набор, начатый до появления окна, — он предназначался
+          // форме (техдолг: «набор после Enter уходит в поиск окна сверки»).
+          if (((e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) || e.key === "Enter")
+              && performance.now() - openedAt.current < GUARD_MS) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             e.preventDefault();
@@ -64,6 +91,7 @@ export default function Modal({ title, onClose, children, kind }: Props) {
         <h2>{title}</h2>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

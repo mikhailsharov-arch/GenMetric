@@ -30,6 +30,14 @@ check("«5 лет.» с точкой", same(parseAge("5 лет."), A(5, null, nu
 check("«9 лѣтъ» — старая орфография", same(parseAge("9 лѣтъ"), A(9, null, null, null)));
 check("«3 мѣс.» — старая орфография", same(parseAge("3 мѣс."), A(null, 3, null, null)));
 check("«1 годъ»", same(parseAge("1 годъ"), A(1, null, null, null)));
+check("«1 год 3 мес» — по частям", same(parseAge("1 год 3 мес"), A(1, 3, null, null)));
+check("«2 г. 6 м.» — по частям", same(parseAge("2 г. 6 м."), A(2, 6, null, null)));
+check("«1 мес, 2 нед и 3 дня»", same(parseAge("1 мес, 2 нед и 3 дня"), A(null, 1, 2, 3)));
+check("«1 год 2 года» — не угадываем", parseAge("1 год 2 года") === null);
+check("«около 1 год 3 мес» — не возраст", parseAge("около 1 год 3 мес") === null);
+check("«1 ги 3 ми» — не возраст", parseAge("1 ги 3 ми") === null);
+check("«3 мес 1 год» — обратный порядок не угадываем", parseAge("3 мес 1 год") === null);
+check("«10 лет 11 месяцев»", same(parseAge("10 лет 11 месяцев"), A(10, 11, null, null)));
 check("«3мес» без пробела", same(parseAge("3мес"), A(null, 3, null, null)));
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${bad}`);

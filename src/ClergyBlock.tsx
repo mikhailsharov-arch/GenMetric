@@ -71,15 +71,23 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
    * пуста, и кнопка не показывалась) и «кнопка должна быть активна всегда».
    * Пустой список говорит, что делать, а не молчит.
    */
+  const pickButton = (i: 0 | 1 | 2) => (
+    <button
+      type="button"
+      className="linkish"
+      onClick={() => setPickerFor(pickerFor === i ? null : i)}
+    >
+      {pickerFor === i ? "Закрыть список" : "Выбрать из списка"}
+    </button>
+  );
   const picker = (i: 0 | 1 | 2) => (
     <>
-      <button
-        type="button"
-        className="linkish"
-        onClick={() => setPickerFor(pickerFor === i ? null : i)}
-      >
-        {pickerFor === i ? "Закрыть список" : "Выбрать из списка"}
-      </button>
+      {pickButton(i)}
+      {pickList(i)}
+    </>
+  );
+  const pickList = (i: 0 | 1 | 2) => (
+    <>
       {pickerFor === i && (
         <ul className="suggest static">
           {known.length === 0 && (
@@ -144,31 +152,30 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
 
   return (
     <section className="person">
+      {/* Подсказка — во всплывающей подписи заголовка, а каждый причт —
+          строка заголовка и строка «ИОФ | Звание»: раскрытый причт был
+          высоким (проверяющий 27.09.2026). */}
       <div className="clergyline">
-        <h2 className="inline">Церковнослужители</h2>
+        <h2 className="inline" title="Набранное здесь переходит в следующую запись само и запоминается — в следующий раз причт можно выбрать из списка, а не набирать.">
+          Церковнослужители
+        </h2>
         <button type="button" className="linkish" onClick={() => setOpen(false)}>
           Свернуть
         </button>
       </div>
-      <p className="hint">
-        Набранное здесь переходит в следующую запись само и запоминается —
-        в следующий раз причт можно выбрать из списка, а не набирать.
-      </p>
 
       {([0, 1, 2] as const).map((i) => (
         <div key={i} className="clergyslot">
-          <div className="clergyhead">
-            <span className="clergynum">{TITLES[i]}</span>
-            {picker(i)}
-          </div>
           <PersonBlock
-            title=""
+            title={TITLES[i]}
             person={people[i]}
             onChange={(p) => onChange(i, p)}
             rankKind="rank_clergy"
             gender="М"
             compact
+            titleAfter={pickButton(i)}
           />
+          {pickList(i)}
         </div>
       ))}
     </section>

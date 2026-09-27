@@ -524,6 +524,38 @@ def incident_20260927_otchyot_27_09():
     check("@tauri-apps/cli не 2.11.* (устаревший STATIC_VCRUNTIME)", m is not None and not ver.startswith("2.11."), ver)
 
 
+def incident_20260927_molchalivoe_sohranenie():
+    """e2e сборки #36 (27.09.2026): «Сохранить изменения» после перезапуска
+    ничего не сделала и ничего не сказала. Причина на стенде не
+    воспроизведена; вероятная — автопрокрутка по фокусу на кнопке.
+
+    Защита: автопрокрутка только для полей; непойманные ошибки — в полосу;
+    e2e правит и сохраняет записи во всех трёх разделах и печатает
+    подробности при провале. Окна — в body (portal), фокус из формы в окно
+    не уводится, первые мгновения окно не принимает набор.
+    """
+    main = strip_comments(read("src/main.tsx"))
+    check("непойманные ошибки — в полосу", "unhandledrejection" in main and "report(" in main)
+    e2e = read("scripts/e2e/windows.py")
+    check("e2e правит записи в браках и смертях",
+          'edit_and_save(driver, wait, m, ".marriage"' in e2e and 'edit_and_save(driver, wait, d, ".death"' in e2e)
+    check("e2e проверяет, что окно на экране", "окно целиком на экране по высоте" in e2e)
+    modal = strip_comments(read("src/Modal.tsx"))
+    check("окно — через createPortal в body", "createPortal(" in modal and "document.body" in modal)
+    check("окно первые мгновения не принимает набор",
+          "onKeyDownCapture" in modal and '"beforeinput"' in modal and "GUARD_MS" in modal)
+    app = strip_comments(read("src/App.tsx"))
+    check("Shift+Enter на «Сохранить» — назад, а не сохранение", 'e.key === "Enter" && e.shiftKey' in app)
+    iof = strip_comments(read("src/IofField.tsx"))
+    check("окно сверки снимается сразу (flushSync) — фокус не теряется", "flushSync(() => setResolve(null))" in iof)
+    check("скрытая форма не открывает окно после проверки", "inputEl.current?.offsetParent == null" in iof)
+    rust = strip_comments(read("src-tauri/src/main.rs"))
+    check("звания причта — в перечень rank_clergy", 'role_code.starts_with("clergy") { "rank_clergy" }' in rust)
+    focus = strip_comments(read("src/focus.ts"))
+    check("переход из формы при открытом окне не уводит фокус из окна",
+          'document.querySelector(".modal")) return []' in focus)
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -534,6 +566,7 @@ def incident_20260927_otchyot_27_09():
 ]
 
 ИНЦИДЕНТЫ = [
+    incident_20260927_molchalivoe_sohranenie,
     incident_20260927_otchyot_27_09,
     incident_20260925_lishnij_parametr,
     incident_20260925_otchestvo_bez_familii,

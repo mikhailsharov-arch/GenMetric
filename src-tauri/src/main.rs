@@ -1108,7 +1108,10 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                 // Звание — в справочник и в статистику. Перечень выбирается
                 // по полу: у женщин свой список, это разные перечни.
                 if let Some(rank) = person.rank.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    let kind = if person.gender.as_deref() == Some("Ж") { "rank_f" } else { "rank_m" };
+                    // У причта свой перечень — из него и подсказка ClergyBlock
+                    // (ревьюер #37: звания причта засоряли мужские).
+                    let kind = if person.role_code.starts_with("clergy") { "rank_clergy" }
+                               else if person.gender.as_deref() == Some("Ж") { "rank_f" } else { "rank_m" };
                     remember(conn, kind, rank, entry.case_id, &parish)?;
                 }
                 if let Some(place) = person.place.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
@@ -1498,6 +1501,20 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
             // Каждому блоку — ровно его параметры: rusqlite на лишний
             // именованный параметр отвечает ошибкой (ревьюер 25.09.2026 —
             // так переименование падало всегда, а Python-тест лишнее прощал).
+            // Сначала слить с уже запомненным под новым названием, потом
+            // переименовать остальное (техдолг после #36: частоты терялись).
+            tx.execute(&statement("place_rename_persons_merge")?, rusqlite::named_params! {
+                ":name": name, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
+            tx.execute(&statement("place_rename_persons_drop")?, rusqlite::named_params! {
+                ":name": name, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
+            tx.execute(&statement("place_rename_usage_merge")?, rusqlite::named_params! {
+                ":name": name, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
+            tx.execute(&statement("place_rename_usage_drop")?, rusqlite::named_params! {
+                ":name": name, ":old_name": old_name,
+            }).map_err(|e| e.to_string())?;
             tx.execute(&statement("place_rename_persons")?, rusqlite::named_params! {
                 ":name": name, ":old_name": old_name,
             }).map_err(|e| e.to_string())?;

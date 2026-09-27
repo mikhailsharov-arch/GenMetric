@@ -172,7 +172,8 @@ def main() -> int:
     for required in ("alias_find", "alias_save", "name_headwords", "patr_forms",
                      "place_save", "place_names", "place_find", "place_get", "place_update",
                      "place_name_taken", "place_rename_persons", "place_rename_spouses",
-                     "place_rename_usage"):
+                     "place_rename_usage", "place_rename_persons_merge", "place_rename_persons_drop",
+                     "place_rename_usage_merge", "place_rename_usage_drop"):
         check(f"блок {required} на месте", required in sql)
     check("main.rs: normalize_name отбрасывает конечный «ъ»",
           "strip_suffix('ъ')" in rust)
@@ -318,6 +319,12 @@ def main() -> int:
                    "VALUES ('Иван Петров', 'иван петров', 'Новодеревенька', 'крестьянин', 'М', 1)")
         db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
                    "VALUES ('place', 'global', '', 'Новодеревенька', 'новодеревенька', 3)")
+        # Техдолг после #36: тот же человек и та же частота уже под новым
+        # названием — при переименовании частоты складываются, а не теряются.
+        db.execute("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) "
+                   "VALUES ('Иван Петров', 'иван петров', 'Новая Деревенька', 'крестьянин', 'М', 4)")
+        db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
+                   "VALUES ('place', 'global', '', 'Новая Деревенька', 'новая деревенька', 2)")
         check("название занято — другой пункт находится",
               one(sql["place_name_taken"], norm("Бухарино"), got[0]) is not None)
         check("своё же название не считается занятым",
@@ -325,7 +332,9 @@ def main() -> int:
         params = dict(id=got[0], name="Новая Деревенька", name_norm=norm("Новая Деревенька"),
                       np_type="д.", guberniya="Костромская", uyezd="Макарьевский", volost=None, familio_url=None)
         db.execute(sql["place_update"], params)
-        db.execute(sql["place_rename_persons"], dict(name="Новая Деревенька", old_name="Новодеревенька"))
+        for b in ("place_rename_persons_merge", "place_rename_persons_drop",
+                  "place_rename_usage_merge", "place_rename_usage_drop", "place_rename_persons"):
+            db.execute(sql[b], dict(name="Новая Деревенька", old_name="Новодеревенька"))
         db.execute(sql["place_rename_spouses"], dict(name="Новая Деревенька", old_name="Новодеревенька"))
         db.execute(sql["place_rename_usage"], dict(name="Новая Деревенька", name_norm=norm("Новая Деревенька"),
                                                    old_name="Новодеревенька"))
@@ -336,10 +345,12 @@ def main() -> int:
         check("переименован: название, ключ поиска, краткая сборка",
               row == ("Новая Деревенька", "новая деревенька", "д. Новая Деревенька"), str(row))
         check("старое название не находится", one(sql["place_find"], norm("Новодеревенька")) is None)
-        check("персона в памяти — с новым названием",
-              one("SELECT place FROM person_index WHERE iof='Иван Петров'")[0] == "Новая Деревенька")
-        check("частоты подсказок — с новым названием",
-              one("SELECT count(*) FROM usage_stat WHERE kind='place' AND value='Новая Деревенька'")[0] == 1)
+        check("персона в памяти — одна строка с новым названием, частоты сложены (1+4)",
+              db.execute("SELECT place, uses FROM person_index WHERE iof='Иван Петров'").fetchall()
+              == [("Новая Деревенька", 5)])
+        check("частоты подсказок — одна строка с новым названием, сложены (3+2)",
+              db.execute("SELECT count FROM usage_stat WHERE kind='place' AND value IN "
+                         "('Новая Деревенька', 'Новодеревенька')").fetchall() == [(5,)])
         rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
         check("main.rs: переименование одной транзакцией вместе с памятью",
               "unchecked_transaction" in rust and 'statement("place_rename_usage")' in rust)

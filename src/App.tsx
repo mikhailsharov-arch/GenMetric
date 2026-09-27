@@ -78,7 +78,26 @@ export default function App() {
       el.scrollIntoView({ block: "nearest" });
     };
     document.addEventListener("focusin", on);
-    return () => document.removeEventListener("focusin", on);
+    // Кнопка «Сохранить» — продолжение полей формы (Enter на последнем поле
+    // ведёт на неё, focus.ts): Shift+Enter и ↑ на ней — назад, к последнему
+    // полю, а не нажатие (проверяющий #37: Shift+Enter сохранял запись).
+    const back = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (!el?.closest(".savebar") || !((e.key === "Enter" && e.shiftKey) || e.key === "ArrowUp")) return;
+      const fields = Array.from(el.closest(".formroot")?.querySelectorAll<HTMLInputElement>("input[data-field]") ?? [])
+        .filter((f) => !f.disabled && f.offsetParent !== null);
+      const last = fields[fields.length - 1];
+      if (!last) return;
+      e.preventDefault();
+      e.stopPropagation();
+      last.focus();
+      last.select();
+    };
+    document.addEventListener("keydown", back, true);
+    return () => {
+      document.removeEventListener("focusin", on);
+      document.removeEventListener("keydown", back, true);
+    };
   }, []);
 
   // База не открылась — показываем объяснение вместо формы: работать всё

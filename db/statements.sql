@@ -112,6 +112,27 @@ SELECT name FROM place WHERE name_norm = :name_norm AND id <> :id LIMIT 1;
 -- @place_renamed_remember
 INSERT OR IGNORE INTO place_renamed (old_norm) VALUES (:old_norm);
 
+-- @place_rename_persons_merge
+-- Переименование в название, под которым этот же человек уже запомнен:
+-- частоты складываются в строку с новым названием (техдолг после #36 —
+-- раньше строка со старым названием просто оставалась, частоты терялись).
+UPDATE person_index
+   SET uses = uses + (SELECT sum(p2.uses) FROM person_index p2
+                       WHERE p2.iof = person_index.iof AND p2.place = :old_name
+                         AND p2.rank IS person_index.rank)
+ WHERE place = :name
+   AND EXISTS (SELECT 1 FROM person_index p2
+                WHERE p2.iof = person_index.iof AND p2.place = :old_name
+                  AND p2.rank IS person_index.rank);
+
+-- @place_rename_persons_drop
+-- …и строка со старым названием уходит: её частоты уже в новой.
+DELETE FROM person_index
+ WHERE place = :old_name
+   AND EXISTS (SELECT 1 FROM person_index p2
+                WHERE p2.iof = person_index.iof AND p2.place = :name
+                  AND p2.rank IS person_index.rank);
+
 -- @place_rename_persons
 -- Память подсказок хранит название текстом: персоны с местом, жёны, частоты
 -- (три блока ниже). Без этого выбор персоны подставлял бы старое название,
@@ -123,6 +144,24 @@ UPDATE person_index SET place = :name WHERE place = :old_name
 
 -- @place_rename_spouses
 UPDATE spouse_index SET wife_place = :name WHERE wife_place = :old_name;
+
+-- @place_rename_usage_merge
+-- Частоты места: то же слияние, что у персон (ключ — kind, scope, scope_key).
+UPDATE usage_stat
+   SET count = count + (SELECT u2.count FROM usage_stat u2
+                         WHERE u2.kind = 'place' AND u2.value = :old_name
+                           AND u2.scope = usage_stat.scope AND u2.scope_key = usage_stat.scope_key)
+ WHERE kind = 'place' AND value = :name
+   AND EXISTS (SELECT 1 FROM usage_stat u2
+                WHERE u2.kind = 'place' AND u2.value = :old_name
+                  AND u2.scope = usage_stat.scope AND u2.scope_key = usage_stat.scope_key);
+
+-- @place_rename_usage_drop
+DELETE FROM usage_stat
+ WHERE kind = 'place' AND value = :old_name
+   AND EXISTS (SELECT 1 FROM usage_stat u2
+                WHERE u2.kind = 'place' AND u2.value = :name
+                  AND u2.scope = usage_stat.scope AND u2.scope_key = usage_stat.scope_key);
 
 -- @place_rename_usage
 UPDATE OR IGNORE usage_stat SET value = :name, value_norm = :name_norm

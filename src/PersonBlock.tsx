@@ -73,6 +73,9 @@ type Props = {
    *  отдельная строка «Прим.» у четырёх поручителей стоила бы четыре строки
    *  высоты (проверяющий 25.09.2026: форма браков 1908 px). */
   titleExtra?: React.ReactNode;
+  /** Справа в строке заголовка, после «+ примечание» — «убрать» у
+   *  пятого и шестого поручителя. */
+  titleAfter?: React.ReactNode;
   /** Поля роли перед ИОФ — родство у родственника в браке (как в Excel). */
   before?: React.ReactNode;
   /** Поля роли после вероисповедания — «каким браком» и «лет» у жениха
@@ -160,7 +163,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace,
+  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
   confessionLabel,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
@@ -187,6 +190,8 @@ export default function PersonBlock({
       const r = await invoke<{ known: boolean; similar: Similar[] }>("place_check", { name: text });
       // Пока ждали ответ, поле могло измениться — карточка на прежнее не нужна.
       if (r.known || placeNow.current.trim() !== text || document.querySelector(".modal")) return;
+      // Форма уже скрыта (ушли на другую вкладку) — карточку не показывать.
+      if (placeRef.current?.offsetParent == null) return;
       setPlaceCard({ name: text, similar: r.similar });
     } catch (e) {
       report(`Не удалось проверить населённый пункт «${text}»`, e);
@@ -271,21 +276,8 @@ export default function PersonBlock({
     );
   }
 
-  return (
-    <Frame className={compact ? "person flat" : "person"}>
-      {/* «+ примечание» — в строке заголовка, а не отдельной строкой под
-          персоной: минус строка высоты у каждой персоны (Роман 27.09.2026:
-          «сэкономить место за счёт дизайна»). */}
-      {/* Ссылка — рядом с заголовком, но не внутри него: текст заголовка
-          остаётся «Отец», по нему его находят e2e и стенды (ревьюер 27.09). */}
-      {title && (
-        <div className="personhead">
-          {compact ? <h3>{title}{titleExtra}</h3> : <h2>{title}{titleExtra}</h2>}
-          {noteLink(true)}
-        </div>
-      )}
-      {before}
-      <IofField
+  const iofField = (
+    <IofField
         label="ИОФ"
         value={person.iof}
         onChange={(iof, parsed) => set({ iof, parsed, note: staleDocNotes(person.note, iof, docFor.current) })}
@@ -297,9 +289,29 @@ export default function PersonBlock({
         inputRef={inputRef}
         gender={sex}
       />
-      {/* НП и звание — парой в одну строку, когда блок шире 30em (styles.css,
-          @container person). Узкое окно — по строке, как раньше. */}
+  );
+
+  return (
+    <Frame className={compact ? "person flat" : "person"}>
+      {/* «+ примечание» — в строке заголовка, а не отдельной строкой под
+          персоной: минус строка высоты у каждой персоны (Роман 27.09.2026:
+          «сэкономить место за счёт дизайна»). */}
+      {/* Ссылка — рядом с заголовком, но не внутри него: текст заголовка
+          остаётся «Отец», по нему его находят e2e и стенды (ревьюер 27.09). */}
+      {title && (
+        <div className="personhead">
+          {compact ? <h3>{title}{titleExtra}</h3> : <h2>{title}{titleExtra}</h2>}
+          {noteLink(true)}
+          {titleAfter}
+        </div>
+      )}
+      {before}
+      {!compact && iofField}
+      {/* НП и звание — парой в одну строку, когда блок шире 28em (styles.css,
+          @container person). У причта (compact) пара — ИОФ | Звание: раскрытый
+          причт был высоким (проверяющий 27.09.2026). */}
       <div className="pair">
+      {compact && iofField}
       {!compact && !noPlace && (
         <Suggest
           ref={placeRef}

@@ -31,3 +31,4 @@ export function splitCount(count: number | null, sex: Sex | null): CountColumns 
   if (sex === "Ж") return { no_male: null, no_female: count };
   return null;
 }
+

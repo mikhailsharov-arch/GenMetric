@@ -22,13 +22,49 @@ export type Age = {
 
 const EMPTY: Age = { years: null, months: null, weeks: null, days: null };
 
-/** null — текст не разобран (или пуст); иначе заполнена одна-две части. */
+const UNIT = "(лет|л|года?|г|мес(?:яц(?:а|ев)?)?|м|нед(?:ел[ьяи]|ель)?|н|дн(?:ей|я)?|день|д)";
+const PART = `(\\d{1,3})(?:[.,](\\d{1,2}))?\\s*${UNIT}?\\.?`;
+
+/**
+ * Составной возраст: «1 год 3 мес», «2 г. 6 м.», «1 г, 2 нед» — каждая
+ * часть с единицей, каждая единица не больше одного раза, без дробей
+ * (техдолг после #36: раньше такое оставалось только текстом).
+ */
+function parseCompound(t: string): Age | null {
+  // Части подряд с начала строки: «число единица», между ними пробел,
+  // запятая или « и ». После единицы — не буква (в JS \b с кириллицей не
+  // работает). Порядок — от лет к дням: «3 мес 1 год» не угадываем
+  // (ревьюер #37: прежний разбор пропускал «1 ги 3 ми»).
+  const re = new RegExp(`(\\d{1,3})\\s*${UNIT}(?![а-я])\\.?\\s*(?:,\\s*|и\\s+)?`, "y");
+  const order: (keyof Age)[] = ["years", "months", "weeks", "days"];
+  const out: Age = { ...EMPTY };
+  let pos = 0;
+  let lastRank = -1;
+  let parts = 0;
+  while (pos < t.length) {
+    re.lastIndex = pos;
+    const m = re.exec(t);
+    if (!m || !m[2]) return null;
+    const u = m[2];
+    const key: keyof Age = u.startsWith("л") || u.startsWith("г") ? "years"
+      : u.startsWith("м") ? "months" : u.startsWith("н") ? "weeks" : "days";
+    const rank = order.indexOf(key);
+    if (rank <= lastRank) return null; // повтор или обратный порядок
+    lastRank = rank;
+    out[key] = Number(m[1]);
+    pos = re.lastIndex;
+    parts++;
+  }
+  return parts >= 2 ? out : null;
+}
+
+/** null — текст не разобран (или пуст); иначе заполнены разобранные части. */
 export function parseAge(text: string): Age | null {
   // Старая орфография («9 лѣтъ», «3 мѣс.») — к современной.
   const t = text.trim().toLowerCase().replace(/ё/g, "е").replace(/ѣ/g, "е").replace(/ъ(?=\s|\.|$)/g, "");
   if (!t) return null;
-  const m = /^(\d{1,3})(?:[.,](\d{1,2}))?\s*(лет|л|года?|г|мес(?:яц(?:а|ев)?)?|м|нед(?:ел[ьяи]|ель)?|н|дн(?:ей|я)?|день|д)?\.?$/.exec(t);
-  if (!m) return null;
+  const m = new RegExp(`^${PART}$`).exec(t);
+  if (!m) return parseCompound(t);
   const whole = Number(m[1]);
   const frac = m[2] ? Number(`0.${m[2]}`) : 0;
   const unit = m[3] ?? "";

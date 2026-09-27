@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { focusNextField, focusNextEmptyField } from "./focus";
 import type { Item } from "./Suggest";
@@ -273,6 +274,9 @@ export default function IofField({
       return; // ошибка разбора уже показана эффектом выше
     }
     if (valueRef.current.trim() !== text) return; // пока ждали, набрали другое
+    // Пока ждали, человек мог уйти на другую вкладку: окно скрытой формы
+    // теперь (portal) всплыло бы поверх чужой (ревьюер #37).
+    if (inputEl.current?.offsetParent == null) return;
     decide(p, text);
   }
 
@@ -300,7 +304,10 @@ export default function IofField({
   }
 
   function afterResolve() {
-    setResolve(null);
+    // Окно снимается сразу, до перехода фокуса: вызов идёт после await, вне
+    // события React, и без flushSync таймер мог сработать при ещё открытом
+    // окне — focus.ts тогда не ведёт никуда, фокус терялся (ревьюер #37).
+    flushSync(() => setResolve(null));
     const el = inputEl.current;
     // Фокус — в следующее поле, и ещё одна сверка того же значения: после
     // имени могло остаться несверенное отчество. Оба — после перерисовки.
@@ -343,7 +350,7 @@ export default function IofField({
       return;
     }
     reparseAfterAlias();
-    setResolve(null);
+    flushSync(() => setResolve(null));
     const el = inputEl.current;
     if (el) setTimeout(() => focusNextField(el), 0);
   }

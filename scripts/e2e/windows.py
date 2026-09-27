@@ -100,6 +100,26 @@ def error_details(driver):
     return " || ".join(out) or "полосы нет"
 
 
+def edit_and_save(driver, wait, scope, css, count, expect):
+    """Открыть первую запись списка формы, сменить счёт, «Сохранить изменения».
+
+    Ловушка на сбой #36: e2e нажал «Сохранить изменения», и ничего не
+    произошло — ни сохранения, ни сообщения. Теперь то же — в браках и
+    смертях, сразу после открытия записи, без пауз.
+    """
+    click(driver, f"({scope}table[contains(@class,'saved')]//button[starts-with(normalize-space(),'Открыть')])[1]")
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f"{css} .editbar")))
+    fill(driver, "Счёт", str(count), scope)
+    click(driver, f"{scope}button[starts-with(normalize-space(),'Сохранить изменения')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, css), expect))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, css).text
+    check(f"правка сохранена: «{expect}»", expect in block, error_details(driver))
+    check("режим правки снят", not driver.find_elements(By.CSS_SELECTOR, f"{css} .editbar"))
+
+
 def fill(driver, label, value, scope="//"):
     el = field(driver, label, scope)
     el.clear()
@@ -114,10 +134,18 @@ def run(driver, wait, archive):
     body = driver.find_element(By.TAG_NAME, "body").text
     check("база справочников открылась", "База не открылась" not in body)
     check("экран «Дело» на месте", "Сохранить дело" in body)
-    # Высота окна по экрану (заказчик 24.09.2026) — печатаем для лога сборки;
-    # экран раннера неизвестен, поэтому не проверка, а наблюдение.
-    sizes = driver.execute_script("return [window.outerHeight, screen.availHeight, window.screenY]")
-    print(f"  [инфо]   окно: высота {sizes[0]}, рабочая область экрана {sizes[1]}, верх {sizes[2]}")
+    # Окно по высоте экрана (заказчик 24.09.2026): целиком в рабочей области
+    # и занимает её почти всю. Раньше только печаталось (техдолг после #36).
+    # screen.availTop — верх рабочей области (панель задач сверху бывает).
+    sizes = driver.execute_script(
+        "return [window.outerHeight, screen.availHeight, window.screenY, screen.availTop || 0]")
+    height, avail, top, avail_top = sizes
+    print(f"  [инфо]   окно: высота {height}, рабочая область экрана {avail}, верх {top}")
+    check("окно целиком на экране по высоте",
+          top >= avail_top - 12 and top + height <= avail_top + avail + 12,  # развёрнутое окно: рамка −8, масштаб 125% — ±1 px
+          f"верх {top}, низ {top + height}, рабочая область {avail_top}…{avail_top + avail}")
+    check("окно занимает почти всю высоту рабочей области", height >= avail * 0.85,
+          f"{height} из {avail}")
 
     print("\n2. Дело")
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Христорождественская"),
@@ -352,6 +380,7 @@ def resumed(driver, wait):
     iof.send_keys(Keys.TAB)  # уход из поля — момент сверки
     try:
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='resolve-name']")))
+        time.sleep(0.5)  # окно первые 350 мс не принимает набор (Modal.GUARD_MS)
         opened = True
     except TimeoutException:
         opened = False
@@ -377,6 +406,7 @@ def resumed(driver, wait):
     np.send_keys(Keys.TAB)
     try:
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place']")))
+        time.sleep(0.5)  # окно первые 350 мс не принимает набор (Modal.GUARD_MS)
         opened = True
     except TimeoutException:
         opened = False
@@ -397,6 +427,7 @@ def resumed(driver, wait):
     np.send_keys(Keys.TAB)
     try:
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place']")))
+        time.sleep(0.5)  # окно первые 350 мс не принимает набор (Modal.GUARD_MS)
         opened = True
     except TimeoutException:
         opened = False
@@ -416,6 +447,7 @@ def resumed(driver, wait):
         click(driver, god1 + "div[contains(@class,'field')][./label[normalize-space()='НП']]"
                              "//button[contains(@class,'action')]")
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place-edit']")))
+        time.sleep(0.5)  # окно первые 350 мс не принимает набор (Modal.GUARD_MS)
         title = field(driver, "Название", "//div[contains(@class,'modal')]//")
         title.send_keys(Keys.CONTROL, "a")
         title.send_keys("Новодеревенька Малая")
@@ -505,6 +537,7 @@ def resumed(driver, wait):
     check("пятый поручитель добавлен, сторона «по жениху»", "по жениху" in w5, w5.replace("\n", " | ")[:80])
     # Причт общий: набран в рождениях — есть и в браках.
     check("причт из рождений виден в браках", "Александр Рождественский" in block)
+    edit_and_save(driver, wait, m, ".marriage", 5, "№ 5 · ")
 
     print("\n12. Смерти (27.09.2026)")
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Смерти']").click()
@@ -528,6 +561,7 @@ def resumed(driver, wait):
     check("запись о смерти сохранена", "Набрано смертей: 1" in block, " | ".join(errorbar))
     check("девочка — «№ ж. 3», умершая в строке", "№ ж. 3" in block and "Анна Иванова" in block)
     check("причт общий и здесь", "Александр Рождественский" in block)
+    edit_and_save(driver, wait, d, ".death", 4, "№ ж. 4")
 
 
 def main() -> int:

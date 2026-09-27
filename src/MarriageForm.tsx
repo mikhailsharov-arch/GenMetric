@@ -153,6 +153,15 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
 
   usePlaceRenamed(renamePlace);
 
+  /** Убрать пятого или шестого поручителя; шестой встаёт на место пятого
+   *  (проверяющий 27.09.2026: убрать можно было только стерев имя). */
+  function removeWitness(i: number) {
+    const n = witnessCount;
+    for (let j = i; j < n - 1; j++) witnessSetters[j]({ ...witnesses[j + 1] });
+    witnessSetters[n - 1](newWitness(n - 1));
+    setWitnessCount(n - 1);
+  }
+
   function pickInto<T extends Person>(set: (fn: (p: T) => T) => void) {
     return (hint: PersonHint) =>
       set((p) => ({ ...p, place: hint.place ?? p.place, rank: hint.rank ?? p.rank }));
@@ -416,7 +425,13 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
                                    ...s, side: s.side === SIDES[0] ? SIDES[1] : SIDES[0] }))}>
                            {w.side || "сторона не указана"} ⇄
                          </button>
-                       } />
+                       }
+                       titleAfter={i >= 4 ? (
+                         <button type="button" className="linkish" tabIndex={-1}
+                                 onClick={() => removeWitness(i)}>
+                           убрать
+                         </button>
+                       ) : undefined} />
         ))}
       </div>
       {witnessCount < WITNESS_MAX && (
