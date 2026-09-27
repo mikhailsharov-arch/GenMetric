@@ -564,7 +564,7 @@ h2 .linkish.side, h3 .linkish.side { margin-left: 0.6em; font-weight: normal; }
 
 /* Автопрокрутка к полю в фокусе (App.tsx): поле не должно прятаться под
    прилипшей кнопкой «Сохранить». */
-.formroot input, .formroot button { scroll-margin: 0.4em 0 4.5em; }
+.formroot input { scroll-margin: 0.4em 0 4.5em; }
 .row.wrap { flex-wrap: wrap; row-gap: 0.12em; }
 .pair > .sexline { grid-column: 1 / -1; }
 

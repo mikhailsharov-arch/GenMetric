@@ -89,6 +89,17 @@ def click(driver, xpath):
     el.click()
 
 
+def error_details(driver):
+    """Текст полосы ошибок вместе с «Подробностями» — чтобы по журналу e2e
+    было видно причину, а не только заголовок (сборка #36, шаг 7)."""
+    out = []
+    for bar in driver.find_elements(By.CSS_SELECTOR, ".errorbar"):
+        for b in bar.find_elements(By.XPATH, ".//button[normalize-space()='Подробности']"):
+            b.click()
+        out.append(bar.text.replace("\n", " | "))
+    return " || ".join(out) or "полосы нет"
+
+
 def fill(driver, label, value, scope="//"):
     el = field(driver, label, scope)
     el.clear()
@@ -322,7 +333,14 @@ def resumed(driver, wait):
         pass
     body = driver.find_element(By.TAG_NAME, "body").text
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
-    check("изменения сохранены: «№ м. 9» в списке", "№ м. 9" in body, " | ".join(errorbar))
+    check("изменения сохранены: «№ м. 9» в списке", "№ м. 9" in body, error_details(driver))
+    if "№ м. 9" not in body:
+        state = driver.execute_script(
+            "const f=document.querySelector('.birth');"
+            "return {focus: document.activeElement && (document.activeElement.outerHTML||'').slice(0,120),"
+            " modal: !!document.querySelector('.modal'), busy: f && f.querySelector('.savebar button').disabled,"
+            " count: f && f.querySelector('.row.tight').innerText.replace(/\\n/g,' '), list: f && (f.querySelector('.saved')||{}).innerText};")
+        print(f"  [инфо]   состояние формы: {state}")
     check("записей по-прежнему две — правка не плодит", "Набрано: 2" in body)
     check("режим правки снят", not driver.find_elements(By.CSS_SELECTOR, ".editbar"))
 

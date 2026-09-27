@@ -34,7 +34,7 @@
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 7, ошибок 0»
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 17, ошибок 0» (возраст умершего)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 89, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 90, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 

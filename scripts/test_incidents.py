@@ -515,6 +515,9 @@ def incident_20260927_otchyot_27_09():
           "{titleExtra}{noteLink" not in pb)
     e2e = read("scripts/e2e/windows.py")
     check("e2e ищет видимое поле (формы скрыты hidden)", "def shown(" in e2e and "return shown(driver" in e2e)
+    app = strip_comments(read("src/App.tsx"))
+    check("автопрокрутка только для полей — щелчок по кнопке не теряется (e2e #36)",
+          'el.matches("input, textarea, select")' in app and ".savebar" in app)
     lock = read("package-lock.json")
     m = re.search(r'"node_modules/@tauri-apps/cli":\s*\{\s*"version":\s*"([\d.]+)"', lock)
     ver = m.group(1) if m else "?"

@@ -70,7 +70,11 @@ export default function App() {
   useEffect(() => {
     const on = (e: FocusEvent) => {
       const el = e.target as HTMLElement | null;
-      if (!el || !el.closest(".formroot") || el.closest(".modal")) return;
+      // Только поля ввода. Кнопка получает фокус на нажатии мыши, и прокрутка
+      // между нажатием и отпусканием уводила её из-под курсора — щелчок
+      // терялся: «Сохранить изменения» не срабатывала (e2e #36, шаг 7).
+      if (!el || !el.matches("input, textarea, select") || !el.closest(".formroot")
+          || el.closest(".modal, .savebar")) return;
       el.scrollIntoView({ block: "nearest" });
     };
     document.addEventListener("focusin", on);
