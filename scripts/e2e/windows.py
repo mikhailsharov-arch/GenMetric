@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options as EdgeOptions
@@ -61,17 +61,30 @@ def check(title, condition, detail=""):
         print(f"  [ОШИБКА] {title}" + (f" — {detail}" if detail else ""))
 
 
+def shown(driver, xpath):
+    """Первый ВИДИМЫЙ элемент по xpath (техдолг В9, 27.09.2026).
+
+    Формы рождений, браков и смертей живут в окне все сразу, скрытые — через
+    hidden. «Год» или «Счёт» по одной подписи находились в первой форме по
+    DOM, даже если на экране другая; сценарий держался на точных scope.
+    """
+    els = driver.find_elements(By.XPATH, xpath)
+    for el in els:
+        if el.is_displayed():
+            return el
+    raise NoSuchElementException(f"видимого элемента нет ({len(els)} скрытых): {xpath}")
+
+
 def field(driver, label, scope="//"):
     """Поле формы по подписи: <div class="field"><label>НП</label>…<input>."""
-    return driver.find_element(
-        By.XPATH, f"{scope}div[contains(@class,'field')][./label[normalize-space()='{label}']]//input")
+    return shown(driver, f"{scope}div[contains(@class,'field')][./label[normalize-space()='{label}']]//input")
 
 
 def click(driver, xpath):
     """Клик по кнопке в середине окна. WebDriver сам прокручивает элемент
     к нижнему краю — а там прилипшая панель «Сохранить и следующая», и клик
     уходит в неё (сборка #30: «element click intercepted»)."""
-    el = driver.find_element(By.XPATH, xpath)
+    el = shown(driver, xpath)
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
     el.click()
 
@@ -159,6 +172,15 @@ def run(driver, wait, archive):
     clergy1 = "(//div[contains(@class,'clergyslot')])[1]//div[contains(@class,'field')][./label[normalize-space()='ИОФ']]//"
     driver.find_element(By.XPATH, clergy1 + "input").send_keys("Александр Рождественский")
     driver.find_element(By.XPATH, clergy1 + "input").send_keys(Keys.ESCAPE)
+    # С 27.09.2026 у причта та же сверка ИОФ, что у всех: если второе слово
+    # сочтут отчеством, откроется окно — отвечаем «Это не отчество».
+    driver.find_element(By.XPATH, clergy1 + "input").send_keys(Keys.TAB)
+    time.sleep(0.8)
+    not_patr = driver.find_elements(By.XPATH, "//div[contains(@class,'modal')]//button[normalize-space()='Это не отчество']")
+    if not_patr:
+        not_patr[0].click()
+        time.sleep(0.5)
+    check("после причта окон сверки нет", not driver.find_elements(By.CSS_SELECTOR, ".modal"))
     # Пол приходит асинхронно (parse_iof). Нажать «Сохранить» раньше —
     # форма попросит выбрать пол и не сохранит. Ждём метку «Ж» под полем.
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
@@ -438,7 +460,7 @@ def resumed(driver, wait):
     wait.until(EC.visibility_of_element_located((By.XPATH, m + "section[.//h2[normalize-space()='Жених']]")))
     groom = m + "section[.//h2[normalize-space()='Жених']]//"
     bride = m + "section[.//h2[normalize-space()='Невеста']]//"
-    order = field(driver, "Каким браком", groom).get_attribute("value")
+    order = field(driver, "Брак", groom).get_attribute("value")
     check("у жениха заготовка «Первым браком»", order == "Первым браком", f"«{order}»")
     fill(driver, "Год", "1886", m)
     fill(driver, "Счёт", "1", m)
@@ -458,6 +480,36 @@ def resumed(driver, wait):
     check("в строке жених и невеста", "Михаил Дмитриев" in block and "Евдокия Савельева" in block)
     count = field(driver, "Счёт", m).get_attribute("value")
     check("счёт браков вырос до 2", count == "2", f"«{count}»")
+    check("в списке номер перед датой", "№ 1 · " in block)
+    # Поручители до шести (Роман 27.09.2026).
+    click(driver, m + "button[normalize-space()='+ добавить поручителя']")
+    w5 = shown(driver, m + "section[.//h2[starts-with(normalize-space(),'Поручитель 5')]]").text
+    check("пятый поручитель добавлен, сторона «по жениху»", "по жениху" in w5, w5.replace("\n", " | ")[:80])
+    # Причт общий: набран в рождениях — есть и в браках.
+    check("причт из рождений виден в браках", "Александр Рождественский" in block)
+
+    print("\n12. Смерти (27.09.2026)")
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Смерти']").click()
+    d = "//div[contains(@class,'death')]//"
+    wait.until(EC.visibility_of_element_located((By.XPATH, d + "section[.//h2[normalize-space()='Умерший']]")))
+    dead = d + "section[.//h2[normalize-space()='Умерший']]//"
+    fill(driver, "Год", "1886", d)
+    fill(driver, "Счёт", "3", d)
+    field(driver, "ИОФ", dead).send_keys("Анна Иванова")
+    field(driver, "ИОФ", dead).send_keys(Keys.ESCAPE)
+    fill(driver, "Причина", "понос", dead)
+    fill(driver, "Возраст", "1,5 мес", dead)
+    time.sleep(0.8)  # разбор ИОФ — асинхронный
+    click(driver, d + "button[starts-with(normalize-space(),'Сохранить и следующая')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".death"), "Набрано смертей: 1"))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, ".death").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("запись о смерти сохранена", "Набрано смертей: 1" in block, " | ".join(errorbar))
+    check("девочка — «№ ж. 3», умершая в строке", "№ ж. 3" in block and "Анна Иванова" in block)
+    check("причт общий и здесь", "Александр Рождественский" in block)
 
 
 def main() -> int:

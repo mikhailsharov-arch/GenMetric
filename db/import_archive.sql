@@ -28,21 +28,27 @@ BEGIN;
 -- никогда не равен NULL, и персона без места или звания задваивалась бы
 -- при каждой загрузке. Поймано тестом на повторное слияние.
 UPDATE person_index SET
-    uses = uses + (SELECT a.uses FROM archive.person_index a
+    uses = uses + (SELECT sum(a.uses) FROM archive.person_index a
                     WHERE a.iof_norm = person_index.iof_norm
-                      AND a.place IS person_index.place AND a.rank IS person_index.rank),
-    gender = coalesce(gender, (SELECT a.gender FROM archive.person_index a
+                      AND coalesce(a.place, '') = coalesce(person_index.place, '') AND coalesce(a.rank, '') = coalesce(person_index.rank, '')),
+    gender = coalesce(gender, (SELECT max(a.gender) FROM archive.person_index a
                                 WHERE a.iof_norm = person_index.iof_norm
-                                  AND a.place IS person_index.place AND a.rank IS person_index.rank))
+                                  AND coalesce(a.place, '') = coalesce(person_index.place, '') AND coalesce(a.rank, '') = coalesce(person_index.rank, '')))
  WHERE EXISTS (SELECT 1 FROM archive.person_index a
                 WHERE a.iof_norm = person_index.iof_norm
-                  AND a.place IS person_index.place AND a.rank IS person_index.rank);
+                  AND coalesce(a.place, '') = coalesce(person_index.place, '') AND coalesce(a.rank, '') = coalesce(person_index.rank, ''));
 
 INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses, last_used_at)
-SELECT a.iof, a.iof_norm, a.place, a.rank, a.gender, a.uses, a.last_used_at
+-- Пустое место или звание — пустой строкой, как пишет person_remember
+-- (техдолг В6, 27.09.2026); в старом архиве NULL и '' могут стоять у одного
+-- человека — группировка сливает их, иначе вставка упала бы на UNIQUE.
+SELECT a.iof, min(a.iof_norm), coalesce(a.place, ''), coalesce(a.rank, ''), max(a.gender),
+       sum(a.uses), max(a.last_used_at)
   FROM archive.person_index a
  WHERE NOT EXISTS (SELECT 1 FROM person_index p
-                    WHERE p.iof_norm = a.iof_norm AND p.place IS a.place AND p.rank IS a.rank);
+                    WHERE p.iof_norm = a.iof_norm AND coalesce(p.place, '') = coalesce(a.place, '')
+                      AND coalesce(p.rank, '') = coalesce(a.rank, ''))
+ GROUP BY a.iof, coalesce(a.place, ''), coalesce(a.rank, '');
 
 -- Жёны по мужьям.
 INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, wife_rank, uses, last_used_at)
@@ -53,18 +59,21 @@ ON CONFLICT(husband_norm, wife_iof) DO UPDATE SET
     wife_place = coalesce(spouse_index.wife_place, excluded.wife_place),
     wife_rank = coalesce(spouse_index.wife_rank, excluded.wife_rank);
 
--- Причт. Та же оговорка про NULL в звании.
+-- Причт. Та же оговорка про NULL в звании; пустое звание — пустой строкой.
 UPDATE clergy_index SET
-    uses = uses + (SELECT a.uses FROM archive.clergy_index a
-                    WHERE a.iof_norm = clergy_index.iof_norm AND a.rank IS clergy_index.rank)
+    uses = uses + (SELECT sum(a.uses) FROM archive.clergy_index a
+                    WHERE a.iof_norm = clergy_index.iof_norm
+                      AND coalesce(a.rank, '') = coalesce(clergy_index.rank, ''))
  WHERE EXISTS (SELECT 1 FROM archive.clergy_index a
-                WHERE a.iof_norm = clergy_index.iof_norm AND a.rank IS clergy_index.rank);
+                WHERE a.iof_norm = clergy_index.iof_norm
+                  AND coalesce(a.rank, '') = coalesce(clergy_index.rank, ''));
 
 INSERT INTO clergy_index (iof, iof_norm, rank, uses, last_used_at)
-SELECT a.iof, a.iof_norm, a.rank, a.uses, a.last_used_at
+SELECT a.iof, min(a.iof_norm), coalesce(a.rank, ''), sum(a.uses), max(a.last_used_at)
   FROM archive.clergy_index a
  WHERE NOT EXISTS (SELECT 1 FROM clergy_index c
-                    WHERE c.iof_norm = a.iof_norm AND c.rank IS a.rank);
+                    WHERE c.iof_norm = a.iof_norm AND coalesce(c.rank, '') = coalesce(a.rank, ''))
+ GROUP BY a.iof, coalesce(a.rank, '');
 
 -- Населённые пункты: только те, которых ещё нет. Сверка по нормализованному
 -- имени, а не по UNIQUE-ключу таблицы: у архива нет губернии и уезда, и одно

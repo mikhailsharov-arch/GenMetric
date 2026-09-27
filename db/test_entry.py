@@ -162,7 +162,8 @@ def main() -> int:
                      first_name_modern=None, patronymic_modern=None, maiden_surname=None,
                      gender=None, rank=None, confession=None, place_id=None, note=None,
                      uncertain=None, birth_year_from=None, birth_year_to=None,
-                     age_years=None, marriage_order=None, kinship=None)
+                     age_years=None, marriage_order=None, kinship=None,
+                     age_months=None, age_weeks=None, age_days=None, age_text=None, death_cause=None)
         for p in persons:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": entry_id})
         check("персоны сохранены", one("SELECT count(*) FROM person_mention")[0] == 5)
@@ -259,6 +260,21 @@ def main() -> int:
               rows[0][1] == "Чертеж Малый" and rows[0][2] == "крестьянин")
         check("однофамильцы из разных мест различимы",
               {r[1] for r in rows} == {"Чертеж Малый", "Кнышево"})
+        # Техдолг В6 (27.09.2026): без места и звания персона задваивалась —
+        # NULL в UNIQUE не равен NULL. Теперь пустое хранится пустой строкой.
+        for _ in range(2):
+            db.execute(sql["person_remember"], {"iof": "Фома Без Места", "iof_norm": norm("Фома Без Места"),
+                                                "place": None, "rank": None, "gender": "М"})
+        check("персона без места и звания не задваивается",
+              one("SELECT count(*) || '/' || max(uses) FROM person_index WHERE iof='Фома Без Места'")[0] == "1/2")
+        row = db.execute(sql["person_suggest"], {"prefix": norm("Фома") + "%", "limit": 8, "gender": None}).fetchone()
+        check("наружу пустые место и звание — снова NULL", row[1] is None and row[2] is None, str(row))
+        for _ in range(2):
+            db.execute(sql["clergy_remember"], {"iof": "Иоанн Скворцов", "iof_norm": norm("Иоанн Скворцов"), "rank": None})
+        check("причт без звания не задваивается",
+              one("SELECT count(*) || '/' || max(uses) FROM clergy_index WHERE iof='Иоанн Скворцов'")[0] == "1/2")
+        row = [r for r in db.execute(sql["clergy_list"], {"limit": 20}) if r[0] == "Иоанн Скворцов"][0]
+        check("в списке причта пустое звание — NULL", row[1] is None, str(row))
 
         print("\n9. Память о супругах: выбор отца заполняет мать")
         db.execute(sql["spouse_remember"], {
@@ -310,6 +326,42 @@ def main() -> int:
               str(rows[0][11:]))
         check("список рождений браки не видит",
               all(r[0] != mid for r in db.execute(sql["entry_list"], {"case_id": 1, "section": 1})))
+
+        print("\n9в. Запись о смерти (27.09.2026)")
+        # Состав — лист «3» Excel Романа: умерший (НП, звание, ИОФ, причина,
+        # возраст как в книге), родственник («отец»), причт. Счёт раздельный
+        # по полу — девочка в женской колонке.
+        db.execute(sql["entry_insert"], dict(
+            case_id=1, section=3, page="1004", no_male=None, no_female=7,
+            event_day=3, event_month=5, event_year=1886,
+            rite_day=5, rite_month=5, rite_year=1886,
+            note=None, uncertain=None, created_by="Роман Чистов"))
+        did = one("SELECT max(id) FROM entry")[0]
+        for p in [
+            dict(role_code="deceased", sort_order=10, first_name="Анна", patronymic="Иванова",
+                 gender="Ж", rank="дочь младенец", place_id=place_id,
+                 age_text="1,5 мес", age_months=1, age_days=15, death_cause="понос"),
+            dict(role_code="deceased_relative", sort_order=40, first_name="Иван", patronymic="Петров",
+                 gender="М", rank="крестьянин", kinship="отец", place_id=place_id),
+            dict(role_code="clergy1", sort_order=100, first_name="Александр", surname="Рождественский",
+                 gender="М", rank="священник"),
+        ]:
+            db.execute(sql["mention_insert"], {**blank, **p, "entry_id": did})
+        ms = db.execute(sql["mentions_of_entry"], {"entry_id": did}).fetchall()
+        dead = next(m for m in ms if m[0] == "deceased")
+        check("умерший: возраст как в книге и причина читаются",
+              dead[18] == "1,5 мес" and dead[19] == "понос", str(dead[18:]))
+        check("умерший: месяцы и дни разобраны в свои колонки",
+              one("SELECT age_months || '/' || age_days FROM person_mention "
+                  "WHERE entry_id = ? AND role_code = 'deceased'", did)[0] == "1/15")
+        rows = db.execute(sql["entry_list"], {"case_id": 1, "section": 3}).fetchall()
+        check("в списке смертей одна запись, умерший в строке",
+              len(rows) == 1 and rows[0][13] == "Анна Иванова", str(rows[0][11:]) if rows else "")
+        check("номер девочки — в женской колонке", rows[0][3] == 7 and rows[0][2] is None)
+        # Причт общий (27.09.2026): последняя запись дела в любом разделе.
+        cl = db.execute(sql["last_clergy"], {"case_id": 1, "section": 0}).fetchall()
+        check("причт последней записи любого раздела — из смерти",
+              [c[1] for c in cl] == ["Александр Рождественский"], str(cl))
 
         print("\n10. Целостность")
         check("integrity_check", one("PRAGMA integrity_check")[0] == "ok")

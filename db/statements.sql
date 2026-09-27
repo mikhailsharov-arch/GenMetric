@@ -49,11 +49,13 @@ INSERT INTO person_mention
     (entry_id, role_code, sort_order, surname, first_name, patronymic,
      surname_modern, first_name_modern, patronymic_modern, maiden_surname,
      gender, rank, confession, place_id, note, uncertain,
-     birth_year_from, birth_year_to, age_years, marriage_order, kinship)
+     birth_year_from, birth_year_to, age_years, marriage_order, kinship,
+     age_months, age_weeks, age_days, age_text, death_cause)
 VALUES (:entry_id, :role_code, :sort_order, :surname, :first_name, :patronymic,
         :surname_modern, :first_name_modern, :patronymic_modern, :maiden_surname,
         :gender, :rank, :confession, :place_id, :note, :uncertain,
-        :birth_year_from, :birth_year_to, :age_years, :marriage_order, :kinship);
+        :birth_year_from, :birth_year_to, :age_years, :marriage_order, :kinship,
+        :age_months, :age_weeks, :age_days, :age_text, :death_cause);
 
 -- @place_find
 SELECT id FROM place WHERE name_norm = :name_norm LIMIT 1;
@@ -218,7 +220,12 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
                     || ' ' || coalesce(m.surname, ''))
           FROM person_mention m
-         WHERE m.entry_id = e.id AND m.role_code = 'bride') AS bride
+         WHERE m.entry_id = e.id AND m.role_code = 'bride') AS bride,
+       -- Смерти (27.09.2026): умерший в строке списка.
+       (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
+                    || ' ' || coalesce(m.surname, ''))
+          FROM person_mention m
+         WHERE m.entry_id = e.id AND m.role_code = 'deceased') AS deceased
   FROM entry e
  WHERE e.case_id = :case_id AND e.section = :section
  ORDER BY e.id DESC;
@@ -236,7 +243,8 @@ SELECT m.role_code, m.sort_order, m.surname, m.first_name, m.patronymic,
        m.surname_modern, m.first_name_modern, m.patronymic_modern, m.maiden_surname,
        m.gender, m.rank, m.confession,
        (SELECT p.name FROM place p WHERE p.id = m.place_id) AS place,
-       m.note, m.uncertain, m.age_years, m.marriage_order, m.kinship
+       m.note, m.uncertain, m.age_years, m.marriage_order, m.kinship,
+       m.age_text, m.death_cause
   FROM person_mention m
  WHERE m.entry_id = :entry_id
  ORDER BY m.sort_order;
@@ -245,6 +253,8 @@ SELECT m.role_code, m.sort_order, m.surname, m.first_name, m.patronymic,
 -- Причт последней записи дела — чтобы после перезапуска форма продолжала
 -- с ним, как со страницей и счётом (заказчик 21.09.2026: «надо сделать,
 -- чтобы церковнослужители также сохранялись»).
+-- :section = 0 — последняя запись дела в любом разделе: причт с 27.09.2026
+-- общий для рождений, браков и смертей.
 SELECT m.role_code,
        -- Без отчества между именем и фамилией остался бы двойной пробел.
        trim(coalesce(m.first_name, '')
@@ -252,7 +262,7 @@ SELECT m.role_code,
             || CASE WHEN m.surname IS NULL THEN '' ELSE ' ' || m.surname END) AS iof,
        m.rank, m.note
   FROM person_mention m
- WHERE m.entry_id = (SELECT max(e.id) FROM entry e WHERE e.case_id = :case_id AND e.section = :section)
+ WHERE m.entry_id = (SELECT max(e.id) FROM entry e WHERE e.case_id = :case_id AND (:section = 0 OR e.section = :section))
    AND m.role_code IN ('clergy1', 'clergy2', 'clergy3')
  ORDER BY m.sort_order;
 
@@ -321,8 +331,11 @@ SELECT value, 4, 0 FROM lookup
 -- @person_remember
 -- Запоминает персону целиком: ИОФ вместе с населённым пунктом и званием.
 -- Ради этого всё и делается — выбор строки заполняет три поля разом.
+-- Пустые место и звание — пустой строкой, не NULL: в UNIQUE у SQLite NULL
+-- не равен NULL, и персона без места задваивалась при каждом сохранении
+-- (техдолг В6, 27.09.2026). Наружу пустое отдаётся снова как NULL.
 INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses, last_used_at)
-VALUES (:iof, :iof_norm, :place, :rank, :gender, 1, datetime('now'))
+VALUES (:iof, :iof_norm, coalesce(:place, ''), coalesce(:rank, ''), :gender, 1, datetime('now'))
 ON CONFLICT(iof, place, rank) DO UPDATE SET
     uses = uses + 1, last_used_at = datetime('now'),
     gender = coalesce(excluded.gender, gender);
@@ -332,7 +345,7 @@ ON CONFLICT(iof, place, rank) DO UPDATE SET
 -- приходами, и одни и те же люди возвращаются в записях год за годом.
 -- Персоны — тоже по полу роли. Пол у персоны может быть не записан (старые
 -- записи), такие показываются всем: лучше лишняя строка, чем потерянный человек.
-SELECT iof, place, rank, gender, uses
+SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
   FROM person_index
  WHERE iof_norm LIKE :prefix ESCAPE '\'
    AND (:gender IS NULL OR gender IS NULL OR gender = :gender)
@@ -343,15 +356,17 @@ SELECT iof, place, rank, gender, uses
 -- Причт запоминается, чтобы его можно было выбирать, а не набирать. Заказчик
 -- 27.08.2026: «если в списке его нет, то после ввода его руками он добавляется
 -- в базу и появляется в списке».
+-- Пустое звание — пустой строкой: NULL в UNIQUE задваивал причт на каждой
+-- записи (ревьюер 27.09.2026, то же, что В6 у персон).
 INSERT INTO clergy_index (iof, iof_norm, rank, uses, last_used_at)
-VALUES (:iof, :iof_norm, :rank, 1, datetime('now'))
+VALUES (:iof, :iof_norm, coalesce(:rank, ''), 1, datetime('now'))
 ON CONFLICT(iof, rank) DO UPDATE SET
     uses = uses + 1, last_used_at = datetime('now');
 
 -- @clergy_list
 -- Весь список целиком, без ввода первых букв: причт в приходе меняется редко,
 -- за год-два это те же три человека.
-SELECT iof, rank, uses FROM clergy_index
+SELECT iof, nullif(rank, '') AS rank, uses FROM clergy_index
  ORDER BY uses DESC, last_used_at DESC, iof
  LIMIT :limit;
 

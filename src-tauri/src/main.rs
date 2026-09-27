@@ -16,7 +16,7 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
 /// Версия схемы, которую понимает эта сборка.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
@@ -914,6 +914,17 @@ struct PersonInput {
     marriage_order: Option<String>,
     #[serde(default)]
     kinship: Option<String>,
+    // Смерти (27.09.2026): возраст как в книге и разобранный, причина смерти.
+    #[serde(default)]
+    age_months: Option<i64>,
+    #[serde(default)]
+    age_weeks: Option<i64>,
+    #[serde(default)]
+    age_days: Option<i64>,
+    #[serde(default)]
+    age_text: Option<String>,
+    #[serde(default)]
+    death_cause: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -966,6 +977,7 @@ struct EntryBrief {
     clergy_noname: bool,
     groom: Option<String>,
     bride: Option<String>,
+    deceased: Option<String>,
 }
 
 #[tauri::command]
@@ -1079,12 +1091,18 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                     ":birth_year_from": Option::<i64>::None, ":birth_year_to": Option::<i64>::None,
                     ":age_years": person.age_years, ":marriage_order": person.marriage_order,
                     ":kinship": person.kinship,
+                    ":age_months": person.age_months, ":age_weeks": person.age_weeks,
+                    ":age_days": person.age_days, ":age_text": person.age_text,
+                    ":death_cause": person.death_cause,
                 }).map_err(|e| e.to_string())?;
                 if let Some(v) = person.marriage_order.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                     remember(conn, "marriage_order", v, entry.case_id, &parish)?;
                 }
                 if let Some(v) = person.kinship.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                     remember(conn, "kinship", v, entry.case_id, &parish)?;
+                }
+                if let Some(v) = person.death_cause.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    remember(conn, "death_cause", v, entry.case_id, &parish)?;
                 }
 
                 // Звание — в справочник и в статистику. Перечень выбирается
@@ -1117,8 +1135,10 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
                 // Персона целиком — вместе с населённым пунктом и званием.
                 // Заказчик 17.08.2026: выбор персоны должен заполнять все три
                 // поля разом, а не заставлять набирать каждое.
+                // Умерший — нет: живым в следующих записях он не встретится, а в
+                // подсказках отцов и восприемников мешал бы (ревьюер 27.09.2026).
                 let iof = person_iof(person);
-                if !iof.is_empty() {
+                if !iof.is_empty() && person.role_code != "deceased" {
                     conn.execute(&statement("person_remember")?, rusqlite::named_params! {
                         ":iof": iof, ":iof_norm": normalize(&iof),
                         ":place": person.place, ":rank": person.rank, ":gender": person.gender,
@@ -1597,6 +1617,8 @@ struct MentionOut {
     age_years: Option<i64>,
     marriage_order: Option<String>,
     kinship: Option<String>,
+    age_text: Option<String>,
+    death_cause: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1639,6 +1661,7 @@ fn entry_load(app: State<App>, id: i64) -> Result<EntryFull, String> {
                     first_name: r.get(3)?, patronymic: r.get(4)?, gender: r.get(9)?,
                     rank: r.get(10)?, confession: r.get(11)?, place: r.get(12)?, note: r.get(13)?,
                     age_years: r.get(15)?, marriage_order: r.get(16)?, kinship: r.get(17)?,
+                    age_text: r.get(18)?, death_cause: r.get(19)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1686,7 +1709,7 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
                     rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
                     clergy_noname: r.get::<_, i64>(10)? != 0,
-                    groom: r.get(11)?, bride: r.get(12)?,
+                    groom: r.get(11)?, bride: r.get(12)?, deceased: r.get(13)?,
                 })
             })
             .map_err(|e| e.to_string())?;

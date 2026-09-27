@@ -5,8 +5,9 @@ import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person } from "./Perso
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
+import { useFormClergy } from "./clergy";
 import Suggest from "./Suggest";
-import { report } from "./errors";
+import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
 
 /**
@@ -43,7 +44,12 @@ type Relative = Person & { kinship: string };
 const NEW_SPOUSE: Spouse = { ...EMPTY_PERSON, confession: CONFESSION, order: FIRST_MARRIAGE, age: null };
 const NEW_RELATIVE: Relative = { ...EMPTY_PERSON, kinship: KIN_DEFAULT };
 const SIDES = ["по жениху", "по невесте"] as const;
-const WITNESS_SIDE = [SIDES[0], SIDES[0], SIDES[1], SIDES[1]] as const;
+// Поручителей по умолчанию четыре, кнопкой — до шести (Роман 27.09.2026:
+// «добавить ещё двух поручителей, как с восприемниками»; в шаблоне Familio
+// их шесть). Пятый — по жениху, шестой — по невесте.
+const WITNESS_SIDE = [SIDES[0], SIDES[0], SIDES[1], SIDES[1], SIDES[0], SIDES[1]] as const;
+const WITNESS_MAX = 6;
+const WITNESS_ORDER = [60, 70, 80, 90, 92, 94] as const;
 // Сторона поручителя — в «Прим.», как в Excel, но на форме — переключатель
 // у заголовка, а «Прим.» остаётся свёрнутым для своего текста.
 type Witness = Person & { side: string };
@@ -95,22 +101,24 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
   const [w2, setW2] = useState<Witness>(newWitness(1));
   const [w3, setW3] = useState<Witness>(newWitness(2));
   const [w4, setW4] = useState<Witness>(newWitness(3));
-  const [clergy1, setClergy1] = useState<Person>(EMPTY_PERSON);
-  const [clergy2, setClergy2] = useState<Person>(EMPTY_PERSON);
-  const [clergy3, setClergy3] = useState<Person>(EMPTY_PERSON);
+  const [w5, setW5] = useState<Witness>(newWitness(4));
+  const [w6, setW6] = useState<Witness>(newWitness(5));
+  const [witnessCount, setWitnessCount] = useState(4);
+  // Причт общий для всех разделов (27.09.2026) — clergy.tsx.
+  const clergyState = useFormClergy();
+  const [clergy1, clergy2, clergy3] = clergyState.people;
 
-  const [savedTimes, setSavedTimes] = useState(0);
   const [editingId, setEditingId] = useState<number | null>(null);
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
-                               month: number | null; clergy: [Person, Person, Person] } | null>(null);
+                               month: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
 
-  const witnessSetters = [setW1, setW2, setW3, setW4];
-  const witnesses = [w1, w2, w3, w4];
+  const witnessSetters = [setW1, setW2, setW3, setW4, setW5, setW6];
+  const witnesses = [w1, w2, w3, w4, w5, w6];
 
   useEffect(() => { refresh(); }, [mkCase.id]);
   const restored = useRef(false);
@@ -133,18 +141,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
     if (last.event_year !== null) setYear(last.event_year);
     setCount((v) => v ?? (last.no_male !== null ? last.no_male + 1 : null));
     setMonth((v) => v ?? last.event_month);
-    invoke<{ role_code: string; iof: string; rank: string | null; note: string | null }[]>(
-      "last_clergy", { caseId: mkCase.id, section: 2 })
-      .then((rows) => {
-        const setters = { clergy1: setClergy1, clergy2: setClergy2, clergy3: setClergy3 } as const;
-        for (const r of rows) {
-          const set = setters[r.role_code as keyof typeof setters];
-          if (set && r.iof.trim())
-            set((p) => (p.iof.trim() ? p : { ...p, iof: r.iof, rank: r.rank ?? "", note: r.note ?? "" }));
-        }
-        if (rows.length > 0) setSavedTimes((n) => n + 1);
-      })
-      .catch((e) => report("Не удалось восстановить причт последнего брака", e));
+    // Причт восстанавливает общий ClergyProvider (27.09.2026).
   }
 
   /** Пункт переименован в карточке — то же название у всех персон записи. */
@@ -183,7 +180,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
 
   async function save() {
     let g = groom, b = bride, gr = groomRel, br = brideRel;
-    let ws = witnesses, cl = [clergy1, clergy2, clergy3];
+    let ws = witnesses.slice(0, witnessCount), cl = [clergy1, clergy2, clergy3];
     try {
       [g, b, gr, br] = await Promise.all([g, b, gr, br].map(withParsed)) as [Spouse, Spouse, Relative, Relative];
       ws = await Promise.all(ws.map(withParsed));
@@ -199,18 +196,18 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
     ];
     const unknown = named.find(([, p]) => p.iof.trim() && p.parsed && !p.parsed.known_name);
     if (unknown) {
-      report(`Имя ${unknown[0]} «${unknown[1].parsed?.first_name}» не сверено со справочником`,
+      warn(`Имя ${unknown[0]} «${unknown[1].parsed?.first_name}» не сверено со справочником`,
              unknown[0] === "причта"
                ? "нажмите «Изменить» у причта и выйдите из поля ИОФ — откроется окно сверки"
                : "выйдите из поля ИОФ — откроется окно сверки и предложит имя из справочника");
       return;
     }
     if (!g.iof.trim() && !b.iof.trim()) {
-      report("Запись пустая", "не заполнены ни жених, ни невеста");
+      warn("Запись пустая", "не заполнены ни жених, ни невеста");
       return;
     }
     if (year === null) {
-      report("Не указан год", "год записи стоит в первой строке формы — заполните его один раз, дальше он держится сам");
+      warn("Не указан год", "год записи стоит в первой строке формы — заполните его один раз, дальше он держится сам");
       root.current?.querySelector<HTMLInputElement>(".row.tight input")?.focus();
       return;
     }
@@ -228,7 +225,8 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
     ws.forEach((w, i) => {
       if (!w.iof.trim()) return;
       const note = [w.side, w.note.trim()].filter(Boolean).join("; ");
-      persons.push(payload(`witness${i + 1}`, 60 + i * 10, { ...w, note }));
+      // Порядок — как в role.csv (60…90, 92, 94): причт с 100, пересекаться нельзя.
+      persons.push(payload(`witness${i + 1}`, WITNESS_ORDER[i], { ...w, note }));
     });
     cl.forEach((c, i) => { if (c.iof.trim()) persons.push(payload(`clergy${i + 1}`, 100 + i * 10, c, {}, "М")); });
 
@@ -243,7 +241,8 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
           note: null, uncertain: null, persons,
         },
       });
-      setSavedTimes((n) => n + 1);
+      clergyState.bump();
+      dismissWarn();
       if (editingId !== null) restoreAfterEdit();
       else {
         next();
@@ -263,18 +262,18 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
 
   async function openEntry(id: number) {
     if (editingId !== null && editingId !== id) {
-      report("Сначала сохраните изменения или нажмите «Отменить»", "открыта другая запись — её правки иначе пропадут");
+      warn("Сначала сохраните изменения или нажмите «Отменить»", "открыта другая запись — её правки иначе пропадут");
       return;
     }
     if (editingId === null && formDirty()) {
-      report("Сначала сохраните или очистите набранное",
+      warn("Сначала сохраните или очистите набранное",
              "открыть запись для правки можно только с пустой формы — иначе набранное пропадёт");
       return;
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
       if (editingId === null)
-        beforeEdit.current = { page, count, year, month, clergy: [clergy1, clergy2, clergy3] };
+        beforeEdit.current = { page, count, year, month };
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
         m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
@@ -299,9 +298,10 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
         const { side, note } = splitSide(m?.note ?? null, m ? "" : WITNESS_SIDE[i]);
         set({ ...p, note, side });
       });
-      setClergy1(person(by("clergy1"), EMPTY_PERSON));
-      setClergy2(person(by("clergy2"), EMPTY_PERSON));
-      setClergy3(person(by("clergy3"), EMPTY_PERSON));
+      setWitnessCount(by("witness6") ? 6 : by("witness5") ? 5 : 4);
+      // У открытой записи свой причт; общий не трогается (clergy.tsx).
+      clergyState.open([person(by("clergy1"), EMPTY_PERSON), person(by("clergy2"), EMPTY_PERSON),
+                        person(by("clergy3"), EMPTY_PERSON)]);
       setEditingId(e.id);
       window.scrollTo({ top: 0 });
       countField.current?.focus();
@@ -317,8 +317,8 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
     next();
     if (b) {
       setPage(b.page); setCount(b.count); setYear(b.year); setMonth(b.month);
-      setClergy1(b.clergy[0]); setClergy2(b.clergy[1]); setClergy3(b.clergy[2]);
     }
+    clergyState.close();
   }
 
   /** Следующая запись: страница, год, месяц и причт остаются. */
@@ -328,6 +328,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
     setGroomRel({ ...NEW_RELATIVE });
     setBrideRel({ ...NEW_RELATIVE });
     witnessSetters.forEach((set, i) => set(newWitness(i)));
+    setWitnessCount(4);
     setDay(null);
     countField.current?.focus();
     countField.current?.select();
@@ -340,15 +341,13 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
     }
   }
 
-  /** «Каким браком» и «Лет» — под вероисповеданием жениха и невесты. */
+  /** «Каким браком» и «Лет» — в строке с вероисповеданием (27.09.2026). */
   const spouseExtra = (p: Spouse, set: (fn: (s: Spouse) => Spouse) => void) => (
     <>
-      <Suggest label="Каким браком" kind="marriage_order" value={p.order} browse
+      <Suggest label="Брак" kind="marriage_order" value={p.order} browse
                onChange={(order) => set((s) => ({ ...s, order }))} />
-      <div className="row">
-        <NumberField label="Лет" value={p.age} min={1} max={100}
-                     onChange={(age) => set((s) => ({ ...s, age }))} />
-      </div>
+      <NumberField label="Лет" value={p.age} min={1} max={100}
+                   onChange={(age) => set((s) => ({ ...s, age }))} />
     </>
   );
 
@@ -360,7 +359,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
   const common = { placeDefaults, onPlaceRenamed: renamePlace, rankKind: "rank" as const };
 
   return (
-    <div onKeyDown={hotkeys} ref={root} className="marriage">
+    <div onKeyDown={hotkeys} ref={root} className="marriage formroot">
       {editingId !== null && (
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись о браке открыта в форме. «Сохранить
@@ -373,50 +372,65 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
           <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
           <PageField label="Стр." value={page} onChange={setPage} />
           <NumberField label="Счёт" value={count} onChange={setCount} min={1} inputRef={countField} />
-        </div>
-        <div className="row">
           <NumberField label="Венч., день" value={day} onChange={setDay} min={1} max={31} />
-          <NumberField label="месяц" value={month} onChange={setMonth} min={1} max={12} />
+          <NumberField label="мес." value={month} onChange={setMonth} min={1} max={12} />
         </div>
       </section>
 
-      <PersonBlock title="Жених" person={groom} onChange={(p) => setGroom((s) => ({ ...s, ...p }))}
-                   gender="М" withConfession onPickPerson={pickInto(setGroom)} {...common}
-                   extra={spouseExtra(groom, setGroom)} />
-      <PersonBlock title="Невеста" person={bride} onChange={(p) => setBride((s) => ({ ...s, ...p }))}
-                   gender="Ж" withConfession onPickPerson={pickInto(setBride)} {...common}
-                   extra={spouseExtra(bride, setBride)} />
+      {/* Родственник — сразу под своим женихом или невестой (Роман 27.09.2026:
+          «родственник жениха отец должен идти сразу за женихом»). На широком
+          окне сторона жениха слева, невесты справа; на узком — друг под
+          другом в том же порядке. */}
+      <div className="cols">
+        <div className="col">
+          <PersonBlock title="Жених" person={groom} onChange={(p) => setGroom((s) => ({ ...s, ...p }))}
+                       gender="М" withConfession confessionLabel="Вероисп."
+                       onPickPerson={pickInto(setGroom)} {...common}
+                       extra={spouseExtra(groom, setGroom)} />
+          <PersonBlock title="Родственник жениха" person={groomRel} noPlace
+                       onChange={(p) => setGroomRel((s) => ({ ...s, ...p }))}
+                       gender={kinGender(groomRel.kinship)} {...common}
+                       before={relativeBefore(groomRel, setGroomRel)} />
+        </div>
+        <div className="col">
+          <PersonBlock title="Невеста" person={bride} onChange={(p) => setBride((s) => ({ ...s, ...p }))}
+                       gender="Ж" withConfession confessionLabel="Вероисп."
+                       onPickPerson={pickInto(setBride)} {...common}
+                       extra={spouseExtra(bride, setBride)} />
+          <PersonBlock title="Родственник невесты" person={brideRel} noPlace
+                       onChange={(p) => setBrideRel((s) => ({ ...s, ...p }))}
+                       gender={kinGender(brideRel.kinship)} {...common}
+                       before={relativeBefore(brideRel, setBrideRel)} />
+        </div>
+      </div>
 
-      <section className="person">
-        <h2>Родственники</h2>
-        <PersonBlock title="Жениха" person={groomRel} compact
-                     onChange={(p) => setGroomRel((s) => ({ ...s, ...p }))}
-                     gender={kinGender(groomRel.kinship)} {...common}
-                     before={relativeBefore(groomRel, setGroomRel)} />
-        <PersonBlock title="Невесты" person={brideRel} compact
-                     onChange={(p) => setBrideRel((s) => ({ ...s, ...p }))}
-                     gender={kinGender(brideRel.kinship)} {...common}
-                     before={relativeBefore(brideRel, setBrideRel)} />
-      </section>
-
-      {witnesses.map((w, i) => (
-        <PersonBlock key={i} title={`Поручитель ${i + 1}`} person={w}
-                     onChange={(p) => witnessSetters[i]((s) => ({ ...s, ...p }))}
-                     onPickPerson={pickInto(witnessSetters[i])} {...common}
-                     titleExtra={
-                       <button type="button" className="linkish side" tabIndex={-1}
-                               title="Сменить сторону поручителя"
-                               onClick={() => witnessSetters[i]((s) => ({
-                                 ...s, side: s.side === SIDES[0] ? SIDES[1] : SIDES[0] }))}>
-                         {w.side || "сторона не указана"} ⇄
-                       </button>
-                     } />
-      ))}
+      <div className="cols">
+        {witnesses.slice(0, witnessCount).map((w, i) => (
+          <PersonBlock key={i} title={`Поручитель ${i + 1}`} person={w}
+                       onChange={(p) => witnessSetters[i]((s) => ({ ...s, ...p }))}
+                       onPickPerson={pickInto(witnessSetters[i])} {...common}
+                       titleExtra={
+                         <button type="button" className="linkish side" tabIndex={-1}
+                                 title="Сменить сторону поручителя"
+                                 onClick={() => witnessSetters[i]((s) => ({
+                                   ...s, side: s.side === SIDES[0] ? SIDES[1] : SIDES[0] }))}>
+                           {w.side || "сторона не указана"} ⇄
+                         </button>
+                       } />
+        ))}
+      </div>
+      {witnessCount < WITNESS_MAX && (
+        <div className="addrow">
+          <button type="button" className="linkish" onClick={() => setWitnessCount((n) => n + 1)}>
+            + добавить поручителя
+          </button>
+        </div>
+      )}
 
       <ClergyBlock
         people={[clergy1, clergy2, clergy3]}
-        onChange={(i, p) => [setClergy1, setClergy2, setClergy3][i](p)}
-        reloadKey={savedTimes}
+        onChange={(i, p) => clergyState.setAt(i, p)}
+        reloadKey={clergyState.savedTimes}
       />
 
       <div className="savebar">
@@ -435,10 +449,10 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
               {saved.map((e) => (
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
-                    {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.groom || "жених не указан"}
+                    {/* Номер (счёт) перед датой — Роман 27.09.2026. */}
+                    {e.no_male !== null ? `№ ${e.no_male}` : "без №"} · {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.groom || "жених не указан"}
                     <span className="sub"> и {e.bride || "невеста не указана"}</span>
                   </td>
-                  <td>{e.no_male !== null ? `№ ${e.no_male}` : "без №"}</td>
                   <td>стр. {e.page ?? "—"}</td>
                   <td>
                     <button type="button" className="linkish" onClick={() => void openEntry(e.id)}>

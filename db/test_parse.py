@@ -202,7 +202,7 @@ def main() -> int:
         one = lambda q, *a: db.execute(q, a).fetchone()
 
         print("\n5. Схема 5: name_alias")
-        check("версия схемы 6", one("SELECT max(version) FROM schema_version")[0] == 6)
+        check("версия схемы 7", one("SELECT max(version) FROM schema_version")[0] == 7)
         check("таблица name_alias есть и пуста", one("SELECT count(*) FROM name_alias")[0] == 0)
 
         print("\n1. Конечный «ъ»")

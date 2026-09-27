@@ -136,6 +136,55 @@ SELECT 'repair_clergy_noname', CAST(count(DISTINCT m.entry_id) AS TEXT)
  WHERE m.role_code IN ('clergy1', 'clergy2', 'clergy3')
    AND m.first_name IS NULL AND m.surname IS NULL AND m.rank IS NOT NULL;
 
+-- Память персон: NULL в месте или звании задваивал персону при каждом
+-- сохранении (UNIQUE в SQLite не считает NULL равным NULL; техдолг В6,
+-- 27.09.2026). Дубли сливаются в самую раннюю строку (частоты складываются),
+-- пустое становится пустой строкой — так пишет и person_remember.
+UPDATE person_index SET
+    uses = (SELECT sum(p.uses) FROM person_index p
+             WHERE p.iof = person_index.iof
+               AND coalesce(p.place, '') = coalesce(person_index.place, '')
+               AND coalesce(p.rank, '') = coalesce(person_index.rank, '')),
+    last_used_at = (SELECT max(p.last_used_at) FROM person_index p
+                     WHERE p.iof = person_index.iof
+                       AND coalesce(p.place, '') = coalesce(person_index.place, '')
+                       AND coalesce(p.rank, '') = coalesce(person_index.rank, '')),
+    gender = coalesce(gender, (SELECT max(p.gender) FROM person_index p
+                                WHERE p.iof = person_index.iof
+                                  AND coalesce(p.place, '') = coalesce(person_index.place, '')
+                                  AND coalesce(p.rank, '') = coalesce(person_index.rank, '')))
+ WHERE EXISTS (SELECT 1 FROM person_index p
+                WHERE p.id <> person_index.id AND p.iof = person_index.iof
+                  AND coalesce(p.place, '') = coalesce(person_index.place, '')
+                  AND coalesce(p.rank, '') = coalesce(person_index.rank, ''))
+   AND id = (SELECT min(p.id) FROM person_index p
+              WHERE p.iof = person_index.iof
+                AND coalesce(p.place, '') = coalesce(person_index.place, '')
+                AND coalesce(p.rank, '') = coalesce(person_index.rank, ''));
+DELETE FROM person_index
+ WHERE id <> (SELECT min(p.id) FROM person_index p
+               WHERE p.iof = person_index.iof
+                 AND coalesce(p.place, '') = coalesce(person_index.place, '')
+                 AND coalesce(p.rank, '') = coalesce(person_index.rank, ''));
+UPDATE person_index SET place = coalesce(place, ''), rank = coalesce(rank, '')
+ WHERE place IS NULL OR rank IS NULL;
+
+-- Память причта — то же самое: NULL в звании задваивал причт (UNIQUE (iof, rank)).
+UPDATE clergy_index SET
+    uses = (SELECT sum(c.uses) FROM clergy_index c
+             WHERE c.iof = clergy_index.iof AND coalesce(c.rank, '') = coalesce(clergy_index.rank, '')),
+    last_used_at = (SELECT max(c.last_used_at) FROM clergy_index c
+                     WHERE c.iof = clergy_index.iof AND coalesce(c.rank, '') = coalesce(clergy_index.rank, ''))
+ WHERE EXISTS (SELECT 1 FROM clergy_index c
+                WHERE c.id <> clergy_index.id AND c.iof = clergy_index.iof
+                  AND coalesce(c.rank, '') = coalesce(clergy_index.rank, ''))
+   AND id = (SELECT min(c.id) FROM clergy_index c
+              WHERE c.iof = clergy_index.iof AND coalesce(c.rank, '') = coalesce(clergy_index.rank, ''));
+DELETE FROM clergy_index
+ WHERE id <> (SELECT min(c.id) FROM clergy_index c
+               WHERE c.iof = clergy_index.iof AND coalesce(c.rank, '') = coalesce(clergy_index.rank, ''));
+UPDATE clergy_index SET rank = '' WHERE rank IS NULL;
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting

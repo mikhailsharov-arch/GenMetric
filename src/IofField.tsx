@@ -70,14 +70,10 @@ type Props = {
    * у ребёнка). Без обработчика поле просто меняет текст.
    */
   onResolved?: (iof: string, note: string) => void;
-  /** Два слова — это имя и фамилия, отчество не спрашивать. У причта так
-   *  почти всегда («Александр Рождественский», «Иван Скворцов»); у прочих
-   *  второе слово — обычно отчество (Роман 25.09.2026, «Иван Пискарев»). */
-  surnameSecond?: boolean;
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, surnameSecond,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -126,7 +122,11 @@ export default function IofField({
         // запись на правку: из поля никто не выйдет, и сверка при уходе не
         // сработает (Роман 24.09.2026: «у матери не отрабатывает с
         // отчеством», «у восприемников не отрабатывает имя»). Сверяем сразу.
-        if (!byKeyboard && value.trim()) decide(result, value.trim());
+        // Только видимое поле: причт общий для трёх форм (27.09.2026), и
+        // набор в одной форме приходит в скрытые не с клавиатуры — без этой
+        // проверки они открывали окна сверки на каждую букву (стенд #36).
+        if (!byKeyboard && value.trim() && inputEl.current?.offsetParent != null)
+          decide(result, value.trim());
       })
       .catch((e) => {
         parsedRef.current = null;
@@ -288,7 +288,11 @@ export default function IofField({
     if (p.name_alias) changes.push({ index: 0, word: p.name_alias, kind: "name" });
     if (p.patr_alias) changes.push({ index: 1, word: p.patr_alias, kind: "patr" });
     if (changes.length) applyWords(changes);
-    if (p.patr_unknown && !(surnameSecond && toks.length === 2)) {
+    // У причта — та же сверка, что у всех (Роман 27.09.2026: «у
+    // церковнослужителей надо сделать такую же проверку ИОФ»); исключение
+    // #35 «два слова у причта — имя и фамилия» снято. «Это не отчество»
+    // запоминает фамилию один раз.
+    if (p.patr_unknown) {
       // Имя уже подставлено (если было чем), отчество — следующим окном:
       // «Такой же принцип и с отчеством» (Роман 23.09.2026).
       setResolve({ word: toks[1], kind: "patr" });

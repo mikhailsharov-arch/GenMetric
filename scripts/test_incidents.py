@@ -392,7 +392,9 @@ def incident_20260924_sverka_ne_vezde():
     """
     iof = strip_comments(read("src/IofField.tsx"))
     check("разбор не с клавиатуры сверяется сразу",
-          "if (!byKeyboard && value.trim()) decide(" in iof)
+          "if (!byKeyboard && value.trim() && inputEl.current?.offsetParent != null)" in iof)
+    # 27.09.2026: только видимое поле — причт общий для трёх форм, скрытые
+    # не должны открывать окна сверки на чужой набор.
     check("уход из поля и автоподстановка — одна логика decide()",
           "function decide(" in iof and "decide(p, text)" in iof)
     res = strip_comments(read("src/NameResolve.tsx"))
@@ -479,6 +481,46 @@ def incident_20260925_lishnij_parametr():
     check("имя блока в statement() — литерал, не переменная", not loose, ", ".join(loose))
 
 
+def incident_20260927_otchyot_27_09():
+    """Роман и Mike 27.09.2026: у причта ИОФ не сверялось как у всех (исключение
+    #35); причт в каждом разделе свой; «Запись пустая» пугала «это не ваша
+    ошибка, пришлите текст»; память персон задваивала людей без места;
+    e2e находил поле в скрытой форме; сборка предупреждала «STATIC_VCRUNTIME
+    is deprecated» (CLI 2.11 ставил устаревшую переменную).
+
+    Защита: исключения для причта нет; причт восстанавливает один
+    ClergyProvider (раздел 0 — любой); проверки заполнения идут через warn();
+    person_remember пишет пустую строку вместо NULL; e2e ищет видимый
+    элемент; @tauri-apps/cli в lock-файле не 2.11.*.
+    """
+    iof = strip_comments(read("src/IofField.tsx")) + strip_comments(read("src/PersonBlock.tsx"))
+    check("у причта сверка ИОФ как у всех (surnameSecond нет)", "surnameSecond" not in iof)
+    forms = {f: strip_comments(read(f"src/{f}")) for f in ("BirthForm.tsx", "MarriageForm.tsx", "DeathForm.tsx")}
+    check("формы не восстанавливают причт сами — общий ClergyProvider",
+          all('"last_clergy"' not in t and "useFormClergy" in t for t in forms.values()))
+    clergy = strip_comments(read("src/clergy.tsx"))
+    check("общий причт — последняя запись любого раздела", '"last_clergy", { caseId, section: 0 }' in clergy)
+    check("«Запись пустая» и «Не указан год» — предупреждение, не поломка",
+          all('report("Запись пустая"' not in t and 'report("Не указан год"' not in t for t in forms.values())
+          and all('warn("Запись пустая"' in t for t in forms.values()))
+    bar = read("src/ErrorBar.tsx")
+    check("у предупреждения нет «пришлите текст»", "error.warn" in bar)
+    stm = read("db/statements.sql")
+    check("память персон без NULL в UNIQUE", "coalesce(:place, ''), coalesce(:rank, '')" in stm)
+    check("обновление сливает старые дубли памяти персон", "DELETE FROM person_index" in read("db/migrate.sql"))
+    check("память причта — тоже без NULL в UNIQUE (ревьюер)",
+          "VALUES (:iof, :iof_norm, coalesce(:rank, ''), 1," in stm and "DELETE FROM clergy_index" in read("db/migrate.sql"))
+    pb = strip_comments(read("src/PersonBlock.tsx"))
+    check("«+ примечание» не внутри заголовка — e2e ищет h2 по тексту «Отец»",
+          "{titleExtra}{noteLink" not in pb)
+    e2e = read("scripts/e2e/windows.py")
+    check("e2e ищет видимое поле (формы скрыты hidden)", "def shown(" in e2e and "return shown(driver" in e2e)
+    lock = read("package-lock.json")
+    m = re.search(r'"node_modules/@tauri-apps/cli":\s*\{\s*"version":\s*"([\d.]+)"', lock)
+    ver = m.group(1) if m else "?"
+    check("@tauri-apps/cli не 2.11.* (устаревший STATIC_VCRUNTIME)", m is not None and not ver.startswith("2.11."), ver)
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -489,6 +531,7 @@ def incident_20260925_lishnij_parametr():
 ]
 
 ИНЦИДЕНТЫ = [
+    incident_20260927_otchyot_27_09,
     incident_20260925_lishnij_parametr,
     incident_20260925_otchestvo_bez_familii,
     incident_20260924_sverka_ne_vezde,

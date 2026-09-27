@@ -16,6 +16,10 @@ export type AppError = {
   what: string; // что делали, по-русски
   detail: string; // техническое сообщение, его можно скопировать и прислать
   at: number;
+  /** Предупреждение: человек что-то не заполнил. Это не поломка — присылать
+   *  нечего, и полоса не говорит «это не ваша ошибка, пришлите текст»
+   *  (техдолг В7, 27.09.2026). */
+  warn?: boolean;
 };
 
 let current: AppError | null = null;
@@ -28,6 +32,18 @@ function emit() {
 export function report(what: string, error: unknown): void {
   current = { what, detail: String(error), at: Date.now() };
   emit();
+}
+
+/** Подсказка человеку: чего не хватает, чтобы сохранить. Не поломка. */
+export function warn(what: string, hint: string): void {
+  current = { what, detail: hint, at: Date.now(), warn: true };
+  emit();
+}
+
+/** Снять предупреждение (не ошибку) — после удачного сохранения оно устарело
+ *  (проверяющий 27.09.2026: «Не указан год» висело после сохранения). */
+export function dismissWarn(): void {
+  if (current?.warn) dismiss();
 }
 
 export function dismiss(): void {

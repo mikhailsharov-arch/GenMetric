@@ -35,8 +35,8 @@ REPO = DB_DIR.parent
 # С какой версии поднимаемся. Ровно та, что стоит сейчас у Романа: он ставит
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
-FROM_VERSION = 5
-TO_VERSION = 6
+FROM_VERSION = 6
+TO_VERSION = 7
 
 ok_count = 0
 fail_count = 0
@@ -131,6 +131,17 @@ def build_old_database(path: Path) -> None:
                "renamed_at TEXT NOT NULL DEFAULT (datetime('now')))")
     db.execute("INSERT INTO place (name, name_norm, np_type, origin) VALUES ('Логинцево-2', 'логинцево-2', 'д.', 'seed')")
     db.execute("INSERT INTO place_renamed (old_norm) VALUES ('логинцево')")
+    # Память персон с дублями (техдолг В6, 27.09.2026): без места персона
+    # задваивалась при каждом сохранении — NULL в UNIQUE не равен NULL.
+    db.executemany(
+        "INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?,?,?,?,?,?)",
+        [("Иван Петров", "иван петров", None, "крестьянин", "М", 2),
+         ("Иван Петров", "иван петров", None, "крестьянин", None, 3),
+         ("Иван Петров", "иван петров", "", "крестьянин", None, 1),
+         ("Пётр Сидоров", "петр сидоров", "Кнышевка", None, "М", 4)])
+    # И память причта: без звания — дубль на каждой записи (ревьюер 27.09.2026).
+    db.executemany("INSERT INTO clergy_index (iof, iof_norm, rank, uses) VALUES (?,?,?,?)",
+                   [("Иоанн Скворцов", "иоанн скворцов", None, 1)] * 3)
     db.commit()
     db.close()
 
@@ -141,7 +152,7 @@ def upgrade(user_db: Path, seed_db: Path) -> None:
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("ATTACH DATABASE ? AS seed", (str(seed_db),))
 
-    # 0. Сначала недостающие колонки в существующих таблицах (схема 6: kinship),
+    # 0. Сначала недостающие колонки в существующих таблицах (схема 6: kinship, 7: age_text, age_weeks),
     #    потом (1) недостающие таблицы и индексы — как upgrade() в main.rs.
     for (table,) in conn.execute(
             "SELECT name FROM seed.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
@@ -187,10 +198,11 @@ def main() -> int:
         db = sqlite3.connect(user)
         check(f"схема версии {FROM_VERSION}",
               db.execute("SELECT max(version) FROM schema_version").fetchone()[0] == FROM_VERSION)
-        # Со схемы 5 (сборки #33–#34) до 6 (25.09.2026) новая только колонка
-        # person_mention.kinship — её создаёт шаг «недостающие колонки».
+        # Со схемы 6 (сборка #35) до 7 (27.09.2026, смерти) новые колонки
+        # person_mention.age_text и age_weeks — их создаёт шаг «недостающие колонки».
         cols = [r[1] for r in db.execute("PRAGMA table_info(person_mention)")]
-        check("колонки «родство» (kinship) ещё нет", "kinship" not in cols)
+        check("колонок возраста текстом и неделями ещё нет",
+              "age_text" not in cols and "age_weeks" not in cols)
         check("звания в чужих перечнях у него есть",
               db.execute("SELECT count(*) FROM lookup WHERE "
                          "(kind='rank_f' AND value='крестьянский сын') OR "
@@ -216,7 +228,22 @@ def main() -> int:
         # Новое в версии 5: соответствия имён из окна сверки (23.09.2026).
         # Своя таблица — обновление её не трогает, в отличие от name_form.
         cols = [r[1] for r in db.execute("PRAGMA table_info(person_mention)")]
-        check("появилась колонка «родство» (kinship) в person_mention", "kinship" in cols)
+        check("колонка «родство» (kinship) в person_mention", "kinship" in cols)
+        # В6: дубли памяти персон слиты, частоты сложены, пустое — пустой строкой.
+        check("дубли персоны без места слиты в одну строку",
+              one("SELECT count(*) FROM person_index WHERE iof='Иван Петров'") == 1)
+        check("частоты дублей сложены (2+3+1)",
+              one("SELECT uses FROM person_index WHERE iof='Иван Петров'") == 6)
+        check("пол взят у дубля, где он был",
+              one("SELECT gender FROM person_index WHERE iof='Иван Петров'") == "М")
+        check("в памяти персон не осталось NULL в месте и звании",
+              one("SELECT count(*) FROM person_index WHERE place IS NULL OR rank IS NULL") == 0)
+        check("дубли причта без звания слиты, частоты сложены",
+              one("SELECT count(*) || '/' || max(uses) FROM clergy_index WHERE iof='Иоанн Скворцов'") == "1/3")
+        check("роли поручителей 5 и 6 доехали",
+              one("SELECT count(*) FROM role WHERE code IN ('witness5','witness6')") == 2)
+        check("появились колонки возраста умершего (age_text, age_weeks)",
+              "age_text" in cols and "age_weeks" in cols)
         check("появилась таблица соответствий имён",
               one("SELECT count(*) FROM sqlite_master WHERE name='name_alias'") == 1)
         db.execute("INSERT INTO name_alias (kind, form, form_norm, target) VALUES ('name','Пискарь','пискарь','Кесарь')")

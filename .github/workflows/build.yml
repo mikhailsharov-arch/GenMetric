@@ -87,6 +87,9 @@ jobs:
       - name: Проверить шаг по номеру страницы
         run: node --experimental-strip-types scripts/test_page.mjs
 
+      - name: Проверить разбор возраста умершего
+        run: node --experimental-strip-types scripts/test_age.mjs
+
       - name: Собрать интерфейс
         run: npm run build
 

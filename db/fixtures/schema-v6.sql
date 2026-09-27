@@ -266,9 +266,7 @@ CREATE TABLE person_mention (
 
   age_years         INTEGER,       -- возраст умершего
   age_months        INTEGER,
-  age_weeks         INTEGER,       -- «3 нед» (схема 7, 27.09.2026)
   age_days          INTEGER,
-  age_text          TEXT,          -- возраст как в книге: «3 мес», «1,5 мес» (схема 7)
   death_cause       TEXT,
   marriage_order    TEXT,          -- каким браком
   kinship           TEXT,          -- родство: «отец» у родственника жениха/невесты (схема 6)

@@ -6,8 +6,9 @@ import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
+import { useFormClergy } from "./clergy";
 import { splitCount, type Sex } from "./count";
-import { report } from "./errors";
+import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
 
 /**
@@ -129,16 +130,14 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
   // Причт держится между записями: в книге он один на весь разворот, а часто
   // и на всё дело. Очищать его каждую запись — заставлять набирать заново.
-  const [clergy1Raw, setClergy1] = useState<Person>(EMPTY_PERSON);
-  const [clergy2Raw, setClergy2] = useState<Person>(EMPTY_PERSON);
-  const [clergy3Raw, setClergy3] = useState<Person>(EMPTY_PERSON);
+  // С 27.09.2026 причт общий для всех разделов — см. clergy.tsx.
+  const clergyState = useFormClergy();
+  const [clergy1Raw, clergy2Raw, clergy3Raw] = clergyState.people;
   // Вне save() персоны — как есть; save() работает с разобранными копиями.
   const father = fatherRaw, mother = motherRaw, god1 = god1Raw, god2 = god2Raw,
         god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
         clergy3 = clergy3Raw;
 
-  // Меняется после каждого сохранения: список причта должен пополняться сразу.
-  const [savedTimes, setSavedTimes] = useState(0);
   // Правка сохранённой записи: id открытой записи или null — новая.
   // Заказчик 22.09.2026 индексирует в программе по-настоящему; до этого
   // единственный способ поправить запись был перенабрать её.
@@ -149,11 +148,13 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   // пострадавших записей), а после правки следующие записи должны идти
   // с прежним (ревьюер 22.09.2026).
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
-                               birthMonth: number | null; riteMonth: number | null;
-                               clergy: [Person, Person, Person] } | null>(null);
+                               birthMonth: number | null; riteMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
+  // Поиск внутри своей формы: рядом в DOM скрытые браки и смерти со своими
+  // «.sexpick» и «Год» (проверяющий 27.09.2026).
+  const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     refresh();
@@ -187,20 +188,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // «форма пуста» через них была бы мёртвой (проверяющий 18.09.2026).
     setPage((v) => v ?? last.page);
     if (last.event_year !== null) setYear(last.event_year);
-    // Причт — тоже (заказчик 21.09.2026). Разбор ИОФ поле сделает само.
-    invoke<{ role_code: string; iof: string; rank: string | null; note: string | null }[]>(
-      "last_clergy", { caseId: mkCase.id, section: 1 })
-      .then((rows) => {
-        const setters = { clergy1: setClergy1, clergy2: setClergy2, clergy3: setClergy3 } as const;
-        for (const r of rows) {
-          const set = setters[r.role_code as keyof typeof setters];
-          if (set && r.iof.trim()) {
-            set((p) => (p.iof.trim() ? p : { ...p, iof: r.iof, rank: r.rank ?? "", note: r.note ?? "" }));
-          }
-        }
-        if (rows.length > 0) setSavedTimes((n) => n + 1); // свернуть заполненный причт
-      })
-      .catch((e) => report("Не удалось восстановить причт последней записи", e));
+    // Причт восстанавливает общий ClergyProvider (27.09.2026).
     setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
     setBirthMonth((v) => v ?? last.event_month);
     setRiteMonth((v) => v ?? last.rite_month);
@@ -369,10 +357,10 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       ["причта", clergy3.iof.trim() ? clergy3.parsed : null],
     ].find(([, p]) => p && !(p as Parsed).known_name) as [string, Parsed] | undefined;
     if (unknown) {
-      report(`Имя ${unknown[0]} «${unknown[1].first_name}» не сверено со справочником`,
+      warn(`Имя ${unknown[0]} «${unknown[1].first_name}» не сверено со справочником`,
              unknown[0] === "причта"
                ? "нажмите «Изменить» у причта и выйдите из поля ИОФ — откроется окно сверки (ревьюер 23.09.2026: свёрнутый причт поля не показывает)"
-               : "выйдите из поля ИОФ — откроется окно сверки; выберите имя из словаря или «Новое имя»");
+               : "выйдите из поля ИОФ — откроется окно сверки; выберите имя из словаря");
       return;
     }
     const sexForSave: Sex | null = (parsedChild?.gender as Sex | null | undefined) ?? childSexManual;
@@ -412,7 +400,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     const filled = [child, father.iof, mother.iof, god1.iof, god2.iof, god3.iof, god4.iof]
       .some((v) => v.trim().length > 0);
     if (!filled) {
-      report("Запись пустая", "не заполнено ни имя ребёнка, ни родители");
+      warn("Запись пустая", "не заполнено ни имя ребёнка, ни родители");
       return;
     }
 
@@ -422,20 +410,20 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // Год теперь только на форме; у нового дела он пуст, и запись без года
     // молча ушла бы в базу (проверяющий 22.09.2026).
     if (year === null) {
-      report("Не указан год", "год записи стоит в первой строке формы — заполните его один раз, дальше он держится сам");
-      document.querySelector<HTMLInputElement>(".row.tight input")?.focus();
+      warn("Не указан год", "год записи стоит в первой строке формы — заполните его один раз, дальше он держится сам");
+      root.current?.querySelector<HTMLInputElement>(".row.tight input")?.focus();
       return;
     }
     const columns = splitCount(count, sexForSave);
     if (columns === null) {
       // Кнопки выбора пола есть только под набранным именем. Счёт без имени
       // ребёнка — отдельный случай, и молчать тут нельзя (ревьюер 13.09.2026).
-      const buttons = document.querySelector<HTMLButtonElement>(".sexpick button");
+      const buttons = root.current?.querySelector<HTMLButtonElement>(".sexpick button");
       if (buttons) {
         setAskSex(true);
         buttons.focus();
       } else {
-        report("Счёт есть, а ребёнка нет",
+        warn("Счёт есть, а ребёнка нет",
                "имя ребёнка не набрано — не понять, в мужскую или женскую колонку класть счёт");
       }
       return;
@@ -462,7 +450,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           persons,
         },
       });
-      setSavedTimes((n) => n + 1);
+      clergyState.bump();
+      dismissWarn();
       if (editingId !== null) restoreAfterEdit();
       else next();
       refresh();
@@ -497,20 +486,19 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
    */
   async function openEntry(id: number) {
     if (editingId !== null && editingId !== id) {
-      report("Сначала сохраните изменения или нажмите «Отменить»",
+      warn("Сначала сохраните изменения или нажмите «Отменить»",
              "открыта другая запись — её правки иначе пропадут");
       return;
     }
     if (editingId === null && formDirty()) {
-      report("Сначала сохраните или очистите набранное",
+      warn("Сначала сохраните или очистите набранное",
              "открыть запись для правки можно только с пустой формы — иначе набранное пропадёт");
       return;
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
       if (editingId === null) {
-        beforeEdit.current = { page, count, year, birthMonth, riteMonth,
-                               clergy: [clergy1, clergy2, clergy3] };
+        beforeEdit.current = { page, count, year, birthMonth, riteMonth };
       }
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
@@ -540,9 +528,10 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       setGod3(person(by("godparent3"), { ...EMPTY_PERSON }));
       setGod4(person(by("godparent4"), { ...EMPTY_PERSON }));
       setGodCount(by("godparent4") ? 4 : by("godparent3") ? 3 : 2);
-      setClergy1(person(by("clergy1"), { ...EMPTY_PERSON }));
-      setClergy2(person(by("clergy2"), { ...EMPTY_PERSON }));
-      setClergy3(person(by("clergy3"), { ...EMPTY_PERSON }));
+      // У открытой записи свой причт; общий не трогается (clergy.tsx).
+      clergyState.open([person(by("clergy1"), { ...EMPTY_PERSON }),
+                        person(by("clergy2"), { ...EMPTY_PERSON }),
+                        person(by("clergy3"), { ...EMPTY_PERSON })]);
       setEditingId(e.id);
       window.scrollTo({ top: 0 });
       countField.current?.focus();
@@ -563,10 +552,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       setYear(b.year);
       setBirthMonth(b.birthMonth);
       setRiteMonth(b.riteMonth);
-      setClergy1(b.clergy[0]);
-      setClergy2(b.clergy[1]);
-      setClergy3(b.clergy[2]);
     }
+    clergyState.close();
   }
 
   /** Отменить правку: форма пустая, запись в базе не тронута. */
@@ -623,7 +610,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   }
 
   return (
-    <div onKeyDown={hotkeys}>
+    <div onKeyDown={hotkeys} ref={root} className="birth formroot">
       {editingId !== null && (
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись открыта в форме. «Сохранить
@@ -643,11 +630,11 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
             inputRef={countField}
           />
         </div>
-        <div className="row">
+        {/* Даты рождения и крещения — одной строкой, если ширины хватает
+            (27.09.2026: минус строка высоты); узко — переносятся. */}
+        <div className="row wrap">
           <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} />
           <NumberField label="месяц" value={birthMonth} onChange={setBirthMonth} min={1} max={12} />
-        </div>
-        <div className="row">
           <NumberField label="Крещ., день" value={riteDay} onChange={setRiteDay} min={1} max={31} />
           <NumberField label="месяц" value={riteMonth} onChange={setRiteMonth} min={1} max={12} />
         </div>
@@ -705,6 +692,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         )}
       </section>
 
+      {/* Отец | мать и восприемники парами — на широкой форме (27.09.2026). */}
+      <div className="cols">
       <PersonBlock
         title="Отец"
         person={father}
@@ -713,6 +702,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
         withConfession
+        confessionLabel="Вероисп."
         gender="М"
         onPickPerson={pickFather}
       />
@@ -725,9 +715,12 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
         withConfession
+        confessionLabel="Вероисп."
         gender="Ж"
         onPickPerson={pickInto(setMother)}
       />
+      </div>
+      <div className="cols">
       <PersonBlock
         title="Восприемник 1"
         person={god1}
@@ -769,6 +762,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           onPickPerson={pickInto(setGod4)}
         />
       )}
+      </div>
       {godCount < 4 && (
         <div className="addrow">
           <button type="button" className="toggle" onClick={() => setGodCount((n) => n + 1)}>
@@ -783,8 +777,8 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           он меняется раз в дело, а высота нужна каждой записи. */}
       <ClergyBlock
         people={[clergy1, clergy2, clergy3]}
-        onChange={(i, p) => [setClergy1, setClergy2, setClergy3][i](p)}
-        reloadKey={savedTimes}
+        onChange={(i, p) => clergyState.setAt(i, p)}
+        reloadKey={clergyState.savedTimes}
       />
 
       {/* Кнопка прилипает к низу окна. Заказчик 27.08.2026: «все поля

@@ -73,7 +73,7 @@ def main() -> int:
     print("\n1. Целостность базы")
     check("integrity_check", one("PRAGMA integrity_check") == "ok")
     check("foreign_key_check", len(q("PRAGMA foreign_key_check")) == 0)
-    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 6)
+    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 7)
 
     print("\n2. Сверка с текстовыми справочниками")
     for csv_name, table in [("name_dict.csv", "name_dict"), ("lookup.csv", "lookup"),
@@ -94,8 +94,9 @@ def main() -> int:
 
     print("\n3. Роли и коридоры возраста")
     # 23 с 21.09.2026: восприемники 3 и 4 — «в шаблоне Familio присутствует 4».
-    check("23 роли", one("SELECT count(*) FROM role") == 23)
-    for section, expected in [(1, 7), (2, 9), (3, 4), (0, 3)]:
+    # 25 с 27.09.2026: поручители 5 и 6 — «ещё двух поручителей» (Роман).
+    check("25 ролей", one("SELECT count(*) FROM role") == 25)
+    for section, expected in [(1, 7), (2, 11), (3, 4), (0, 3)]:
         check(f"ролей в разделе {section}",
               one("SELECT count(*) FROM role WHERE section=?", section) == expected)
     check("коридор родителей 17-55",

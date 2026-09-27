@@ -5,6 +5,8 @@ import FontScale from "./FontScale";
 import CaseHeader, { type Case } from "./CaseHeader";
 import BirthForm from "./BirthForm";
 import MarriageForm from "./MarriageForm";
+import DeathForm from "./DeathForm";
+import { ClergyProvider } from "./clergy";
 import { report } from "./errors";
 
 type Startup = {
@@ -42,7 +44,7 @@ export default function App() {
   const [startup, setStartup] = useState<Startup | null>(null);
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
-  const [screen, setScreen] = useState<"case" | "births" | "marriages" | "about">("case");
+  const [screen, setScreen] = useState<"case" | "births" | "marriages" | "deaths" | "about">("case");
 
   useEffect(() => {
     invoke<Startup>("startup_state")
@@ -59,6 +61,21 @@ export default function App() {
       .catch((e) => report("Программа не смогла сообщить своё состояние", e));
   }, []);
 
+
+  // Автопрокрутка к полю в фокусе (Роман 27.09.2026: «при перемещении
+  // фокуса на скрытое поле страница должна автоматически прокручиваться так,
+  // чтобы активное поле становилось полностью видимым»). Браузер сам
+  // прокручивает только к полю вне окна, а поле под прилипшей кнопкой
+  // «Сохранить» считает видимым — отсюда scroll-margin в styles.css.
+  useEffect(() => {
+    const on = (e: FocusEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (!el || !el.closest(".formroot") || el.closest(".modal")) return;
+      el.scrollIntoView({ block: "nearest" });
+    };
+    document.addEventListener("focusin", on);
+    return () => document.removeEventListener("focusin", on);
+  }, []);
 
   // База не открылась — показываем объяснение вместо формы: работать всё
   // равно нельзя, а человек должен понимать, что произошло и что делать.
@@ -127,10 +144,21 @@ export default function App() {
           >
             Браки
           </button>
-          <button className={screen === "about" ? "on" : ""} onClick={() => setScreen("about")}>
-            О программе
+          <button
+            className={screen === "deaths" ? "on" : ""}
+            onClick={() => setScreen("deaths")}
+            disabled={!mkCase || !mkCase.id}
+            title={mkCase && mkCase.id ? "" : "Сначала заполните дело"}
+          >
+            Смерти
           </button>
         </nav>
+        {/* «О программе» — маленькой кнопкой справа: с «Смертями» вкладок
+            стало пять, и место нужно им (Роман 27.09.2026, Mike: «ⓘ»). */}
+        <button className={screen === "about" ? "info on" : "info"} onClick={() => setScreen("about")}
+                title="О программе" aria-label="О программе">
+          ⓘ
+        </button>
         <FontScale />
       </header>
 
@@ -142,16 +170,20 @@ export default function App() {
       <div hidden={screen !== "case"}>
         <CaseHeader onSaved={setMkCase} />
       </div>
+      {/* Причт общий для всех разделов (27.09.2026) — clergy.tsx. Формы
+          браков и смертей (25.09, 27.09) так же не размонтируются. */}
       {mkCase && mkCase.id > 0 && (
-        <div hidden={screen !== "births"}>
-          <BirthForm mkCase={mkCase} />
-        </div>
-      )}
-      {/* Браки (25.09.2026) — так же: не размонтируются при переключении. */}
-      {mkCase && mkCase.id > 0 && (
-        <div hidden={screen !== "marriages"}>
-          <MarriageForm mkCase={mkCase} />
-        </div>
+        <ClergyProvider caseId={mkCase.id}>
+          <div hidden={screen !== "births"}>
+            <BirthForm mkCase={mkCase} />
+          </div>
+          <div hidden={screen !== "marriages"}>
+            <MarriageForm mkCase={mkCase} />
+          </div>
+          <div hidden={screen !== "deaths"}>
+            <DeathForm mkCase={mkCase} />
+          </div>
+        </ClergyProvider>
       )}
       {screen === "about" && info && (
         <section>
@@ -243,7 +275,7 @@ export default function App() {
 
       {/* На экране набора подвал не нужен: каждая строка высоты — это строка
           записи, которую человек должен видеть, не прокручивая. */}
-      {screen !== "births" && (
+      {(screen === "case" || screen === "about") && (
         <footer>
           Записи сохраняются в базу на вашем компьютере. Выгрузка в Familio
           и Excel появится на следующем этапе.

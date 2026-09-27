@@ -25,15 +25,16 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 46, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 46, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 53, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 59, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 68, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 55 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 70, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 7, ошибок 0»
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 13, ошибок 0»
-    python3 scripts/test_incidents.py                           # регресс-тесты по инцидентам
+    node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 17, ошибок 0» (возраст умершего)
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 89, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 

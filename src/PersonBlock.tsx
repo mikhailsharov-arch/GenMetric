@@ -76,8 +76,13 @@ type Props = {
   /** Поля роли перед ИОФ — родство у родственника в браке (как в Excel). */
   before?: React.ReactNode;
   /** Поля роли после вероисповедания — «каким браком» и «лет» у жениха
-   *  и невесты (лист «2» Excel, 25.09.2026). */
+   *  и невесты (лист «2» Excel, 25.09.2026). Стоят в одной строке с
+   *  вероисповеданием, когда ширины хватает. */
   extra?: React.ReactNode;
+  /** Без поля НП — родственник в браке (в Excel у него НП нет). */
+  noPlace?: boolean;
+  /** Подпись поля вероисповедания; в строке с «Брак» и «Лет» — короткая. */
+  confessionLabel?: string;
 };
 
 /** Событие окна: пункт переименован в карточке; слушают обе формы. */
@@ -155,7 +160,8 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra,
+  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace,
+  confessionLabel,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
@@ -253,9 +259,31 @@ export default function PersonBlock({
     }
   }
 
+  /** Ссылка «+ примечание»: в заголовке, а у персон без заголовка (причт) —
+   *  отдельной строкой. Пока примечание открыто или заполнено — не нужна. */
+  function noteLink(inHead: boolean) {
+    if (noteOpen || person.note) return null;
+    return (
+      <button type="button" className={inHead ? "linkish noteadd" : "linkish"} tabIndex={inHead ? -1 : undefined}
+              onClick={() => setNoteOpen(true)}>
+        + примечание
+      </button>
+    );
+  }
+
   return (
     <Frame className={compact ? "person flat" : "person"}>
-      {title && (compact ? <h3>{title}{titleExtra}</h3> : <h2>{title}{titleExtra}</h2>)}
+      {/* «+ примечание» — в строке заголовка, а не отдельной строкой под
+          персоной: минус строка высоты у каждой персоны (Роман 27.09.2026:
+          «сэкономить место за счёт дизайна»). */}
+      {/* Ссылка — рядом с заголовком, но не внутри него: текст заголовка
+          остаётся «Отец», по нему его находят e2e и стенды (ревьюер 27.09). */}
+      {title && (
+        <div className="personhead">
+          {compact ? <h3>{title}{titleExtra}</h3> : <h2>{title}{titleExtra}</h2>}
+          {noteLink(true)}
+        </div>
+      )}
       {before}
       <IofField
         label="ИОФ"
@@ -268,9 +296,11 @@ export default function PersonBlock({
         onPickPerson={onPickPerson}
         inputRef={inputRef}
         gender={sex}
-        surnameSecond={rankKind === "rank_clergy"}
       />
-      {!compact && (
+      {/* НП и звание — парой в одну строку, когда блок шире 30em (styles.css,
+          @container person). Узкое окно — по строке, как раньше. */}
+      <div className="pair">
+      {!compact && !noPlace && (
         <Suggest
           ref={placeRef}
           label="НП"
@@ -308,15 +338,20 @@ export default function PersonBlock({
         value={person.rank}
         onChange={(rank) => set({ rank })}
       />
-      {withConfession && (
-        <Suggest
-          label="Вероисповедания"
-          kind="confession"
-          value={person.confession}
-          onChange={(confession) => set({ confession })}
-        />
+      </div>
+      {(withConfession || extra) && (
+        <div className={withConfession && extra ? "pair trio" : "pair"}>
+          {withConfession && (
+            <Suggest
+              label={confessionLabel ?? "Вероисповедания"}
+              kind="confession"
+              value={person.confession}
+              onChange={(confession) => set({ confession })}
+            />
+          )}
+          {extra}
+        </div>
       )}
-      {extra}
       {/* «Прим.» свёрнуто, пока пусто: заказчик 22.09.2026 — «строку спрятать,
           чтобы если требуется ввести примечание, строку можно было развернуть
           кнопкой/значком». Пустая строка у каждой персоны — минус высота. */}
@@ -335,13 +370,7 @@ export default function PersonBlock({
             />
           </div>
         </div>
-      ) : (
-        <div className="noterow">
-          <button type="button" className="linkish" onClick={() => setNoteOpen(true)}>
-            + примечание
-          </button>
-        </div>
-      )}
+      ) : (!title && <div className="noterow">{noteLink(false)}</div>)}
       {withMaiden && (
         <div className="field">
           <label>Девичья фамилия</label>

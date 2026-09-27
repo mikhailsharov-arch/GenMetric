@@ -187,7 +187,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           else if (ref) ref.current = el;
         }}
         data-field
-        className={action && value.trim() ? "withaction" : undefined}
+        className={action && value.trim() ? "withaction" : browse ? "withbrowse" : undefined}
         value={value}
         placeholder={placeholder}
         autoComplete="off"

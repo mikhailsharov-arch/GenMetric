@@ -16,6 +16,23 @@ export default function ErrorBar() {
 
   if (!error) return null;
 
+  // Предупреждение — что поправить, без «пришлите текст» и без журнала.
+  if (error.warn) {
+    return (
+      <div className="errorbar warnbar" role="alert">
+        <div className="errorbar-head">
+          <div>
+            <b>{error.what}</b>
+            <div className="errorbar-sub">{error.detail}</div>
+          </div>
+          <button className="errorbar-close" onClick={dismiss} title="Закрыть">
+            ✕
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   async function showLog() {
     if (log !== null) {
       setLog(null);
