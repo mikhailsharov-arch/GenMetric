@@ -146,7 +146,9 @@ export default function App() {
           дефицитный ресурс: заказчику нужна вся запись на экране без прокрутки,
           пока справа открыт скан. Название программы человек и так знает. */}
       <header className="topbar">
-        <h1 title={info ? `GenMetric, версия ${info.app_version}` : "GenMetric"}>GenMetric</h1>
+        {/* Надписи «GenMetric» здесь нет: название и так в заголовке окна, а в
+            узком окне кнопки вкладок не помещались (Роман 28.09.2026). Версия —
+            во всплывающей подписи «ⓘ». */}
         <nav className="tabs">
           <button className={screen === "case" ? "on" : ""} onClick={() => setScreen("case")}>
             Дело
@@ -179,7 +181,7 @@ export default function App() {
         {/* «О программе» — маленькой кнопкой справа: с «Смертями» вкладок
             стало пять, и место нужно им (Роман 27.09.2026, Mike: «ⓘ»). */}
         <button className={screen === "about" ? "info on" : "info"} onClick={() => setScreen("about")}
-                title="О программе" aria-label="О программе">
+                title={info ? `О программе · GenMetric ${info.app_version}` : "О программе"} aria-label="О программе">
           ⓘ
         </button>
         <FontScale />

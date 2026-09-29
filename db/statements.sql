@@ -119,7 +119,11 @@ INSERT OR IGNORE INTO place_renamed (old_norm) VALUES (:old_norm);
 UPDATE person_index
    SET uses = uses + (SELECT sum(p2.uses) FROM person_index p2
                        WHERE p2.iof = person_index.iof AND p2.place = :old_name
-                         AND p2.rank IS person_index.rank)
+                         AND p2.rank IS person_index.rank),
+       last_used_at = nullif(max(coalesce(last_used_at, ''),
+                          coalesce((SELECT max(p2.last_used_at) FROM person_index p2
+                                     WHERE p2.iof = person_index.iof AND p2.place = :old_name
+                                       AND p2.rank IS person_index.rank), '')), '')
  WHERE place = :name
    AND EXISTS (SELECT 1 FROM person_index p2
                 WHERE p2.iof = person_index.iof AND p2.place = :old_name
@@ -150,7 +154,11 @@ UPDATE spouse_index SET wife_place = :name WHERE wife_place = :old_name;
 UPDATE usage_stat
    SET count = count + (SELECT u2.count FROM usage_stat u2
                          WHERE u2.kind = 'place' AND u2.value = :old_name
-                           AND u2.scope = usage_stat.scope AND u2.scope_key = usage_stat.scope_key)
+                           AND u2.scope = usage_stat.scope AND u2.scope_key = usage_stat.scope_key),
+       last_used_at = nullif(max(coalesce(last_used_at, ''),
+                          coalesce((SELECT u2.last_used_at FROM usage_stat u2
+                                     WHERE u2.kind = 'place' AND u2.value = :old_name
+                                       AND u2.scope = usage_stat.scope AND u2.scope_key = usage_stat.scope_key), '')), '')
  WHERE kind = 'place' AND value = :name
    AND EXISTS (SELECT 1 FROM usage_stat u2
                 WHERE u2.kind = 'place' AND u2.value = :old_name
@@ -264,7 +272,10 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '')
                     || ' ' || coalesce(m.surname, ''))
           FROM person_mention m
-         WHERE m.entry_id = e.id AND m.role_code = 'deceased') AS deceased
+         WHERE m.entry_id = e.id AND m.role_code = 'deceased') AS deceased,
+       -- Год книги для «продолжить с места»: у записи «событие в предыдущем
+       -- году» он равен году обряда (сборка #38).
+       e.rite_year
   FROM entry e
  WHERE e.case_id = :case_id AND e.section = :section
  ORDER BY e.id DESC;
@@ -390,6 +401,41 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
    AND (:gender IS NULL OR gender IS NULL OR gender = :gender)
  ORDER BY uses DESC, iof
  LIMIT :limit;
+
+-- @person_suggest_infant
+-- Подсказка ИОФ умершего (Роман 28.09.2026): «в записях о смерти огромную
+-- долю составляют младенцы (которые фигурировали только в записях о
+-- рождении)». Первыми — те, кто есть ребёнком в записи о рождении, потом
+-- остальные по частоте. ИОФ собирается так же, как person_iof в main.rs.
+-- Некоррелированный IN: SQLite считает множество один раз (ревьюер #38:
+-- коррелированный EXISTS давал 14–30 с на букву при 80 тыс. упоминаний).
+SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
+  FROM person_index
+ WHERE iof_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender IS NULL OR gender = :gender)
+ ORDER BY iof IN (SELECT trim(coalesce(nullif(trim(m.first_name), ''), '') || coalesce(' ' || nullif(trim(m.patronymic), ''), '') || coalesce(' ' || nullif(trim(m.surname), ''), '')) FROM person_mention m
+                   WHERE m.role_code = 'child') DESC,
+          uses DESC, iof
+ LIMIT :limit;
+
+-- @birth_father
+-- Отец из записи о рождении ребёнка с этим ИОФ (Роман 28.09.2026: выбрали
+-- умершего младенца — родственник заполняется его отцом). Только своё дело
+-- и только отец с именем. Вторая колонка — сколько таких записей в деле:
+-- если их больше одной (десятки «Марий» за год), отец не угадывается
+-- (проверяющий #38).
+SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) AS iof,
+       (SELECT p.name FROM place p WHERE p.id = f.place_id) AS place,
+       f.rank,
+       count(*) OVER () AS births
+  FROM person_mention c
+  JOIN entry e ON e.id = c.entry_id AND e.section = 1 AND e.case_id = :case_id
+  JOIN person_mention f ON f.entry_id = c.entry_id AND f.role_code = 'father'
+ WHERE c.role_code = 'child'
+   AND trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) = :iof
+   AND trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) <> ''
+ ORDER BY e.id DESC
+ LIMIT 1;
 
 -- @clergy_remember
 -- Причт запоминается, чтобы его можно было выбирать, а не набирать. Заказчик

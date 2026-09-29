@@ -9,7 +9,7 @@
  * Инцидент 13.09.2026: счёт всегда ложился в мужскую колонку. Половина
  * записей с неверным номером, на экране не видно.
  */
-import { splitCount } from "../src/count.ts";
+import { eventYearOf, riteBeforeEvent, splitCount } from "../src/count.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -39,6 +39,14 @@ for (const sex of ["Ж"]) {
   const r = splitCount(1, sex);
   check("девочка никогда не в мужской колонке", r && r.no_male === null);
 }
+
+console.log("\nСобытие в предыдущем году — только по отметке человека\n");
+check("декабрь → январь — спросить", riteBeforeEvent(12, 1) === true);
+check("тот же месяц или позже — не спрашивать", !riteBeforeEvent(5, 5) && !riteBeforeEvent(5, 6));
+check("месяц неизвестен — не спрашивать", !riteBeforeEvent(null, 1) && !riteBeforeEvent(12, null));
+check("не отмечено — год события = год книги", eventYearOf(1887, 12, 1, false) === 1887);
+check("отмечено — событие в предыдущем году", eventYearOf(1887, 12, 1, true) === 1886);
+check("отмечено, но месяцы уже не наоборот — год книги", eventYearOf(1887, 5, 6, true) === 1887);
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${bad}`);
 process.exit(bad ? 1 : 0);

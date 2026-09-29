@@ -55,6 +55,9 @@ export type PersonHint = {
  */
 
 type Props = {
+  /** Умерший: в подсказке первыми младенцы из записей о рождении
+   *  (Роман 28.09.2026). */
+  preferInfant?: boolean;
   label: string;
   value: string;
   onChange: (text: string, parsed: Parsed | null) => void;
@@ -74,7 +77,7 @@ type Props = {
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -185,6 +188,7 @@ export default function IofField({
         ? invoke<PersonHint[]>("suggest_person", {
             prefix: query, limit: 6,
             gender: gender ?? parsedRef.current?.gender ?? null,
+            preferInfant: preferInfant ?? false,
           })
         : Promise.resolve([] as PersonHint[]),
       currentWord.length > 0
@@ -478,6 +482,9 @@ export default function IofField({
             {persons.map((p, i) => (
               <li
                 key={`p${i}`}
+                // Список идёт за стрелками (Роман 28.09.2026: «выбирает
+                // элементы вслепую») — как у Suggest и окна сверки.
+                ref={i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
                 className={i === active ? "active person" : "person"}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -498,6 +505,7 @@ export default function IofField({
             {words.map((w, i) => (
               <li
                 key={`w${i}`}
+                ref={persons.length + i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
                 className={persons.length + i === active ? "active" : ""}
                 onMouseDown={(e) => {
                   e.preventDefault();

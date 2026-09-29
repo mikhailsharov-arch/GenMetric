@@ -978,6 +978,7 @@ struct EntryBrief {
     groom: Option<String>,
     bride: Option<String>,
     deceased: Option<String>,
+    rite_year: Option<i64>,
 }
 
 #[tauri::command]
@@ -1208,13 +1209,19 @@ fn person_iof(p: &PersonInput) -> String {
 /// отдельно имя, отдельно отчество, отдельно фамилия, — и населённый пункт
 /// со званием приходилось набирать руками для каждой персоны.
 #[tauri::command]
-fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: Option<String>)
+fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: Option<String>,
+                  prefer_infant: Option<bool>)
     -> Result<Vec<PersonHint>, String>
 {
+    // Умерший: младенцы из записей о рождении — первыми (Роман 28.09.2026).
+    // Имя блока — литералом в каждой ветке: так его видит проверка
+    // параметров в test_incidents.py.
+    let sql = if prefer_infant.unwrap_or(false) { statement("person_suggest_infant")? }
+              else { statement("person_suggest")? };
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(8).clamp(1, 50);
     with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
-        let mut stmt = conn.prepare(&statement("person_suggest")?).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::named_params! {
                 ":prefix": pattern, ":limit": limit, ":gender": gender,
@@ -1230,6 +1237,30 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: O
             out.push(row.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    })
+}
+
+#[derive(Serialize)]
+struct FatherHint {
+    iof: String,
+    place: Option<String>,
+    rank: Option<String>,
+    /// Сколько записей о рождении с таким ребёнком в деле: больше одной —
+    /// отец не подставляется, форма просит выбрать самому.
+    births: i64,
+}
+
+/// Отец ребёнка из записи о рождении — для «Смертей»: выбрали умершего
+/// младенца, родственник заполняется сам (Роман 28.09.2026).
+#[tauri::command]
+fn birth_father(app: State<App>, case_id: i64, iof: String) -> Result<Option<FatherHint>, String> {
+    with_conn(&app, "Отец из записи о рождении", |conn| {
+        conn.query_row(&statement("birth_father")?, rusqlite::named_params! {
+            ":iof": iof.trim(), ":case_id": case_id,
+        }, |r| Ok(FatherHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, births: r.get(3)? }))
+            .optional()
+            .map_err(|e| e.to_string())
+            .map(|o| o.filter(|f| !f.iof.is_empty()))
     })
 }
 
@@ -1727,6 +1758,7 @@ fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBr
                     rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
                     clergy_noname: r.get::<_, i64>(10)? != 0,
                     groom: r.get(11)?, bride: r.get(12)?, deceased: r.get(13)?,
+                    rite_year: r.get(14)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1838,6 +1870,7 @@ fn main() {
             entry_load,
             last_clergy,
             suggest_person,
+            birth_father,
             suggest_spouse,
             list_clergy,
             import_archive,

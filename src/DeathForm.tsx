@@ -7,9 +7,10 @@ import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
-import { splitCount, type Sex } from "./count";
+import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { parseAge } from "./age";
 import { focusNextField } from "./focus";
+import NextYear from "./NextYear";
 import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
 
@@ -46,7 +47,7 @@ const NEW_RELATIVE: Relative = { ...EMPTY_PERSON, kinship: KIN_DEFAULT };
 type Brief = {
   id: number; page: string | null; no_male: number | null; no_female: number | null;
   event_day: number | null; event_month: number | null; event_year: number | null;
-  rite_month: number | null; deceased: string | null; clergy_noname: boolean;
+  rite_month: number | null; rite_year: number | null; deceased: string | null; clergy_noname: boolean;
 };
 
 type MentionOut = {
@@ -57,7 +58,8 @@ type MentionOut = {
 type EntryFull = {
   id: number; page: string | null; no_male: number | null; no_female: number | null;
   event_day: number | null; event_month: number | null; event_year: number | null;
-  rite_day: number | null; rite_month: number | null; note: string | null; persons: MentionOut[];
+  rite_day: number | null; rite_month: number | null; rite_year: number | null;
+  note: string | null; persons: MentionOut[];
 };
 
 /** Пол родственника по родству: «отец» — М, «мать» — Ж, иначе по имени. */
@@ -76,6 +78,18 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
   const [deathMonth, setDeathMonth] = useState<number | null>(null);
   const [burialDay, setBurialDay] = useState<number | null>(null);
   const [burialMonth, setBurialMonth] = useState<number | null>(null);
+  // Погребение в следующем году — отмечает человек (NextYear.tsx).
+  const [burialNextYear, setBurialNextYear] = useState(false);
+  /** Месяц смерти подставляется в месяц погребения — в одну сторону
+   *  (Роман 28.09.2026: «в большинстве записей месяцы совпадают»). */
+  function changeDeathMonth(v: number | null) {
+    setDeathMonth(v);
+    // Исправленный руками месяц погребения не затирается (ревьюер #38).
+    setBurialMonth((r) => (r === null || r === deathMonth ? v : r));
+  }
+  useEffect(() => {
+    if (!riteBeforeEvent(deathMonth, burialMonth)) setBurialNextYear(false);
+  }, [deathMonth, burialMonth]);
 
   const [dead, setDead] = useState<Deceased>(NEW_DECEASED);
   const [rel, setRel] = useState<Relative>(NEW_RELATIVE);
@@ -114,7 +128,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
   /** Продолжить с места: страница, год, счёт, месяцы. Причт — общий. */
   function resume(last: Brief) {
     setPage((v) => v ?? last.page);
-    if (last.event_year !== null) setYear(last.event_year);
+    if ((last.rite_year ?? last.event_year) !== null) setYear(last.rite_year ?? last.event_year);
     setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
     setDeathMonth((v) => v ?? last.event_month);
     setBurialMonth((v) => v ?? last.rite_month);
@@ -129,6 +143,50 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
   function pickInto<T extends Person>(set: (fn: (p: T) => T) => void) {
     return (hint: PersonHint) =>
       set((p) => ({ ...p, place: hint.place ?? p.place, rank: hint.rank ?? p.rank }));
+  }
+
+  /**
+   * Выбрали умершего из подсказки: если это ребёнок из записи о рождении
+   * этого дела, родственник — его отец из той записи (Роман 28.09.2026).
+   *
+   * Осторожно, чтобы не записать чужого отца (проверяющий и ревьюер #38):
+   * - только в пустого родственника (ИОФ, НП, звание пусты, родство «отец»
+   *   или пусто) или в того, кого подставили сами прошлым выбором;
+   * - если в деле несколько рождений с таким именем — не угадываем,
+   *   говорим выбрать самому;
+   * - ответ, пришедший после смены записи или другого выбора, отбрасывается.
+   */
+  const pickSeq = useRef(0);
+  const autoRel = useRef<string | null>(null);
+  function pickDeceased(hint: PersonHint) {
+    pickInto(setDead)(hint);
+    const mine = ++pickSeq.current;
+    invoke<{ iof: string; place: string | null; rank: string | null; births: number } | null>(
+      "birth_father", { caseId: mkCase.id, iof: hint.iof })
+      .then((f) => {
+        if (mine !== pickSeq.current) return;
+        const wasAuto = autoRel.current;
+        const replaceable = (r: Relative) =>
+          (r.iof.trim() === "" && !r.place.trim() && !r.rank.trim()
+            && (!r.kinship.trim() || r.kinship.trim() === KIN_DEFAULT))
+          || (wasAuto !== null && r.iof === wasAuto);
+        if (!f || f.births > 1) {
+          // Отца не знаем — подставленного прошлым выбором убираем.
+          if (wasAuto !== null)
+            setRel((r) => (r.iof === wasAuto ? { ...NEW_RELATIVE } : r));
+          autoRel.current = null;
+          if (f && f.births > 1)
+            warn(`В деле ${f.births} записи о рождении «${hint.iof}»`,
+                 "отец не подставлен — выберите его сами, чтобы не записать чужого");
+          return;
+        }
+        setRel((r) => (replaceable(r) ? {
+          ...NEW_RELATIVE, kinship: KIN_DEFAULT, iof: f.iof, parsed: null,
+          place: f.place ?? "", rank: f.rank ?? "",
+        } : r));
+        autoRel.current = f.iof;
+      })
+      .catch((e) => report("Не удалось найти отца по записи о рождении", e));
   }
 
   async function withParsed<T extends Person>(p: T): Promise<T> {
@@ -212,8 +270,10 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
         entry: {
           id: editingId, case_id: mkCase.id, section: 3, page,
           no_male: columns.no_male, no_female: columns.no_female,
-          event_day: deathDay, event_month: deathMonth, event_year: year,
-          rite_day: burialDay, rite_month: burialMonth, rite_year: year,
+          event_day: deathDay, event_month: deathMonth,
+          event_year: eventYearOf(year, deathMonth, burialMonth, burialNextYear),
+          rite_day: burialDay, rite_month: burialMonth,
+          rite_year: year,
           note: null, uncertain: null, persons,
         },
       });
@@ -246,6 +306,8 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
+      pickSeq.current++;
+      autoRel.current = null;
       if (editingId === null)
         beforeEdit.current = { page, count, year, deathMonth, burialMonth };
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
@@ -259,7 +321,9 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       setCount(e.no_male ?? e.no_female ?? null);
       setDeathDay(e.event_day); setDeathMonth(e.event_month);
       setBurialDay(e.rite_day); setBurialMonth(e.rite_month);
-      if (e.event_year !== null) setYear(e.event_year);
+      setBurialNextYear(e.rite_year !== null && e.event_year !== null && e.event_year < e.rite_year);
+      // Год формы — год книги, то есть год погребения.
+      if ((e.rite_year ?? e.event_year) !== null) setYear(e.rite_year ?? e.event_year);
       setDead({ ...person(dm, NEW_DECEASED), cause: dm?.death_cause ?? "", age: dm?.age_text ?? "" });
       setSexManual((dm?.gender as Sex | null | undefined) ?? null);
       setAskSex(false);
@@ -288,6 +352,9 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
 
   /** Следующая запись: страница, год, счёт, месяцы и причт остаются. */
   function next() {
+    pickSeq.current++;
+    autoRel.current = null;
+    setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setRel({ ...NEW_RELATIVE });
     setSexManual(null);
@@ -370,16 +437,18 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
         </div>
         <div className="row wrap">
           <NumberField label="Смерть, день" value={deathDay} onChange={setDeathDay} min={1} max={31} />
-          <NumberField label="месяц" value={deathMonth} onChange={setDeathMonth} min={1} max={12} />
+          <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12} />
           <NumberField label="Погреб., день" value={burialDay} onChange={setBurialDay} min={1} max={31} />
           <NumberField label="месяц" value={burialMonth} onChange={setBurialMonth} min={1} max={12} />
         </div>
+        <NextYear eventMonth={deathMonth} riteMonth={burialMonth} year={year} rite="погребение"
+                  checked={burialNextYear} onChange={setBurialNextYear} />
       </section>
 
       <div className="cols">
         <PersonBlock title="Умерший" person={dead} onChange={(p) => setDead((s) => ({ ...s, ...p }))}
                      gender={parsedSex ?? sexManual ?? undefined}
-                     onPickPerson={pickInto(setDead)} {...common} extra={deadExtra} />
+                     onPickPerson={pickDeceased} preferInfant {...common} extra={deadExtra} />
         <PersonBlock title="Родственник" person={rel}
                      onChange={(p) => setRel((s) => ({ ...s, ...p }))}
                      gender={kinGender(rel.kinship)} onPickPerson={pickInto(setRel)} {...common}

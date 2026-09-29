@@ -84,6 +84,8 @@ type Props = {
   extra?: React.ReactNode;
   /** Без поля НП — родственник в браке (в Excel у него НП нет). */
   noPlace?: boolean;
+  /** Умерший: младенцы первыми в подсказке ИОФ (Роман 28.09.2026). */
+  preferInfant?: boolean;
   /** Подпись поля вероисповедания; в строке с «Брак» и «Лет» — короткая. */
   confessionLabel?: string;
 };
@@ -164,7 +166,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
-  confessionLabel,
+  confessionLabel, preferInfant,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
@@ -288,6 +290,7 @@ export default function PersonBlock({
         onPickPerson={onPickPerson}
         inputRef={inputRef}
         gender={sex}
+        preferInfant={preferInfant}
       />
   );
 

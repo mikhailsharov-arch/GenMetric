@@ -52,8 +52,11 @@ const WITNESS_MAX = 6;
 const WITNESS_ORDER = [60, 70, 80, 90, 92, 94] as const;
 // Сторона поручителя — в «Прим.», как в Excel, но на форме — переключатель
 // у заголовка, а «Прим.» остаётся свёрнутым для своего текста.
-type Witness = Person & { side: string };
-const newWitness = (i: number): Witness => ({ ...EMPTY_PERSON, side: WITNESS_SIDE[i] });
+// uid — ключ блока в React: после «убрать» бывший шестой не должен
+// наследовать состояние блока пятого (открытое «Прим.», пометки сверки).
+type Witness = Person & { side: string; uid: number };
+let witnessUid = 0;
+const newWitness = (i: number): Witness => ({ ...EMPTY_PERSON, side: WITNESS_SIDE[i], uid: ++witnessUid });
 /** «по жениху; своё» → сторона и своё примечание. */
 function splitSide(note: string | null, fallback: string): { side: string; note: string } {
   const parts = (note ?? "").split(";").map((s) => s.trim()).filter(Boolean);
@@ -97,12 +100,12 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
   const [bride, setBride] = useState<Spouse>(NEW_SPOUSE);
   const [groomRel, setGroomRel] = useState<Relative>(NEW_RELATIVE);
   const [brideRel, setBrideRel] = useState<Relative>(NEW_RELATIVE);
-  const [w1, setW1] = useState<Witness>(newWitness(0));
-  const [w2, setW2] = useState<Witness>(newWitness(1));
-  const [w3, setW3] = useState<Witness>(newWitness(2));
-  const [w4, setW4] = useState<Witness>(newWitness(3));
-  const [w5, setW5] = useState<Witness>(newWitness(4));
-  const [w6, setW6] = useState<Witness>(newWitness(5));
+  const [w1, setW1] = useState<Witness>(() => newWitness(0));
+  const [w2, setW2] = useState<Witness>(() => newWitness(1));
+  const [w3, setW3] = useState<Witness>(() => newWitness(2));
+  const [w4, setW4] = useState<Witness>(() => newWitness(3));
+  const [w5, setW5] = useState<Witness>(() => newWitness(4));
+  const [w6, setW6] = useState<Witness>(() => newWitness(5));
   const [witnessCount, setWitnessCount] = useState(4);
   // Причт общий для всех разделов (27.09.2026) — clergy.tsx.
   const clergyState = useFormClergy();
@@ -305,7 +308,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
         const m = by(`witness${i + 1}`);
         const p = person(m, EMPTY_PERSON);
         const { side, note } = splitSide(m?.note ?? null, m ? "" : WITNESS_SIDE[i]);
-        set({ ...p, note, side });
+        set({ ...p, note, side, uid: ++witnessUid });
       });
       setWitnessCount(by("witness6") ? 6 : by("witness5") ? 5 : 4);
       // У открытой записи свой причт; общий не трогается (clergy.tsx).
@@ -415,7 +418,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
 
       <div className="cols">
         {witnesses.slice(0, witnessCount).map((w, i) => (
-          <PersonBlock key={i} title={`Поручитель ${i + 1}`} person={w}
+          <PersonBlock key={w.uid} title={`Поручитель ${i + 1}`} person={w}
                        onChange={(p) => witnessSetters[i]((s) => ({ ...s, ...p }))}
                        onPickPerson={pickInto(witnessSetters[i])} {...common}
                        titleExtra={

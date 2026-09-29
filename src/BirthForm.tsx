@@ -6,8 +6,9 @@ import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
+import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
-import { splitCount, type Sex } from "./count";
+import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
 
@@ -58,6 +59,7 @@ type Brief = {
   event_month: number | null;
   event_year: number | null;
   rite_month: number | null;
+  rite_year: number | null;
   child: string | null;
   father: string | null;
   clergy_noname: boolean;
@@ -93,6 +95,21 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   const [birthMonth, setBirthMonth] = useState<number | null>(null);
   const [riteDay, setRiteDay] = useState<number | null>(null);
   const [riteMonth, setRiteMonth] = useState<number | null>(null);
+  // Крещение в следующем году — отмечает человек (NextYear.tsx).
+  const [riteNextYear, setRiteNextYear] = useState(false);
+  /** Месяц рождения подставляется в месяц крещения — в одну сторону
+   *  (Роман 28.09.2026: «в большинстве записей месяцы совпадают»). */
+  function changeBirthMonth(v: number | null) {
+    setBirthMonth(v);
+    // Только пока обряд пуст или совпадал с событием: исправленный руками
+    // месяц крещения правка месяца рождения не затирает (ревьюер #38).
+    setRiteMonth((r) => (r === null || r === birthMonth ? v : r));
+  }
+  // Месяцы больше не «декабрь → январь» — отметка «в предыдущем году»
+  // теряет смысл и снимается, чтобы не всплыть отмеченной позже.
+  useEffect(() => {
+    if (!riteBeforeEvent(birthMonth, riteMonth)) setRiteNextYear(false);
+  }, [birthMonth, riteMonth]);
 
   const [child, setChild] = useState("");
   const [childParsed, setChildParsed] = useState<Parsed | null>(null);
@@ -187,7 +204,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
     // первого рендера, и замкнутые page/count там всегда пусты — проверка
     // «форма пуста» через них была бы мёртвой (проверяющий 18.09.2026).
     setPage((v) => v ?? last.page);
-    if (last.event_year !== null) setYear(last.event_year);
+    if ((last.rite_year ?? last.event_year) !== null) setYear(last.rite_year ?? last.event_year);
     // Причт восстанавливает общий ClergyProvider (27.09.2026).
     setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
     setBirthMonth((v) => v ?? last.event_month);
@@ -441,7 +458,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
           no_female: columns.no_female,
           event_day: birthDay,
           event_month: birthMonth,
-          event_year: year,
+          event_year: eventYearOf(year, birthMonth, riteMonth, riteNextYear),
           rite_day: riteDay,
           rite_month: riteMonth,
           rite_year: year,
@@ -515,9 +532,12 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       setCount(e.no_male ?? e.no_female ?? null);
       setBirthDay(e.event_day);
       setBirthMonth(e.event_month);
-      if (e.event_year !== null) setYear(e.event_year);
+      // Год формы — год книги, то есть год крещения (у записи «в предыдущем
+      // году» год рождения на единицу меньше).
+      if ((e.rite_year ?? e.event_year) !== null) setYear(e.rite_year ?? e.event_year);
       setRiteDay(e.rite_day);
       setRiteMonth(e.rite_month);
+      setRiteNextYear(e.rite_year !== null && e.event_year !== null && e.event_year < e.rite_year);
       setEntryNote(e.note ?? "");
       setFatherState(person(by("father"), { ...NEW_FATHER }));
       setMother(person(by("mother"), { ...NEW_MOTHER }));
@@ -575,6 +595,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
    * Страница, месяц и причт остаются: они меняются реже, чем раз в запись.
    */
   function next() {
+    setRiteNextYear(false);
     copiedPlace.current = null;
     childDocFor.current = {};
     setChild("");
@@ -634,10 +655,12 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
             (27.09.2026: минус строка высоты); узко — переносятся. */}
         <div className="row wrap">
           <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} />
-          <NumberField label="месяц" value={birthMonth} onChange={setBirthMonth} min={1} max={12} />
+          <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12} />
           <NumberField label="Крещ., день" value={riteDay} onChange={setRiteDay} min={1} max={31} />
           <NumberField label="месяц" value={riteMonth} onChange={setRiteMonth} min={1} max={12} />
         </div>
+        <NextYear eventMonth={birthMonth} riteMonth={riteMonth} year={year} rite="крещение"
+                  checked={riteNextYear} onChange={setRiteNextYear} />
         <IofField
           label="Ребёнок"
           value={child}
@@ -801,16 +824,13 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
               {saved.map((e) => (
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
-                    {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.child || "без имени"}
+                    {/* Номер первым, как в браках и смертях (Роман 28.09.2026);
+                        с колонкой — единственное место, где видно, что счёт лёг
+                        по полу ребёнка (инцидент 13.09.2026). */}
+                    {e.no_male !== null ? `№ м. ${e.no_male}` : e.no_female !== null ? `№ ж. ${e.no_female}` : "без №"}
+                    {" · "}{e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.child || "без имени"}
                     {/* Отец в строке: правка отца иначе в списке не видна (Роман 23.09.2026). */}
                     {e.father && <span className="sub"> · отец {e.father}</span>}
-                  </td>
-                  {/* Номер с колонкой — единственное место, где видно, что счёт
-                      лёг по полу ребёнка (инцидент 13.09.2026). */}
-                  <td>
-                    {e.no_male !== null && `№ м. ${e.no_male}`}
-                    {e.no_female !== null && `№ ж. ${e.no_female}`}
-                    {e.no_male === null && e.no_female === null && "без №"}
                   </td>
                   <td>стр. {e.page ?? "—"}</td>
                   <td>

@@ -84,7 +84,7 @@ def main() -> int:
     print(f"\n0. Запросы из statements.sql: {len(sql)} блоков")
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
-                     "person_remember", "person_suggest", "spouse_remember", "spouse_lookup",
+                     "person_remember", "person_suggest", "person_suggest_infant", "birth_father", "spouse_remember", "spouse_lookup",
                      "clergy_remember", "clergy_list", "last_clergy", "entry_get", "mentions_of_entry"):
         check(f"блок {required} на месте", required in sql)
 
@@ -326,6 +326,42 @@ def main() -> int:
               str(rows[0][11:]))
         check("список рождений браки не видит",
               all(r[0] != mid for r in db.execute(sql["entry_list"], {"case_id": 1, "section": 1})))
+
+        print("\n9в0. Умерший младенец (Роман 28.09.2026)")
+        for iof, uses in (("Татьяна Никитична", 1), ("Татьяна Иванова", 9)):
+            db.execute(sql["person_remember"], {"iof": iof, "iof_norm": norm(iof), "place": None,
+                                                "rank": None, "gender": "Ж"})
+            db.execute("UPDATE person_index SET uses = ? WHERE iof = ?", (uses, iof))
+        q = {"prefix": norm("Татьяна") + "%", "limit": 6, "gender": None}
+        plain = [r[0] for r in db.execute(sql["person_suggest"], q)]
+        infant = [r[0] for r in db.execute(sql["person_suggest_infant"], q)]
+        check("обычная подсказка — по частоте (взрослая первой)", plain[0] == "Татьяна Иванова", str(plain))
+        check("подсказка умершего — первым ребёнок из записи о рождении",
+              infant[0] == "Татьяна Никитична", str(infant))
+        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 1}).fetchone()
+        place_name = one("SELECT name FROM place WHERE id = ?", place_id)[0]
+        check("отец ребёнка из записи о рождении — ИОФ, НП, звание, одна запись",
+              f == ("Никита Алексеев", place_name, "крестьянин", 1), str(f))
+        check("чужого ИОФ в рождениях нет — отца нет",
+              db.execute(sql["birth_father"], {"iof": "Татьяна Иванова", "case_id": 1}).fetchone() is None)
+        check("другое дело — отца не ищем",
+              db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 99}).fetchone() is None)
+        plan = " ".join(r[3] for r in db.execute("EXPLAIN QUERY PLAN " + sql["person_suggest_infant"], q))
+        check("подсказка умершего без коррелированного подзапроса (скорость)",
+              "CORRELATED" not in plan, plan)
+        # Вторая «Татьяна Никитична» в деле — отец не угадывается.
+        db.execute(sql["entry_insert"], dict(
+            case_id=1, section=1, page="2", no_male=None, no_female=2,
+            event_day=1, event_month=2, event_year=1893, rite_day=2, rite_month=2, rite_year=1893,
+            note=None, uncertain=None, created_by="тест"))
+        e2 = one("SELECT max(id) FROM entry")[0]
+        for p in [dict(role_code="child", sort_order=10, first_name="Татьяна", patronymic="Никитична", gender="Ж"),
+                  dict(role_code="father", sort_order=20, first_name="Никита", patronymic="Петров", gender="М")]:
+            db.execute(sql["mention_insert"], {**blank, **p, "entry_id": e2})
+        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 1}).fetchone()
+        check("два рождения с таким именем — видно, что их два", f is not None and f[3] == 2, str(f))
+        db.execute("DELETE FROM person_mention WHERE entry_id = ?", (e2,))
+        db.execute("DELETE FROM entry WHERE id = ?", (e2,))
 
         print("\n9в. Запись о смерти (27.09.2026)")
         # Состав — лист «3» Excel Романа: умерший (НП, звание, ИОФ, причина,

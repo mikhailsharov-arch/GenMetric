@@ -32,3 +32,21 @@ export function splitCount(count: number | null, sex: Sex | null): CountColumns 
   return null;
 }
 
+/** Обряд через Новый год (28.09.2026) — см. NextYear.tsx. */
+/** Показывать ли вопрос: месяц обряда раньше месяца события. */
+export function riteBeforeEvent(eventMonth: number | null, riteMonth: number | null): boolean {
+  return eventMonth !== null && riteMonth !== null && riteMonth < eventMonth;
+}
+
+/**
+ * Год события (рождения, смерти). «Год» на форме — год книги: у Романа он
+ * один на запись (скриншот «МК Ввод» 28.09.2026), а в книгу года Y запись
+ * попадает по обряду. Поэтому при «декабрь → январь» в предыдущем году —
+ * событие, а обряд остаётся в году книги (ревьюер #38). Только если человек
+ * отметил: угадывать нельзя.
+ */
+export function eventYearOf(year: number | null, eventMonth: number | null, riteMonth: number | null,
+                            prev: boolean): number | null {
+  if (year === null) return null;
+  return prev && riteBeforeEvent(eventMonth, riteMonth) ? year - 1 : year;
+}

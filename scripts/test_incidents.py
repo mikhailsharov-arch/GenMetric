@@ -556,6 +556,22 @@ def incident_20260927_molchalivoe_sohranenie():
           'document.querySelector(".modal")) return []' in focus)
 
 
+def incident_20260928_spisok_vslepuyu():
+    """Роман 28.09.2026: «в выпадающем списке ИОФ при использовании стрелок
+    фокус перемещается на нижние строки, но сам список не прокручивается …
+    пользователь выбирает элементы вслепую». У НП и званий (Suggest) и в окне
+    сверки прокрутка была, у ИОФ — нет.
+
+    Защита: активная строка списка ИОФ прокручивается в видимую область —
+    и у персон, и у слов.
+    """
+    iof = strip_comments(read("src/IofField.tsx"))
+    check("строки списка ИОФ прокручиваются за стрелками",
+          iof.count('scrollIntoView({ block: "nearest" })') >= 2)
+    for f in ("src/Suggest.tsx", "src/NameResolve.tsx"):
+        check(f"{f}: прокрутка к активной строке на месте", "scrollIntoView" in read(f))
+
+
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
 # с починкой — до этого момента инцидент живёт здесь и печатается при каждом
 # прогоне, чтобы о нём нельзя было забыть. Пустой список — хорошая новость.
@@ -566,6 +582,7 @@ def incident_20260927_molchalivoe_sohranenie():
 ]
 
 ИНЦИДЕНТЫ = [
+    incident_20260928_spisok_vslepuyu,
     incident_20260927_molchalivoe_sohranenie,
     incident_20260927_otchyot_27_09,
     incident_20260925_lishnij_parametr,
