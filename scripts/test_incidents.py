@@ -449,10 +449,12 @@ def incident_20260925_lishnij_parametr():
     лишние ключи словаря прощает — «тест, который не ходит через Rust».
 
     Защита — механическая, на весь класс: у каждого вызова
-    statement("X") … named_params! { … } в main.rs набор параметров обязан
-    входить в набор параметров блока X в statements.sql.
+    statement("X") … named_params! { … } в коде на Rust набор параметров
+    обязан входить в набор параметров блока X в statements.sql. С 30.09.2026 —
+    во всех файлах src-tauri/src (выгрузка живёт в export.rs).
     """
-    rust = read("src-tauri/src/main.rs")
+    rust = "\n".join(read(f"src-tauri/src/{f.name}")
+                     for f in sorted((REPO / "src-tauri" / "src").glob("*.rs")))
     text = read("db/statements.sql")
     blocks, name, buf = {}, None, []
     for line in text.splitlines():
@@ -581,7 +583,46 @@ def incident_20260928_spisok_vslepuyu():
     # см. spec/2026-09-13-sem-pravok.md, п. 6.
 ]
 
+def incident_20260930_python_314():
+    """Mike 29.09.2026: db/test_parse.py упал на Mac с Python 3.14 —
+    именованный параметр (:name_norm) получал значения списком. В 3.12 это
+    было только предупреждением, и конвейер на 3.12 оставался зелёным.
+
+    Защита: быстрая проверка в конвейере идёт на 3.14; в тестах базы
+    запросы с именованными параметрами получают словарь.
+    """
+    wf = read(".github/workflows/build.yml")
+    check_job = wf[wf.index("  check:"):wf.index("  build:")]
+    check("быстрая проверка в конвейере — на Python 3.14",
+          'python-version: "3.14"' in check_job)
+    tp = read("db/test_parse.py")
+    check("test_parse передаёт именованные параметры словарём",
+          "db.execute(q, a).fetchone()" not in tp and "isinstance(a[0], dict)" in tp)
+
+
+def incident_20260930_umershij_bez_imeni():
+    """Роман 30.09.2026: запись о смерти неизвестного («тело неизвестного
+    человека мужеского пола») нельзя было сохранить — сверка ИОФ требовала
+    имя. И стенд #39 поймал первую версию флажка: локальная переменная
+    unknown в save() закрывала флажок, и форма снова говорила «Запись пустая».
+
+    Защита: флажок «личность не установлена» (nameless) пропускает пустой
+    ИОФ; имени, совпадающего с локальными переменными save(), у него нет;
+    выгрузка не теряет умершего без имени.
+    """
+    form = strip_comments(read("src/DeathForm.tsx"))
+    check("флажок «личность не установлена» есть", "личность не установлена" in form
+          and "const [nameless, setNameless]" in form)
+    check("пустой ИОФ сохраняется при флажке", "if (!d.iof.trim() && !nameless)" in form)
+    check("при «Открыть» флажок восстанавливается по пустому ИОФ", "setNameless(!!dm && !iof(dm))" in form)
+    sql = read("db/statements.sql")
+    check("лист «МК» не отбрасывает умершего без имени",
+          "(x.iof_b <> '' OR x.role_code = 'deceased')" in sql)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20260930_umershij_bez_imeni,
+    incident_20260930_python_314,
     incident_20260928_spisok_vslepuyu,
     incident_20260927_molchalivoe_sohranenie,
     incident_20260927_otchyot_27_09,

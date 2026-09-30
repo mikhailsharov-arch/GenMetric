@@ -303,7 +303,7 @@ export default function App() {
       {(screen === "case" || screen === "about") && (
         <footer>
           Записи сохраняются в базу на вашем компьютере. Выгрузка в Familio
-          и Excel появится на следующем этапе.
+          и Excel — на экране «Дело», файлы ложатся в «Документы/GenMetric».
         </footer>
       )}
     </div>

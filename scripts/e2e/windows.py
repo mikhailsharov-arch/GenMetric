@@ -23,7 +23,10 @@ Microsoft) и проходим путь Романа руками робота.
   4. подсказка отца видит персону из архива;
   5. запись девочки сохраняется, и в списке «Набрано» у неё «№ ж.»;
   6. после перезапуска приложения форма продолжает с места: счёт на месте;
-  7. сохранённая запись открывается в форму, правится и сохраняется без дублей.
+  7. сохранённая запись открывается в форму, правится и сохраняется без дублей;
+  …
+  13. умерший без имени («личность не установлена») сохраняется;
+  14. выгрузка в Familio и в Excel пишет файлы, в них набранные записи.
 
 Запуск (в конвейере, см. .github/workflows/build.yml):
     python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite путь\\к\\msedgedriver.exe
@@ -562,6 +565,111 @@ def resumed(driver, wait):
     check("девочка — «№ ж. 3», умершая в строке", "№ ж. 3" in block and "Анна Иванова" in block)
     check("причт общий и здесь", "Александр Рождественский" in block)
     edit_and_save(driver, wait, d, ".death", 4, "№ ж. 4")
+
+    print("\n13. Умерший без имени (Роман 30.09.2026)")
+    # «Тело неизвестного человека мужеского пола» — флажок вместо ИОФ,
+    # пол кнопкой, звание и причина как обычно.
+    click(driver, dead + "label[contains(@class,'unknownbox')]/input")
+    check("поле ИОФ умершего убрано", not driver.find_elements(
+        By.XPATH, dead + "div[contains(@class,'field')][./label[normalize-space()='ИОФ']]"))
+    fill(driver, "Счёт", "5", d)
+    fill(driver, "Звание", "тело неизвестного человека мужеского пола", dead)
+    fill(driver, "Причина", "утонул в Волге", dead)
+    click(driver, dead + "button[normalize-space()='мужской']")
+    click(driver, d + "button[starts-with(normalize-space(),'Сохранить и следующая')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".death"), "Набрано смертей: 2"))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, ".death").text
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    check("запись без имени сохранена", "Набрано смертей: 2" in block, " | ".join(errorbar))
+    check("в списке «№ м. 5 … личность не установлена»",
+          "№ м. 5" in block and "личность не установлена" in block)
+    check("после сохранения флажок снят, ИОФ снова на месте", bool(driver.find_elements(
+        By.XPATH, dead + "div[contains(@class,'field')][./label[normalize-space()='ИОФ']]")))
+
+    print("\n14. Выгрузка в Familio и в Excel (Роман 30.09.2026)")
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    click(driver, "//button[normalize-space()='Выгрузить в Familio…']")
+    modal = "//div[@data-modal='familio']"
+    wait.until(EC.visibility_of_element_located((By.XPATH, modal)))
+    years = driver.find_element(By.XPATH, modal).text
+    check("в окне годы 1886 и 1897", "1886" in years and "1897" in years, years.replace("\n", " | ")[:200])
+    click(driver, modal + "//button[normalize-space()='Выгрузить']")
+    path = exported_path(driver, wait, "Familio")
+    if path:
+        birth = xlsx_rows(path, "РОЖДЕНИЕ")
+        data = {r: v for r, v in birth.items() if r >= 4}
+        check("РОЖДЕНИЕ: шапка образца на месте", "№ п/п" in birth.get(2, {}).values())
+        check("РОЖДЕНИЕ: девочка Мария", any("Мария" in v.values() for v in data.values()),
+              str(list(data.values()))[:300])
+        marriage = [v for r, v in xlsx_rows(path, "БРАК").items() if r >= 4]
+        check("БРАК: жених Михаил", any("Михаил" in v.values() for v in marriage), str(marriage)[:300])
+        death = [v for r, v in xlsx_rows(path, "СМЕРТЬ").items() if r >= 4]
+        check("СМЕРТЬ: две записи, одна без имени",
+              len(death) == 2 and any("утонул в Волге" in v.values() for v in death), str(death)[:300])
+        about = xlsx_rows(path, "about")
+        title = about.get(4, {}).get("B", "")
+        check("about: название справочника по селу", "Борисоглебское" in title, f"«{title}»")
+    click(driver, "//button[normalize-space()='Выгрузить в Excel']")
+    path = exported_path(driver, wait, "Excel")
+    if path:
+        for sheet, what in (("Рождения", "Мария"), ("Браки", "Михаил Дмитриев"), ("Смерти", "утонул в Волге")):
+            rows = xlsx_rows(path, sheet)
+            check(f"Excel, лист «{sheet}»: есть «{what}»",
+                  any(what in " ".join(v.values()) for v in rows.values()), str(list(rows.values()))[-300:])
+        mk = xlsx_rows(path, "МК")
+        check("Excel, лист «МК»: строки персон есть", len(mk) > 3, f"строк {len(mk)}")
+
+
+def exported_path(driver, wait, kind):
+    """Путь выгруженного файла — из строки «Выгружено в …» под кнопками."""
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".exportpanel"), f"Выгружено в {kind}"))
+    except TimeoutException:
+        pass
+    done = driver.find_elements(By.CSS_SELECTOR, ".exportdone")
+    errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+    path = done[0].get_attribute("data-export-path") if done else None
+    check(f"выгрузка в {kind} прошла", bool(path) and f"Выгружено в {kind}" in done[0].text,
+          " | ".join(errorbar))
+    if path:
+        check(f"файл {kind} лежит на диске", Path(path).is_file(), path)
+    return path if path and Path(path).is_file() else None
+
+
+def xlsx_rows(path, sheet):
+    """Лист выгруженного файла: номер строки → {буквы колонки: текст}.
+    Без openpyxl: xlsx — zip с XML, этого хватает для проверки."""
+    import re
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rel = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    z = zipfile.ZipFile(path)
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", ns):
+            shared.append("".join(t.text or "" for t in si.iter(f"{{{ns['m']}}}t")))
+    wb = ET.fromstring(z.read("xl/workbook.xml"))
+    rels = {r.get("Id"): r.get("Target") for r in ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))}
+    target = next(rels[s.get(rel)] for s in wb.find("m:sheets", ns) if s.get("name") == sheet)
+    target = target.lstrip("/")
+    target = target if target.startswith("xl/") else "xl/" + target
+    out = {}
+    for row in ET.fromstring(z.read(target)).iter(f"{{{ns['m']}}}row"):
+        cells = {}
+        for c in row.findall("m:c", ns):
+            col = re.match(r"[A-Z]+", c.get("r")).group(0)
+            if c.get("t") == "inlineStr":
+                cells[col] = "".join(t.text or "" for t in c.iter(f"{{{ns['m']}}}t"))
+            elif c.get("t") == "s":
+                cells[col] = shared[int(c.find("m:v", ns).text)]
+            elif c.find("m:v", ns) is not None:
+                cells[col] = c.find("m:v", ns).text or ""
+        out[int(row.get("r"))] = cells
+    return out
 
 
 def main() -> int:

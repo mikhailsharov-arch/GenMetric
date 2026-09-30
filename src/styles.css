@@ -579,3 +579,29 @@ h2 .linkish.side, h3 .linkish.side { margin-left: 0.6em; font-weight: normal; }
   border-radius: 0.375em; cursor: pointer;
 }
 .nextyear input { width: auto; margin: 0; }
+
+/* «Личность не установлена» в заголовке «Умерший» (Роман 30.09.2026). */
+.unknownbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.unknownbox input { width: auto; margin: 0; }
+
+/* Выгрузка в Familio и Excel (сборка #39) — на экране дела, под архивом. */
+.exportpanel {
+  margin-top: 0.8em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--line);
+}
+.exportbuttons { display: flex; gap: 0.6em; flex-wrap: wrap; }
+.exportbuttons button { width: auto; flex: 1 1 auto; }
+.exportdone .mono { word-break: break-all; }
+.exportyears { display: flex; align-items: center; gap: 0.3em 0.8em; flex-wrap: wrap; }
+.exportlabel { color: var(--muted); font-size: 0.85rem; }
+.yearbox { display: inline-flex; align-items: center; gap: 0.25em; }
+.yearbox input { width: auto; margin: 0; }
+.modal h3 { margin: 0.6em 0 0.3em; font-size: 0.9rem; }

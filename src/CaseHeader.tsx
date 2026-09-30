@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { focusNextField } from "./focus";
 import { report } from "./errors";
+import ExportPanel from "./ExportPanel";
 
 /**
  * Шапка дела: архив, фонд, опись, дело, приход, год, кто индексирует.
@@ -210,6 +211,8 @@ export default function CaseHeader({ onSaved }: { onSaved: (c: Case) => void }) 
           </p>
         )}
       </div>
+
+      {c.id > 0 && <ExportPanel mkCase={c} />}
     </section>
   );
 }

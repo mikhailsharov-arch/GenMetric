@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
+mod export;
+mod xlsx;
+
 /// Версия схемы, которую понимает эта сборка.
 const SCHEMA_VERSION: i64 = 7;
 
@@ -1885,7 +1888,11 @@ fn main() {
             place_save,
             place_get,
             place_update,
-            set_always_on_top
+            set_always_on_top,
+            export::export_years,
+            export::export_familio,
+            export::export_excel,
+            export::reveal_path
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить GenMetric");

@@ -37,9 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Проверки — на самом новом Python: он строже (30.09.2026 test_parse
+      # упал на 3.14 у разработчика, а конвейер на 3.12 был зелёным).
+      # Базу для установщика собирает 3.12 в job build ниже.
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Собрать базу справочников
         run: python db/build_seed.py src-tauri/resources/seed.sqlite
@@ -64,6 +67,9 @@ jobs:
 
       - name: Проверить перенос архива подсказок из Excel
         run: python db/test_archive.py
+
+      - name: Проверить выгрузку в Familio и Excel
+        run: python db/test_export.py
 
       - name: Проверить стили
         run: python scripts/check_styles.py

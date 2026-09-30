@@ -33,7 +33,15 @@ import type { Case } from "./CaseHeader";
  *
  * ВОЗРАСТ набирается как в книге: «5», «3 мес», «2 нед», «1,5 мес» —
  * см. age.ts. Счёт после сохранения не растёт: он раздельный по полу,
- * угадать следующий нельзя (как в рождениях).
+ * угадать следующий нельзя (как в рождениях). Возраст стоит над причиной —
+ * так идёт запись в книге (Роман 30.09.2026), в Excel было наоборот.
+ *
+ * ЛИЧНОСТЬ НЕ УСТАНОВЛЕНА (Роман 30.09.2026): «в метрических книгах регулярно
+ * встречаются записи о найденных телах без имени», а сверка ИОФ не давала
+ * сохранить запись. Флажок в заголовке «Умерший» убирает поле ИОФ; пол
+ * тогда выбирается кнопками, «тело неизвестного человека мужеского пола»
+ * пишется в звание. Отдельно не хранится: умерший без имени и есть такая
+ * запись — при «Открыть» флажок восстанавливается по пустому ИОФ.
  */
 
 const KIN_DEFAULT = "отец";
@@ -92,6 +100,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
   }, [deathMonth, burialMonth]);
 
   const [dead, setDead] = useState<Deceased>(NEW_DECEASED);
+  const [nameless, setNameless] = useState(false);
   const [rel, setRel] = useState<Relative>(NEW_RELATIVE);
   // Пол умершего руками — только когда по имени его не понять. От него
   // зависит колонка счёта, как у рождений.
@@ -228,8 +237,8 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
              : "выйдите из поля ИОФ — откроется окно сверки и предложит имя из справочника");
       return;
     }
-    if (!d.iof.trim()) {
-      warn("Запись пустая", "не заполнено имя умершего");
+    if (!d.iof.trim() && !nameless) {
+      warn("Запись пустая", "не заполнено имя умершего; если имени нет в книге — отметьте «личность не установлена»");
       return;
     }
     if (year === null) {
@@ -291,7 +300,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
 
   function formDirty(): boolean {
     return [dead, rel].some((p) => p.iof.trim() || p.place.trim() || p.rank.trim())
-      || dead.cause.trim().length > 0 || dead.age.trim().length > 0;
+      || dead.cause.trim().length > 0 || dead.age.trim().length > 0 || nameless;
   }
 
   async function openEntry(id: number) {
@@ -325,6 +334,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       // Год формы — год книги, то есть год погребения.
       if ((e.rite_year ?? e.event_year) !== null) setYear(e.rite_year ?? e.event_year);
       setDead({ ...person(dm, NEW_DECEASED), cause: dm?.death_cause ?? "", age: dm?.age_text ?? "" });
+      setNameless(!!dm && !iof(dm));
       setSexManual((dm?.gender as Sex | null | undefined) ?? null);
       setAskSex(false);
       setRel({ ...person(rm, NEW_RELATIVE), kinship: rm ? rm.kinship ?? "" : KIN_DEFAULT });
@@ -356,6 +366,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
     autoRel.current = null;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
+    setNameless(false);
     setRel({ ...NEW_RELATIVE });
     setSexManual(null);
     setAskSex(false);
@@ -372,13 +383,38 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
     }
   }
 
-  const parsedSex = dead.parsed?.gender as Sex | null | undefined;
+  const parsedSex = nameless ? undefined : dead.parsed?.gender as Sex | null | undefined;
+
+  /** Флажок «личность не установлена»: ИОФ и подставленный по нему отец уходят. */
+  function changeNameless(v: boolean) {
+    setNameless(v);
+    if (!v) return;
+    pickSeq.current++;
+    setDead((s) => ({ ...s, iof: "", parsed: null }));
+    const wasAuto = autoRel.current;
+    if (wasAuto !== null) setRel((r) => (r.iof === wasAuto ? { ...NEW_RELATIVE } : r));
+    autoRel.current = null;
+  }
+
+  const namelessBox = (
+    <label className="unknownbox" title="Имени в книге нет — запись сохранится без ИОФ">
+      <input type="checkbox" checked={nameless}
+             onChange={(e) => changeNameless(e.target.checked)}
+             onKeyDown={(e) => {
+               // Не data-field: иначе Enter заходил бы на флажок в каждой записи.
+               // Enter с флажка — в первое поле блока (НП или ИОФ).
+               if (e.key === "Enter") {
+                 e.preventDefault();
+                 e.currentTarget.closest("section")?.querySelector<HTMLInputElement>("input[data-field]")?.focus();
+               }
+             }} />
+      личность не установлена
+    </label>
+  );
   const ageParsed = parseAge(dead.age);
 
   const deadExtra = (
     <>
-      <Suggest label="Причина" kind="death_cause" value={dead.cause} browse
-               onChange={(cause) => setDead((s) => ({ ...s, cause }))} />
       <div className="field">
         <label title="Как в книге: 5, 3 мес, 2 нед, 1,5 мес, 5 дней">Возраст</label>
         <div className="fieldbody">
@@ -399,7 +435,9 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
           )}
         </div>
       </div>
-      {dead.iof.trim() && dead.parsed && !parsedSex && (
+      <Suggest label="Причина" kind="death_cause" value={dead.cause} browse
+               onChange={(cause) => setDead((s) => ({ ...s, cause }))} />
+      {(nameless || (dead.iof.trim() && dead.parsed && !parsedSex)) && (
         <div className="field sexline">
           <label>Пол</label>
           <div className={"fieldbody sexpick" + (askSex ? " ask" : "")}>
@@ -410,6 +448,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
             <span className="fieldhint">
               {askSex
                 ? "Не сохранено: выберите пол — от него зависит колонка счёта"
+                : nameless ? "от пола зависит колонка счёта"
                 : "имени нет в словаре — от пола зависит колонка счёта"}
             </span>
           </div>
@@ -448,7 +487,8 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       <div className="cols">
         <PersonBlock title="Умерший" person={dead} onChange={(p) => setDead((s) => ({ ...s, ...p }))}
                      gender={parsedSex ?? sexManual ?? undefined}
-                     onPickPerson={pickDeceased} preferInfant {...common} extra={deadExtra} />
+                     onPickPerson={pickDeceased} preferInfant {...common} extra={deadExtra}
+                     noIof={nameless} titleAfter={namelessBox} />
         <PersonBlock title="Родственник" person={rel}
                      onChange={(p) => setRel((s) => ({ ...s, ...p }))}
                      gender={kinGender(rel.kinship)} onPickPerson={pickInto(setRel)} {...common}
@@ -481,7 +521,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
                     {e.no_male !== null ? `№ м. ${e.no_male}` : e.no_female !== null ? `№ ж. ${e.no_female}` : "без №"}
-                    {" · "}{e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.deceased || "умерший не указан"}
+                    {" · "}{e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.deceased || "личность не установлена"}
                   </td>
                   <td>стр. {e.page ?? "—"}</td>
                   <td>

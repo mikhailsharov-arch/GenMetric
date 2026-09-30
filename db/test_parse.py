@@ -200,7 +200,10 @@ def main() -> int:
         build_seed.build(path)
         db = sqlite3.connect(path)
         db.execute("PRAGMA foreign_keys = ON")
-        one = lambda q, *a: db.execute(q, a).fetchone()
+        # Именованные параметры (:name_norm) — только словарём: Python 3.14
+        # запрещает передавать их списком (было предупреждение, стала ошибка;
+        # в конвейере 3.12, на Mac разработчика 3.14 — 30.09.2026).
+        one = lambda q, *a: db.execute(q, a[0] if len(a) == 1 and isinstance(a[0], dict) else a).fetchone()
 
         print("\n5. Схема 5: name_alias")
         check("версия схемы 7", one("SELECT max(version) FROM schema_version")[0] == 7)
@@ -287,13 +290,13 @@ def main() -> int:
               row[1] == "д. Новодеревенька, Заобнорская волость, Макарьевский уезд, Костромская губерния",
               row[1])
         check("origin = user", row[2] == "user")
-        check("place_find находит", one(sql["place_find"], card["name_norm"]) is not None)
+        check("place_find находит", one(sql["place_find"], dict(name_norm=card["name_norm"])) is not None)
         card2 = dict(name="Пустошь", name_norm=norm("Пустошь"), np_type=None, guberniya=None,
                      uyezd=None, volost=None, familio_url=None)
         db.execute(sql["place_save"], card2)
         row = one("SELECT short_location, full_location FROM place WHERE name_norm=?", card2["name_norm"])
         check("карточка без подробностей — без хвостов", row == ("Пустошь", "Пустошь"), str(row))
-        got = one(sql["place_get"], card["name_norm"])
+        got = one(sql["place_get"], dict(name_norm=card["name_norm"]))
         check("place_get отдаёт карточку", got is not None and got[1] == "Новодеревенька" and got[3] == "Костромская", str(got))
         db.execute(sql["place_update"], dict(id=got[0], name="Новодеревенька", name_norm=norm("Новодеревенька"),
                                              np_type="с.", guberniya="Ярославская",
@@ -308,9 +311,9 @@ def main() -> int:
         print("\n5б. Звания в старой орфографии (техдолг)")
         words = lambda v: " ".join(normalize_name(w) for w in v.split())
         check("«крестьянинъ» находит «крестьянин» в перечне",
-              one(sql["lookup_by_norm"], "rank_m", words("крестьянинъ")) == ("крестьянин",))
+              one(sql["lookup_by_norm"], dict(kind="rank_m", value_norm=words("крестьянинъ"))) == ("крестьянин",))
         check("«крестьянскій сынъ» находит «крестьянский сын»",
-              one(sql["lookup_by_norm"], "rank_m", words("крестьянскій сынъ")) == ("крестьянский сын",))
+              one(sql["lookup_by_norm"], dict(kind="rank_m", value_norm=words("крестьянскій сынъ"))) == ("крестьянский сын",))
         check("main.rs: подсказка званий по normalize_words, remember — канонично",
               "like_prefix(&normalize_words(&prefix))" in rust and '"lookup_by_norm"' in rust)
 
@@ -326,9 +329,9 @@ def main() -> int:
         db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
                    "VALUES ('place', 'global', '', 'Новая Деревенька', 'новая деревенька', 2)")
         check("название занято — другой пункт находится",
-              one(sql["place_name_taken"], norm("Бухарино"), got[0]) is not None)
+              one(sql["place_name_taken"], dict(name_norm=norm("Бухарино"), id=got[0])) is not None)
         check("своё же название не считается занятым",
-              one(sql["place_name_taken"], norm("Новодеревенька"), got[0]) is None)
+              one(sql["place_name_taken"], dict(name_norm=norm("Новодеревенька"), id=got[0])) is None)
         params = dict(id=got[0], name="Новая Деревенька", name_norm=norm("Новая Деревенька"),
                       np_type="д.", guberniya="Костромская", uyezd="Макарьевский", volost=None, familio_url=None)
         db.execute(sql["place_update"], params)
@@ -344,7 +347,7 @@ def main() -> int:
         row = one("SELECT name, name_norm, short_location FROM place WHERE id=?", got[0])
         check("переименован: название, ключ поиска, краткая сборка",
               row == ("Новая Деревенька", "новая деревенька", "д. Новая Деревенька"), str(row))
-        check("старое название не находится", one(sql["place_find"], norm("Новодеревенька")) is None)
+        check("старое название не находится", one(sql["place_find"], dict(name_norm=norm("Новодеревенька"))) is None)
         check("персона в памяти — одна строка с новым названием, частоты сложены (1+4)",
               db.execute("SELECT place, uses FROM person_index WHERE iof='Иван Петров'").fetchall()
               == [("Новая Деревенька", 5)])

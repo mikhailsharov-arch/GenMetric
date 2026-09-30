@@ -88,6 +88,8 @@ type Props = {
   preferInfant?: boolean;
   /** Подпись поля вероисповедания; в строке с «Брак» и «Лет» — короткая. */
   confessionLabel?: string;
+  /** Без поля ИОФ — умерший, чья личность не установлена (Роман 30.09.2026). */
+  noIof?: boolean;
 };
 
 /** Событие окна: пункт переименован в карточке; слушают обе формы. */
@@ -166,7 +168,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
-  confessionLabel, preferInfant,
+  confessionLabel, preferInfant, noIof,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
@@ -309,7 +311,7 @@ export default function PersonBlock({
         </div>
       )}
       {before}
-      {!compact && iofField}
+      {!compact && !noIof && iofField}
       {/* НП и звание — парой в одну строку, когда блок шире 28em (styles.css,
           @container person). У причта (compact) пара — ИОФ | Звание: раскрытый
           причт был высоким (проверяющий 27.09.2026). */}
