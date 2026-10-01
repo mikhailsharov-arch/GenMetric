@@ -612,6 +612,7 @@ def resumed(driver, wait):
         about = xlsx_rows(path, "about")
         title = about.get(4, {}).get("B", "")
         check("about: название справочника по селу", "Борисоглебское" in title, f"«{title}»")
+        validate_xlsx(path, "Familio", REPO / "db" / "export" / "familio_template.xlsx")
     click(driver, "//button[normalize-space()='Выгрузить в Excel']")
     path = exported_path(driver, wait, "Excel")
     if path:
@@ -620,7 +621,33 @@ def resumed(driver, wait):
             check(f"Excel, лист «{sheet}»: есть «{what}»",
                   any(what in " ".join(v.values()) for v in rows.values()), str(list(rows.values()))[-300:])
         mk = xlsx_rows(path, "МК")
-        check("Excel, лист «МК»: строки персон есть", len(mk) > 3, f"строк {len(mk)}")
+        check("Excel, лист «МК»: строки персон есть", len(mk) > 4, f"строк {len(mk)}")
+        validate_xlsx(path, "Excel")
+
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def validate_xlsx(path, kind, baseline=None):
+    """Файл выгрузки — валидатором Open XML (scripts/xlsx-validate).
+
+    Инцидент 01.10.2026: Excel у Романа открыл выгрузку в Familio с «Ошибка в
+    части содержимого… восстановить?» — из [Content_Types].xml пропали все
+    <Default>. Разбор XML (xlsx_rows выше) и openpyxl этого не видят, а
+    валидатор проверяет файл по схеме формата, как Excel. С образцом
+    (baseline) в счёт идут только ошибки, которых нет в самом образце.
+    """
+    cmd = ["dotnet", "run", "--project", str(REPO / "scripts" / "xlsx-validate"), "--", str(path)]
+    if baseline:
+        cmd.append(str(baseline))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    except Exception as e:  # noqa: BLE001 — нет dotnet = провал, не пропуск
+        check(f"файл {kind} проходит валидатор Open XML", False, f"валидатор не запустился: {e}")
+        return
+    tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-6:])
+    check(f"файл {kind} проходит валидатор Open XML (новых ошибок 0)",
+          r.returncode == 0, tail[:600])
 
 
 def exported_path(driver, wait, kind):

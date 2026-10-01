@@ -25,17 +25,17 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 46, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 53, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 56, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 77, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 55 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
-    python3 db/test_export.py                                   # → «Итог: успешно 106, ошибок 0» (выгрузка Familio и Excel)
+    python3 db/test_export.py                                   # → «Итог: успешно 112, ошибок 0» (выгрузка Familio и Excel)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 109, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 120, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -48,6 +48,12 @@ Rust проверяется без сборки приложения, из ко�
 файл выгрузки проверяет e2e на Windows). Выгрузку на настоящей базе:
 `GENMETRIC_KEEP_DB=/tmp/t.sqlite python3 db/test_export.py`, затем
 `GENMETRIC_EXPORT_DB=/tmp/t.sqlite GENMETRIC_EXPORT_OUT=/tmp cargo test --bin genmetric export_real -- --ignored`.
+
+**Файл xlsx проверяется валидатором Open XML, а не только тем, что он
+«открылся»:** `dotnet run --project scripts/xlsx-validate -- файл.xlsx [образец.xlsx]`
+(нужен .NET; на Windows-раннере есть, e2e запускает сам). 01.10.2026 Excel у
+Романа открыл выгрузку с «восстановлением», хотя openpyxl и Numbers открывали
+её чисто.
 
 Шаблоны выгрузки — `db/export/`: образец Familio (прислал Роман, Mike
 разрешил держать в репозитории) и шапка листов индексатора, собранная
@@ -240,6 +246,12 @@ Python: быстрая проверка в конвейере идёт на 3.14
 **Не ломать соответствие шаблону Familio** — выгрузка должна совпадать на 100%.
 
 ### Про самопроверку
+
+**«Открылось» не значит «цело».** Выгрузка #39 открывалась в openpyxl и
+Numbers, а Excel у Романа предложил её восстановить: из `[Content_Types].xml`
+пропали `<Default>`. Файл чужого формата проверяется валидатором формата
+(`scripts/xlsx-validate`) и, по возможности, той программой, которой его
+откроет человек.
 
 **Проверять, что «невозможно», а что просто не пробовали.** Три недели в проекте
 стояло «браузер не запускается»; на опровержение ушёл час. Ограничение, записанное

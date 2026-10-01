@@ -193,6 +193,11 @@ fn fill_sheet(xml: &str, fill: &SheetRows, numeric_cols: &[u32]) -> Result<(Stri
 
     // Стили колонок — из первой строки данных образца.
     let mut styles: BTreeMap<u32, String> = BTreeMap::new();
+    // Высота и стиль строки данных — ровно как у строки образца (Роман
+    // 01.10.2026: в выгрузке Excel «слетает … высота строк»). Ничего сверх
+    // образца: с customHeight, которого у Familio нет, длинный текст в его
+    // листах обрезался бы (проверяющий #40).
+    let mut row_attrs = String::new();
     let mut kept = String::new();
     for (s, e) in elements(inner, "row") {
         let row = &inner[s..e];
@@ -202,6 +207,11 @@ fn fill_sheet(xml: &str, fill: &SheetRows, numeric_cols: &[u32]) -> Result<(Stri
             continue;
         }
         if r == fill.first_row {
+            for name in ["s", "customFormat", "ht", "customHeight"] {
+                if let Some(v) = attr(open_tag(row), name) {
+                    let _ = write!(row_attrs, " {name}=\"{v}\"");
+                }
+            }
             for (cs, ce) in elements(row, "c") {
                 let tag = open_tag(&row[cs..ce]);
                 if let (Some(cref), Some(style)) = (attr(tag, "r"), attr(tag, "s")) {
@@ -217,7 +227,7 @@ fn fill_sheet(xml: &str, fill: &SheetRows, numeric_cols: &[u32]) -> Result<(Stri
     for (i, values) in fill.rows.iter().enumerate() {
         let r = fill.first_row + i as u32;
         last_row = r;
-        let _ = write!(rows_xml, "<row r=\"{r}\">");
+        let _ = write!(rows_xml, "<row r=\"{r}\"{row_attrs}>");
         for (j, v) in values.iter().enumerate() {
             let col = j as u32 + 1;
             let Some(v) = v.as_deref().filter(|v| !v.is_empty()) else { continue };
@@ -244,39 +254,57 @@ fn fill_sheet(xml: &str, fill: &SheetRows, numeric_cols: &[u32]) -> Result<(Stri
     let out = drop_children(&out, "mergeCells", "mergeCell", |tag| {
         attr(tag, "ref").map(|r| split_ref(r.split(':').next().unwrap_or("")).1 >= fill.first_row).unwrap_or(false)
     });
-    let out = stretch_ranges(&out, last_row.max(fill.first_row));
+    // Одно значение и листу (autoFilter, dimension), и имени _FilterDatabase в
+    // книге — на пустом листе они расходились на строку (ревьюер #40).
+    let last_row = last_row.max(fill.first_row);
+    let out = stretch_ranges(&out, last_row);
     let _ = max_col;
     Ok((out, last_row))
 }
 
 use std::fmt::Write as _;
 
-/// Убрать из обёртки (<hyperlinks>) дочерние элементы по условию; пустую
-/// обёртку — целиком: пустой <hyperlinks/> Excel считает повреждением.
+/// Убрать из обёртки (<hyperlinks>) дочерние элементы `child` по условию.
+/// Остальное содержимое обёртки не трогается: 01.10.2026 первая версия
+/// собирала обёртку заново из одних `child` и теряла в [Content_Types].xml
+/// все <Default> — Excel открывал файл с «восстановлением» (инцидент,
+/// Роман 01.10). Обёртка, в которой после этого не осталось ни одного
+/// элемента, убирается целиком: пустой <hyperlinks/> Excel считает
+/// повреждением.
 fn drop_children(xml: &str, wrapper: &str, child: &str, drop: impl Fn(&str) -> bool) -> String {
     let Some(&(ws, we)) = elements(xml, wrapper).first() else { return xml.to_string() };
     let block = &xml[ws..we];
-    let mut kept = Vec::new();
-    for (s, e) in elements(block, child) {
-        let el = &block[s..e];
-        if !drop(open_tag(el)) {
-            kept.push(el.to_string());
-        }
+    let tag = open_tag(block);
+    if tag.ends_with("/>") {
+        return xml.to_string();
     }
+    let close = format!("</{wrapper}>");
+    let body = &block[tag.len()..block.len() - close.len()];
+    let mut kept_body = String::with_capacity(body.len());
+    let mut from = 0;
+    let mut left = 0usize;
+    for (s, e) in elements(body, child) {
+        kept_body.push_str(&body[from..s]);
+        if drop(open_tag(&body[s..e])) {
+            // вырезаем
+        } else {
+            kept_body.push_str(&body[s..e]);
+            left += 1;
+        }
+        from = e;
+    }
+    kept_body.push_str(&body[from..]);
     let mut out = String::with_capacity(xml.len());
     out.push_str(&xml[..ws]);
-    if !kept.is_empty() {
-        let tag = open_tag(block);
-        // count="…" у mergeCells — пересчитать.
+    if !kept_body.trim().is_empty() {
+        // count="…" у mergeCells — число оставшихся.
         let tag = match attr(tag, "count") {
-            Some(old) => tag.replacen(&format!("count=\"{old}\""), &format!("count=\"{}\"", kept.len()), 1),
+            Some(old) => tag.replacen(&format!("count=\"{old}\""), &format!("count=\"{left}\""), 1),
             None => tag.to_string(),
         };
         out.push_str(&tag);
-        for k in &kept {
-            out.push_str(k);
-        }
-        let _ = write!(out, "</{wrapper}>");
+        out.push_str(&kept_body);
+        out.push_str(&close);
     }
     out.push_str(&xml[we..]);
     out
@@ -563,5 +591,17 @@ mod tests {
         let mut ct = String::new();
         z.by_name("[Content_Types].xml").unwrap().read_to_string(&mut ct).unwrap();
         assert!(!ct.contains("calcChain"));
+        // Инцидент 01.10.2026: вместе с записью о calcChain пропадали все <Default>.
+        for ext in ["rels", "xml", "bin", "vml"] {
+            assert!(ct.contains(&format!("<Default Extension=\"{ext}\"")), "нет Default для .{ext}");
+        }
+        let template_ct = {
+            let mut t = zip::ZipArchive::new(Cursor::new(FAMILIO)).unwrap();
+            let mut x = String::new();
+            t.by_name("[Content_Types].xml").unwrap().read_to_string(&mut x).unwrap();
+            x
+        };
+        assert_eq!(elements(&ct, "Default").len(), elements(&template_ct, "Default").len());
+        assert_eq!(elements(&ct, "Override").len() + 1, elements(&template_ct, "Override").len());
     }
 }

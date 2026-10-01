@@ -74,6 +74,27 @@ SELECT name, name_norm, np_type, guberniya, uyezd, volost,
                     WHERE s.familio_url IS NOT NULL AND p.familio_url = s.familio_url)
    AND NOT EXISTS (SELECT 1 FROM main.place_renamed r WHERE r.old_norm = s.name_norm);
 
+-- Подробности пункта поставки — тому же пункту, заведённому без них.
+-- Роман 01.10.2026: в выгрузке Familio пусты тип, губерния, уезд, волость,
+-- ссылка и полное место. Его пункты пришли архивом из Excel 13.09 одним
+-- названием, а вставка выше пропускает пункт, если название уже есть, —
+-- подробности поставки до его базы не доезжали. Дозаполняется только пункт,
+-- у которого нет ни одной подробности: заполненное или поправленное
+-- человеком в карточке не трогается. OR IGNORE — на случай двух строк с
+-- одним названием (UNIQUE по названию, типу, уезду, губернии).
+UPDATE OR IGNORE main.place
+   SET np_type = s.np_type, guberniya = s.guberniya, uyezd = s.uyezd, volost = s.volost,
+       short_location = s.short_location, full_location = s.full_location,
+       familio_url = s.familio_url
+  FROM seed.place s
+ WHERE s.name_norm = main.place.name_norm
+   AND trim(coalesce(main.place.np_type, '')) = '' AND trim(coalesce(main.place.guberniya, '')) = ''
+   AND trim(coalesce(main.place.uyezd, '')) = '' AND trim(coalesce(main.place.volost, '')) = ''
+   AND trim(coalesce(main.place.familio_url, '')) = ''
+   -- и краткое/полное место руками не набраны (проверяющий #40)
+   AND trim(coalesce(main.place.short_location, '')) = ''
+   AND trim(coalesce(main.place.full_location, '')) = '';
+
 -- Исправление прошлой поставки. Два звания были перенесены из Excel не в тот
 -- перечень: «крестьянский сын» попал к женским, «крестьянская вдова после
 -- 1-го брака» — к мужским. Из поставки они убраны, но у тех, кто уже поставил

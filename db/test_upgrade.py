@@ -131,6 +131,14 @@ def build_old_database(path: Path) -> None:
                "renamed_at TEXT NOT NULL DEFAULT (datetime('now')))")
     db.execute("INSERT INTO place (name, name_norm, np_type, origin) VALUES ('Логинцево-2', 'логинцево-2', 'д.', 'seed')")
     db.execute("INSERT INTO place_renamed (old_norm) VALUES ('логинцево')")
+    # Пункт из архива Excel — одно название, без подробностей (Роман 01.10.2026:
+    # в выгрузке Familio пусты тип, уезд, ссылка). Подробности есть в поставке.
+    db.execute("INSERT INTO place (name, name_norm, origin) VALUES ('Чертеж Малый', 'чертеж малый', 'archive')")
+    # То же, но человек набрал полное место руками и поставил пробел в уезд —
+    # первое не затирается, второе считается пустым.
+    db.execute("INSERT INTO place (name, name_norm, full_location, origin) "
+               "VALUES ('Поселихино', 'поселихино', 'мой текст', 'user')")
+    db.execute("INSERT INTO place (name, name_norm, uyezd, origin) VALUES ('Логинцево Малое', 'логинцево малое', ' ', 'archive')")
     # Память персон с дублями (техдолг В6, 27.09.2026): без места персона
     # задваивалась при каждом сохранении — NULL в UNIQUE не равен NULL.
     db.executemany(
@@ -341,6 +349,17 @@ def main() -> int:
               db.execute("SELECT count(*) FROM place WHERE name_norm='кнышево'").fetchone()[0] == 0)
         check("переименованный без ссылки пункт не вернулся (память переименований)",
               db.execute("SELECT count(*) FROM place WHERE name_norm='логинцево'").fetchone()[0] == 0)
+        row = db.execute("SELECT np_type, uyezd, full_location, familio_url, origin FROM place "
+                         "WHERE name_norm='чертеж малый'").fetchall()
+        check("пункт из архива без подробностей получил их из поставки",
+              len(row) == 1 and row[0][0] == "д." and row[0][1] == "Макарьевский"
+              and (row[0][2] or "").startswith("д. Чертеж Малый,") and (row[0][3] or "").startswith("https://familio.org/"),
+              str(row))
+        check("набранное руками полное место не затёрто поставкой",
+              db.execute("SELECT full_location, np_type FROM place WHERE name_norm='поселихино'").fetchone()
+              == ("мой текст", None))
+        check("у поправленного человеком пункта подробности из поставки не подставлены",
+              db.execute("SELECT familio_url FROM place WHERE name_norm='бухарино'").fetchone()[0] is None)
         check("и правка человека не откатилась",
               db.execute("SELECT uyezd FROM place WHERE name_norm='бухарино'").fetchone()[0] == "Кинешемский")
         check("соответствие «Пискарь» → «Кесарь» пережило обновление",

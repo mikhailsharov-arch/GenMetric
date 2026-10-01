@@ -58,7 +58,11 @@ VALUES (:entry_id, :role_code, :sort_order, :surname, :first_name, :patronymic,
         :age_months, :age_weeks, :age_days, :age_text, :death_cause);
 
 -- @place_find
-SELECT id FROM place WHERE name_norm = :name_norm LIMIT 1;
+-- Если строк с одним названием несколько («двойник» без подробностей рядом
+-- с пунктом поставки), запись ссылается на самую полную — иначе в выгрузке
+-- у персоны не было бы полного места (ревьюер #40, Роман 01.10.2026).
+SELECT id FROM place WHERE name_norm = :name_norm
+ ORDER BY (full_location IS NULL OR trim(full_location) = ''), (origin = 'archive'), id LIMIT 1;
 
 -- @place_insert
 -- Населённый пункт заводится по первому упоминанию — запасной путь, если
@@ -496,6 +500,20 @@ DROP TABLE IF EXISTS temp.x_clergy;
 DROP TABLE IF EXISTS temp.x_witness;
 DROP TABLE IF EXISTS temp.x_text;
 DROP TABLE IF EXISTS temp.x_row;
+DROP TABLE IF EXISTS temp.x_place;
+
+-- Пункт → самая полная строка с тем же названием. У Романа 01.10.2026 в
+-- выгрузке были пусты полные места: записи ссылались на строку пункта без
+-- подробностей, хотя рядом могла лежать полная («двойник»: набран руками
+-- или пришёл архивом, а пункт поставки встал рядом). Выгрузка берёт
+-- подробности у лучшей строки и показывает пункт на листе location один раз.
+CREATE TEMP TABLE x_place AS
+SELECT p.id,
+       (SELECT b.id FROM place b WHERE b.name_norm = p.name_norm
+         ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
+                  (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id LIMIT 1) AS best_id
+  FROM place p;
+CREATE INDEX ix_x_place ON x_place (id);
 
 -- Примечания по частям («Имя в документе: Пискарь; того же дому»). У ребёнка
 -- примечание — в записи (entry.note): туда его пишет форма рождений.
@@ -543,7 +561,9 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order, m.gender,
                AND x.part NOT LIKE 'Имя в документе:%' AND x.part NOT LIKE 'Отчество в документе:%'
                AND NOT (m.role_code LIKE 'witness%' AND x.idx = 1 AND x.part IN ('по жениху', 'по невесте'))
              ORDER BY x.idx)) AS note_clean,
-       p.name AS place, p.full_location AS place_full,
+       -- Полное место; у пункта без подробностей — хотя бы название (Роман
+       -- 01.10.2026: person_location заполнялся «лишь частично»).
+       p.name AS place, coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), ''), p.name) AS place_full,
        -- Причт — по званию, а не по номеру: у Романа во втором причте 733
        -- псаломщика, и по номеру они легли бы в колонки дьякона (разбор эталона).
        -- Сравнение без первой буквы — LIKE не знает регистра кириллицы.
@@ -552,7 +572,9 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order, m.gender,
               OR m.rank LIKE '%гумен%' OR m.rank LIKE '%еромонах%' OR m.rank LIKE '%рхимандрит%' THEN 1
             WHEN m.rank LIKE '%иакон%' OR m.rank LIKE '%ьякон%' THEN 2
             ELSE 3 END AS clergy_cat
-  FROM person_mention m LEFT JOIN place p ON p.id = m.place_id;
+  FROM person_mention m
+  LEFT JOIN x_place xp ON xp.id = m.place_id
+  LEFT JOIN place p ON p.id = xp.best_id;
 
 CREATE TEMP TABLE x_person AS
 SELECT q.*,
@@ -585,8 +607,12 @@ SELECT e.id, e.section, e.page, e.no_male, e.no_female,
        nullif(trim(c.opis), '') AS opis, nullif(trim(c.delo), '') AS delo,
        nullif(trim(c.church), '') AS church, nullif(trim(c.village), '') AS village,
        nullif(trim(c.uyezd), '') AS uyezd, nullif(trim(c.guberniya), '') AS guberniya,
-       (SELECT p.full_location FROM place p WHERE p.name = trim(c.village)
-         ORDER BY (p.origin = 'archive'), p.id LIMIT 1) AS village_full
+       -- Самая полная строка пункта с этим названием; нет карточки или
+       -- подробностей — название (Роман 01.10.2026: full_location был пуст).
+       coalesce((SELECT nullif(trim(b.full_location), '') FROM place p
+                   JOIN x_place xp ON xp.id = p.id JOIN place b ON b.id = xp.best_id
+                  WHERE p.name = trim(c.village) LIMIT 1),
+                nullif(trim(c.village), '')) AS village_full
   FROM entry e JOIN mk_case c ON c.id = e.case_id;
 
 -- Причт по колонкам: 1 — священник, 2 — дьякон, 3 — псаломщик (и дьячок,
@@ -636,17 +662,40 @@ UNION ALL
 SELECT x.entry_id, x.id, f.block FROM extra x JOIN free f ON f.entry_id = x.entry_id AND f.fn = x.xn;
 CREATE INDEX ix_x_witness ON x_witness (entry_id, block);
 
+-- Отчество ребёнка по имени отца (лист «МК» и авторский комментарий): поиск по name_dict.name шёл
+-- полным проходом словаря на каждого ребёнка — 5 с на 20 000 записей
+-- (проверяющий #39). Своя маленькая таблица с индексом.
+DROP TABLE IF EXISTS temp.x_patr;
+CREATE TEMP TABLE x_patr AS
+SELECT name, min(patr_m) AS patr_m, min(patr_f) AS patr_f
+  FROM name_dict WHERE coalesce(base_name, '') = '' GROUP BY name;
+CREATE INDEX ix_x_patr ON x_patr (name);
+
 -- Пометки и авторский комментарий записи.
--- Комментарий — «исходное (авторское) написание ИОФ всех персон, фигурирующих
--- в записи … через точку с запятой» (Роман 30.09.2026): все, включая причт,
--- как в книге, в порядке формы.
+-- Комментарий — как в индексаторе (Роман 01.10.2026: «Делаем как в
+-- индексаторе»): «Имена в МК: ИОФ; ИОФ…» — написание из книги тех персон, у
+-- кого оно отличается от нормализованного «Имя Отчество Фамилия»; причт не
+-- входит; отличий нет — пусто. У ребёнка нормализованное — с отчеством по
+-- имени отца и отцовской фамилией, поэтому он попадает почти всегда.
+-- Порядок его: в браке родственник жениха — сразу за женихом.
 -- Пометки — «ИОФ: примечание; …», как у индексатора, но без полей, у
 -- которых в образце своя колонка (каким браком, сторона, причина смерти).
 CREATE TEMP TABLE x_text AS
 SELECT e.id AS entry_id,
-       (SELECT group_concat(iof_doc, '; ') FROM (
-            SELECT p.iof_doc FROM x_person p WHERE p.entry_id = e.id AND p.iof_doc <> ''
-             ORDER BY p.sort_order, p.id)) AS author,
+       (SELECT 'Имена в МК: ' || group_concat(iof_doc, '; ') FROM (
+            SELECT p.iof_doc
+              FROM x_person p
+              LEFT JOIN x_person f ON p.role_code = 'child' AND f.entry_id = p.entry_id AND f.role_code = 'father'
+              LEFT JOIN x_patr d ON d.name = f.first_m
+             WHERE p.entry_id = e.id AND p.iof_doc <> '' AND p.role_code NOT LIKE 'clergy%'
+               AND p.iof_doc <> trim(coalesce(p.first_m || ' ', '')
+                     || coalesce(CASE WHEN p.role_code = 'child'
+                                      THEN CASE WHEN p.gender = 'Ж' THEN d.patr_f ELSE d.patr_m END
+                                      ELSE p.patr_m END || ' ', '')
+                     || coalesce(CASE WHEN p.role_code = 'child' THEN f.surname_base ELSE p.surname_b END, ''))
+             ORDER BY CASE p.role_code WHEN 'groom' THEN 1 WHEN 'groom_relative' THEN 2 WHEN 'bride' THEN 3
+                                       WHEN 'bride_relative' THEN 4 WHEN 'bride_parent' THEN 4
+                                       ELSE 10 + p.sort_order END, p.id)) AS author,
        (SELECT group_concat(lbl || ': ' || note_clean, '; ') FROM (
             SELECT coalesce(nullif(p.fio_book, ''), r.title) AS lbl, p.note_clean
               FROM x_person p LEFT JOIN role r ON r.code = p.role_code
@@ -655,14 +704,6 @@ SELECT e.id AS entry_id,
   FROM entry e;
 CREATE INDEX ix_x_text ON x_text (entry_id);
 
--- Отчество ребёнка по имени отца (лист «МК»): поиск по name_dict.name шёл
--- полным проходом словаря на каждого ребёнка — 5 с на 20 000 записей
--- (проверяющий #39). Своя маленькая таблица с индексом.
-DROP TABLE IF EXISTS temp.x_patr;
-CREATE TEMP TABLE x_patr AS
-SELECT name, min(patr_m) AS patr_m, min(patr_f) AS patr_f
-  FROM name_dict WHERE coalesce(base_name, '') = '' GROUP BY name;
-CREATE INDEX ix_x_patr ON x_patr (name);
 
 -- Строки листов «1», «2», «3» индексатора (выгрузка в Excel и лист «МК»):
 -- 55 колонок A…BC как у него, у браков ещё 8 — поручители 5 и 6, которых
@@ -932,10 +973,10 @@ WITH chosen AS (
      WHERE :years = '[]' OR book_year IN (SELECT value FROM json_each(:years))
 ),
 used AS (
-    SELECT DISTINCT p.id
-      FROM person_mention m JOIN chosen c ON c.id = m.entry_id JOIN place p ON p.id = m.place_id
+    SELECT DISTINCT xp.best_id AS id
+      FROM person_mention m JOIN chosen c ON c.id = m.entry_id JOIN x_place xp ON xp.id = m.place_id
     UNION
-    SELECT (SELECT p.id FROM place p WHERE p.name = e.village ORDER BY (p.origin = 'archive'), p.id LIMIT 1)
+    SELECT (SELECT xp.best_id FROM place p JOIN x_place xp ON xp.id = p.id WHERE p.name = e.village LIMIT 1)
       FROM x_entry e JOIN chosen c ON c.id = e.id
 )
 SELECT p.name, p.np_type,
@@ -950,7 +991,13 @@ SELECT p.name, p.np_type,
        CASE WHEN instr(p.familio_url, '/settlements/') > 0
             THEN nullif(trim(substr(p.familio_url, instr(p.familio_url, '/settlements/') + length('/settlements/')), '/ '), '') END
   FROM place p JOIN used u ON u.id = p.id
- ORDER BY p.name, p.id;
+UNION ALL
+-- Село дела без карточки пункта — одной строкой с названием: по нему образец
+-- ищет место, и без строки колонка «Н.П. события» осталась бы без пары.
+SELECT DISTINCT e.village, NULL, NULL, NULL, NULL, e.village, e.village, NULL, NULL
+  FROM x_entry e JOIN chosen c ON c.id = e.id
+ WHERE e.village IS NOT NULL AND NOT EXISTS (SELECT 1 FROM place p WHERE p.name = e.village)
+ ORDER BY 1, 7;
 
 -- @excel_births
 -- Лист «Рождения» (у индексатора «1»): 55 колонок A…BC, как у него.

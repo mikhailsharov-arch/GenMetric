@@ -620,7 +620,62 @@ def incident_20260930_umershij_bez_imeni():
           "(x.iof_b <> '' OR x.role_code = 'deceased')" in sql)
 
 
+def incident_20261001_excel_vosstanovlenie():
+    """Роман 01.10.2026: выгрузка в Familio открывалась в Excel с «Ошибка в
+    части содержимого… Выполнить попытку восстановления?». Причина:
+    drop_children() в xlsx.rs, убирая запись о calcChain из
+    [Content_Types].xml, собирала обёртку заново из одних <Override> и теряла
+    все <Default> (типы .rels, .xml, .bin, .vml). openpyxl, Numbers и разбор
+    XML в e2e это прощали — «проверено» было не тем, чем откроет человек.
+
+    Защита: drop_children вырезает только нужные элементы; тест xlsx.rs
+    сверяет число <Default> с образцом; e2e на Windows гоняет оба файла
+    выгрузки через валидатор Open XML (scripts/xlsx-validate).
+    """
+    rs = read("src-tauri/src/xlsx.rs")
+    check("drop_children не собирает обёртку заново", "kept_body.push_str(&body[from..s])" in rs)
+    check("тест xlsx.rs сверяет <Default> с образцом",
+          'elements(&ct, "Default").len(), elements(&template_ct, "Default").len()' in rs)
+    e2e = read("scripts/e2e/windows.py")
+    check("e2e проверяет оба файла выгрузки валидатором Open XML",
+          'validate_xlsx(path, "Familio"' in e2e and 'validate_xlsx(path, "Excel")' in e2e)
+    check("валидатор в репозитории", "OpenXmlValidator" in read("scripts/xlsx-validate/Program.cs"))
+    check("провал валидатора не превращается в пропуск",
+          "валидатор не запустился" in e2e and "r.returncode == 0" in e2e)
+
+
+def incident_20261001_pustye_mesta():
+    """Роман 01.10.2026: в выгрузке Familio на листе location пусты тип,
+    губерния, уезд, волость и ссылка, в листах данных пуст full_location, а
+    person_location заполнен «лишь частично». Записи ссылались на строку
+    пункта без подробностей: пункт пришёл одним названием (архив, набор
+    руками), а подробности поставки до него не доезжали — либо строка поставки
+    лежала рядом «двойником».
+
+    Защита: обновление дозаполняет пункт без единой подробности; выгрузка
+    берёт подробности у самой полной строки с тем же названием (x_place), а
+    без них пишет название; place_find выбирает полную строку. Поведение —
+    в db/test_upgrade.py и db/test_export.py (§10).
+    """
+    mig = read("db/migrate.sql")
+    check("обновление дозаполняет подробности пунктов из поставки",
+          "UPDATE OR IGNORE main.place" in mig and "FROM seed.place s" in mig)
+    check("…и не трогает набранное руками полное место",
+          "trim(coalesce(main.place.full_location, '')) = ''" in mig)
+    sql = strip_comments(read("db/statements.sql"))
+    check("выгрузка берёт лучшую строку пункта по названию", "CREATE TEMP TABLE x_place" in sql
+          and "LEFT JOIN place p ON p.id = xp.best_id" in sql)
+    check("полное место не бывает пустым при известном пункте",
+          "coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), ''), p.name) AS place_full" in sql)
+    te = read("db/test_export.py")
+    check("поведение проверяется в test_export (двойник и пункт без подробностей)",
+          "двойник: person_location" in te and "пункт без подробностей: person_location" in te)
+    check("…и в test_upgrade", "пункт из архива без подробностей получил их из поставки" in read("db/test_upgrade.py"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261001_pustye_mesta,
+    incident_20261001_excel_vosstanovlenie,
     incident_20260930_umershij_bez_imeni,
     incident_20260930_python_314,
     incident_20260928_spisok_vslepuyu,
