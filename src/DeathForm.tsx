@@ -167,9 +167,50 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
    */
   const pickSeq = useRef(0);
   const autoRel = useRef<string | null>(null);
+  const autoPlace = useRef<string | null>(null);
   function pickDeceased(hint: PersonHint) {
     pickInto(setDead)(hint);
     const mine = ++pickSeq.current;
+    // Выбран конкретный ребёнок (строка «младенец» с родителем) — гадать не
+    // нужно: родитель известен из его записи о рождении (Роман 30.09.2026).
+    if (hint.infant) {
+      const k = hint.infant;
+      const wasAuto = autoRel.current;
+      const wasPlace = autoPlace.current;
+      // Младенец живёт у родителя — его НП. Набранный руками НП не трогается;
+      // подставленный прошлым выбором — заменяется (как у родственника).
+      // «Подставлено нами» запоминается, только если подстановка была: иначе
+      // совпавшее по тексту набранное руками затёрлось бы следующим выбором
+      // (ревьюер, 01.10.2026).
+      const placeOurs = !dead.place.trim() || (wasPlace !== null && dead.place === wasPlace);
+      if (placeOurs) setDead((d) => ({ ...d, place: k.place ?? "" }));
+      autoPlace.current = placeOurs ? k.place ?? null : null;
+      const relOurs = (rel.iof.trim() === "" && !rel.place.trim() && !rel.rank.trim()
+          && (!rel.kinship.trim() || rel.kinship.trim() === KIN_DEFAULT))
+        || (wasAuto !== null && rel.iof === wasAuto);
+      if (!relOurs) {
+        autoRel.current = null;
+        return;
+      }
+      if (!k.parent) {
+        // Родителя в записи о рождении нет — подставленного раньше убираем.
+        if (wasAuto !== null) setRel({ ...NEW_RELATIVE });
+        autoRel.current = null;
+        return;
+      }
+      setRel({
+        ...NEW_RELATIVE, kinship: k.kin ?? KIN_DEFAULT, iof: k.parent, parsed: null,
+        place: k.place ?? "", rank: k.rank ?? "",
+      });
+      autoRel.current = k.parent;
+      return;
+    }
+    // Выбрали не младенца — НП, подставленный от родителя прошлого младенца,
+    // этому человеку не принадлежит.
+    const stalePlace = autoPlace.current;
+    if (stalePlace !== null && !hint.place)
+      setDead((d) => (d.place === stalePlace ? { ...d, place: "" } : d));
+    autoPlace.current = null;
     invoke<{ iof: string; place: string | null; rank: string | null; births: number } | null>(
       "birth_father", { caseId: mkCase.id, iof: hint.iof })
       .then((f) => {
@@ -317,6 +358,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       const e = await invoke<EntryFull>("entry_load", { id });
       pickSeq.current++;
       autoRel.current = null;
+      autoPlace.current = null;
       if (editingId === null)
         beforeEdit.current = { page, count, year, deathMonth, burialMonth };
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
@@ -364,6 +406,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
   function next() {
     pickSeq.current++;
     autoRel.current = null;
+    autoPlace.current = null;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -394,6 +437,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
     const wasAuto = autoRel.current;
     if (wasAuto !== null) setRel((r) => (r.iof === wasAuto ? { ...NEW_RELATIVE } : r));
     autoRel.current = null;
+    autoPlace.current = null;
   }
 
   const namelessBox = (
@@ -487,7 +531,8 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       <div className="cols">
         <PersonBlock title="Умерший" person={dead} onChange={(p) => setDead((s) => ({ ...s, ...p }))}
                      gender={parsedSex ?? sexManual ?? undefined}
-                     onPickPerson={pickDeceased} preferInfant {...common} extra={deadExtra}
+                     onPickPerson={pickDeceased} preferInfant infantCase={mkCase.id}
+                     {...common} extra={deadExtra}
                      noIof={nameless} titleAfter={namelessBox} />
         <PersonBlock title="Родственник" person={rel}
                      onChange={(p) => setRel((s) => ({ ...s, ...p }))}

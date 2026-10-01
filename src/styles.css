@@ -296,6 +296,9 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 .suggest li.person.active { background: var(--accent); }
 .suggest .sub { display: block; font-size: 0.72rem; color: var(--muted); }
 .suggest li.active .sub { color: rgba(255, 255, 255, 0.8); }
+/* Строка младенца: родитель, НП и дата рождения — целиком, с переносом: дата
+   различает тёзок и стоит последней, обрезать её нельзя. */
+.suggest .sub.wrap { white-space: normal; overflow-wrap: anywhere; }
 .tier.t1 { font-weight: 600; }
 
 /* Причт: три персоны в одной секции, без своих рамок. Каждая рамка — это
@@ -548,6 +551,14 @@ h2 .linkish.side, h3 .linkish.side { margin-left: 0.6em; font-weight: normal; }
   .pair .field.num .numrow input { width: 2.4em; padding-left: 0.05em; padding-right: 0.05em; }
   .pair .field.num .numrow button { width: 1.2em; }
   .pair .field.num { justify-self: start; }
+}
+/* Причт (ИОФ | Звание): ИОФ шире звания — в половине узкого окна имя
+   обрезалось, а «священник» столько места не занимает (техдолг Д3). При
+   ширине окна по умолчанию ИОФ теперь 198 px вместо 135; самые длинные имена
+   («Александр Рождественский») помещаются с 520 px. В столбик не ставим:
+   это плюс три строки высоты раскрытого причта. */
+@container person (min-width: 28em) {
+  .person.flat .pair { grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); }
 }
 @container person (min-width: 36em) {
   .pair.trio { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; }

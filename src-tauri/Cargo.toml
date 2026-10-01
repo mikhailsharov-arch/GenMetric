@@ -17,9 +17,12 @@ serde_json = "1"
 # bundled: SQLite компилируется вместе с программой, системная библиотека
 # не нужна ни на Windows, ни на macOS.
 rusqlite = { version = "0.32", features = ["bundled"] }
-# Выгрузка в Excel (сборка #39): xlsx — это zip, шаблон читается и
-# пишется заново. Только deflate, без внешних библиотек.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# Логика без окна — запросы, нормализация, выгрузка в xlsx: отдельный крейт,
+# его тесты идут в быстрой проверке конвейера без сборки Tauri.
+genmetric-core = { path = "core" }
+
+[workspace]
+members = ["core"]
 
 [profile.release]
 opt-level = "s"

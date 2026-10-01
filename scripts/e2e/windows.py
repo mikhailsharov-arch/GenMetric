@@ -623,6 +623,13 @@ def resumed(driver, wait):
         mk = xlsx_rows(path, "МК")
         check("Excel, лист «МК»: строки персон есть", len(mk) > 4, f"строк {len(mk)}")
         validate_xlsx(path, "Excel")
+        # «Показать в папке»: ветка для Windows (explorer /select) на Mac не
+        # компилируется и не выполнялась ни разу — проверяем, что команда
+        # проходит без полосы ошибок (ревьюер #39).
+        click(driver, "//div[contains(@class,'exportpanel')]//button[normalize-space()='Показать в папке']")
+        time.sleep(1.5)
+        errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+        check("«Показать в папке» отработала без ошибки", not errorbar, " | ".join(errorbar))
 
 
 REPO = Path(__file__).resolve().parents[2]

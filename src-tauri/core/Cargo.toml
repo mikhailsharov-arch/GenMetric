@@ -1,0 +1,24 @@
+[package]
+name = "genmetric-core"
+version = "0.1.0"
+description = "GenMetric: логика без окна — запросы, нормализация, выгрузка в xlsx"
+license = "GPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77.2"
+
+# Отдельный крейт без Tauri: его тесты собираются на любом Linux без GTK и
+# идут в быстрой проверке конвейера. 01.10.2026 ошибку заполнения xlsx
+# («восстановление» в Excel у Романа) тест ловил — но только на машине
+# разработчика: в конвейере тесты программы с Tauri не запускались.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# bundled: SQLite компилируется вместе с программой, системная библиотека
+# не нужна ни на Windows, ни на macOS.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Выгрузка в Excel (сборка #39): xlsx — это zip, шаблон читается и
+# пишется заново. Только deflate, без внешних библиотек.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# NFC: «й» одной буквой и «и» с краткой отдельным знаком — один ключ поиска.
+unicode-normalization = "0.1"

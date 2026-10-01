@@ -31,14 +31,35 @@ type Props = {
 };
 
 const TITLES = ["Первый", "Второй", "Третий"] as const;
+const OPEN_KEY = "clergy_open";
+const OPEN_EVENT = "genmetric:clergy-open";
 
 export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
   // Открыт, пока человек не свернул сам или не сохранил запись. Раньше блок
   // сворачивался от первой же набранной буквы — условие «есть заполненное»
   // срабатывало на каждое нажатие, и поле исчезало под руками. Нашёл стенд
   // 13.09.2026, когда попытался заполнить причт как человек.
-  const [open, setOpen] = useState(true);
+  const [open, setOpenState] = useState(true);
   const [known, setKnown] = useState<ClergyHint[]>([]);
+
+  // Свёрнут блок или развёрнут — помнится между запусками (Роман 30.09.2026:
+  // «программа сбрасывает состояние сворачиваемого блока после перезапуска»).
+  // Причт общий для рождений, браков и смертей — и состояние блока общее:
+  // три формы слышат друг друга через событие окна.
+  useEffect(() => {
+    invoke<string | null>("get_setting", { key: OPEN_KEY })
+      .then((v) => { if (v === "0" || v === "1") setOpenState(v === "1"); })
+      .catch((e) => report("Не удалось узнать, свёрнут ли причт", e));
+    const on = (e: Event) => setOpenState((e as CustomEvent<boolean>).detail);
+    window.addEventListener(OPEN_EVENT, on);
+    return () => window.removeEventListener(OPEN_EVENT, on);
+  }, []);
+  function setOpen(v: boolean) {
+    setOpenState(v);
+    window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: v }));
+    invoke("set_setting", { key: OPEN_KEY, value: v ? "1" : "0" })
+      .catch((e) => report("Не удалось запомнить, свёрнут ли причт", e));
+  }
   const [pickerFor, setPickerFor] = useState<0 | 1 | 2 | null>(null);
 
   useEffect(() => {
@@ -50,7 +71,11 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
   // После сохранения записи заполненный причт сворачивается: на следующей
   // записи он тот же, и девять полей ему ни к чему. Сменить можно из строки.
   useEffect(() => {
-    if (reloadKey > 0 && people.some((p) => p.iof.trim())) setOpen(false);
+    // Только на экране: в настройку идёт лишь то, что человек выбрал сам
+    // («Свернуть» / «Развернуть» / «Изменить»). Иначе автосворачивание
+    // записывало бы «свёрнут» навсегда, и в новом сеансе пустой причт был бы
+    // спрятан — а он меняется почти в каждой записи (проверяющий, 01.10.2026).
+    if (reloadKey > 0 && people.some((p) => p.iof.trim())) setOpenState(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey]);
 

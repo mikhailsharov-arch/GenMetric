@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { focusNextField } from "./focus";
 import { stepPage } from "./page";
 
@@ -17,8 +18,17 @@ type Props = {
 };
 
 export default function PageField({ label, value, onChange, width }: Props) {
+  const field = useRef<HTMLInputElement>(null);
+
   function step(delta: number) {
     onChange(stepPage(value, delta) || null);
+  }
+
+  /** Щелчок по «+» / «−» оставляет фокус в поле (Роман 30.09.2026) — как в
+   *  NumberField. */
+  function click(delta: number) {
+    step(delta);
+    field.current?.focus();
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -41,10 +51,11 @@ export default function PageField({ label, value, onChange, width }: Props) {
     <div className="field num wide" style={width ? { width } : undefined}>
       <label>{label}</label>
       <div className="fieldbody numrow">
-        <button type="button" onClick={() => step(-1)} tabIndex={-1} aria-label="Меньше">
+        <button type="button" onClick={() => click(-1)} tabIndex={-1} aria-label="Меньше">
           −
         </button>
         <input
+          ref={field}
           data-field
           value={value ?? ""}
           placeholder="938об-939"
@@ -54,7 +65,7 @@ export default function PageField({ label, value, onChange, width }: Props) {
           onBlur={(e) => onChange(e.target.value.trim() === "" ? null : e.target.value.trim())}
           onKeyDown={onKeyDown}
         />
-        <button type="button" onClick={() => step(1)} tabIndex={-1} aria-label="Больше">
+        <button type="button" onClick={() => click(1)} tabIndex={-1} aria-label="Больше">
           +
         </button>
       </div>

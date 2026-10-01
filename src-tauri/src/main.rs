@@ -16,7 +16,9 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, State};
 
 mod export;
-mod xlsx;
+
+use genmetric_core::statement;
+use genmetric_core::text::{normalize, normalize_name, normalize_words};
 
 /// Версия схемы, которую понимает эта сборка.
 const SCHEMA_VERSION: i64 = 7;
@@ -26,35 +28,8 @@ const SCHEMA_VERSION: i64 = 7;
 /// в песочнице не собирается.
 const MIGRATE_SQL: &str = include_str!("../../db/migrate.sql");
 
-/// Запросы записи и чтения. Тот же файл читает тест db/test_entry.py —
-/// значит проверяется именно то, что работает у человека, а не похожая копия.
-const STATEMENTS_SQL: &str = include_str!("../../db/statements.sql");
-
 /// Слияние архива подсказок из Excel. Тот же файл прогоняет db/test_archive.py.
 const IMPORT_ARCHIVE_SQL: &str = include_str!("../../db/import_archive.sql");
-
-/// Разбирает statements.sql на именованные блоки, разделённые «-- @имя».
-/// Такой же разбор делает тест: формат намеренно простейший.
-fn statement(name: &str) -> Result<String, String> {
-    let mut current: Option<&str> = None;
-    let mut buf: Vec<&str> = Vec::new();
-    for line in STATEMENTS_SQL.lines() {
-        let marker = line.trim();
-        if let Some(rest) = marker.strip_prefix("-- @") {
-            if current == Some(name) {
-                return Ok(buf.join("\n"));
-            }
-            current = Some(rest.trim());
-            buf.clear();
-        } else if current == Some(name) {
-            buf.push(line);
-        }
-    }
-    if current == Some(name) {
-        return Ok(buf.join("\n"));
-    }
-    Err(format!("в statements.sql нет блока «{name}»"))
-}
 
 /// Состояние приложения.
 ///
@@ -213,33 +188,6 @@ fn with_conn<T>(
 // ============================================================================
 //  Поиск и разбор
 // ============================================================================
-
-/// Ключ для поиска по префиксу.
-///
-/// Обязан совпадать с norm() в db/build_seed.py, иначе подсказки перестанут
-/// находиться. Встроенный в SQLite COLLATE NOCASE кириллицу не понимает,
-/// поэтому нормализуем сами.
-fn normalize(input: &str) -> String {
-    let lowered = input.trim().to_lowercase().replace('ё', "е");
-    lowered.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Ключ для сверки одного слова ИОФ со словарём.
-///
-/// Книги — в дореформенной орфографии: «Иванъ», «Петровъ». Конечный «ъ»
-/// отбрасывается до поиска, и такое имя считается известным без окна сверки.
-/// Заказчик 28.08.2026: в упражнении 9 из 31 имени не опознались только
-/// из-за «ъ». Заодно «і» → «и», «ѣ» → «е», «ѳ» → «ф» — те же книги
-/// («Ѳома» → «Фома», ревьюер 23.09.2026).
-fn normalize_name(input: &str) -> String {
-    let n = normalize(input).replace('і', "и").replace('ѣ', "е").replace('ѳ', "ф");
-    n.strip_suffix('ъ').map(str::to_string).unwrap_or(n)
-}
-
-/// normalize_name для каждого слова: «крестьянскій сынъ» → «крестьянский сын».
-fn normalize_words(input: &str) -> String {
-    input.split_whitespace().map(normalize_name).collect::<Vec<_>>().join(" ")
-}
 
 /// Расстояние Дамерау — Левенштейна по символам (не байтам: кириллица).
 /// Для поиска похожих имён и названий: «Букарина» ↔ «Бухарино» = 2.
@@ -1243,6 +1191,48 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: O
     })
 }
 
+/// Ребёнок из записи о рождении — строка подсказки ИОФ умершего.
+#[derive(Serialize)]
+struct InfantHint {
+    iof: String,
+    gender: Option<String>,
+    /// «отец» или «мать» (если отца в записи нет).
+    kin: Option<String>,
+    parent: Option<String>,
+    place: Option<String>,
+    rank: Option<String>,
+    /// Дата рождения «05.01.1886» — чтобы различать тёзок.
+    born: Option<String>,
+}
+
+/// Дети из записей о рождении этого дела по началу имени — каждый отдельной
+/// строкой с родителем (Роман 30.09.2026).
+#[tauri::command]
+fn suggest_infant(app: State<App>, case_id: i64, prefix: String, limit: Option<i64>,
+                  gender: Option<String>) -> Result<Vec<InfantHint>, String> {
+    let pattern = like_prefix(&prefix);
+    let limit = limit.unwrap_or(6).clamp(1, 50);
+    with_conn(&app, &format!("Поиск младенца «{prefix}»"), |conn| {
+        let mut stmt = conn.prepare(&statement("infant_suggest")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! {
+                ":case_id": case_id, ":prefix": pattern, ":gender": gender, ":limit": limit,
+            }, |r| {
+                let (d, mo, y): (Option<i64>, Option<i64>, Option<i64>) = (r.get(6)?, r.get(7)?, r.get(8)?);
+                let part = |v: Option<i64>| v.map(|n| format!("{n:02}")).unwrap_or_else(|| "??".into());
+                Ok(InfantHint {
+                    iof: r.get(0)?, gender: r.get(1)?, kin: r.get(2)?, parent: r.get(3)?,
+                    place: r.get(4)?, rank: r.get(5)?,
+                    // Только год — без «??.??.»: так бывает у записей без даты.
+                    born: y.map(|y| if d.is_none() && mo.is_none() { y.to_string() }
+                                    else { format!("{}.{}.{y}", part(d), part(mo)) }),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
 #[derive(Serialize)]
 struct FatherHint {
     iof: String,
@@ -1780,7 +1770,13 @@ fn fit_height(win: &tauri::WebviewWindow) -> tauri::Result<()> {
     let outer = win.outer_size()?;
     let inner = win.inner_size()?;
     let frame = outer.height.saturating_sub(inner.height);
-    let height = area.size.height.saturating_sub(frame).max(400);
+    // Не больше рабочей области: прежний нижний предел 400 на низком экране
+    // вытягивал окно за край (техдолг Д8). Меньше minHeight из конфигурации
+    // окно всё равно не станет — это решает система.
+    let height = area.size.height.saturating_sub(frame);
+    if height == 0 {
+        return Ok(());
+    }
     win.set_size(tauri::PhysicalSize::new(inner.width, height))?;
     let pos = win.outer_position()?;
     win.set_position(tauri::PhysicalPosition::new(pos.x, area.position.y))?;
@@ -1874,6 +1870,7 @@ fn main() {
             last_clergy,
             suggest_person,
             birth_father,
+            suggest_infant,
             suggest_spouse,
             list_clergy,
             import_archive,

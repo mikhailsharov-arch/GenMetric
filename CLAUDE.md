@@ -27,7 +27,7 @@
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 46, ошибок 0»
     python3 db/test_upgrade.py                                  # → «Итог: успешно 56, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 77, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 86, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 55 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
@@ -35,7 +35,7 @@
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 120, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 123, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -43,17 +43,25 @@ Rust проверяется без сборки приложения, из ко�
 
     (cd src-tauri && cargo check)
 
-Ожидаемый ответ — «Finished `dev` profile». Тесты заполнения xlsx
-(`src-tauri/src/xlsx.rs`) — `cargo test --bin genmetric` (в конвейере их нет,
-файл выгрузки проверяет e2e на Windows). Выгрузку на настоящей базе:
-`GENMETRIC_KEEP_DB=/tmp/t.sqlite python3 db/test_export.py`, затем
-`GENMETRIC_EXPORT_DB=/tmp/t.sqlite GENMETRIC_EXPORT_OUT=/tmp cargo test --bin genmetric export_real -- --ignored`.
+Ожидаемый ответ — «Finished `dev` profile».
+
+**Логика без окна — крейт `src-tauri/core` (`genmetric-core`)**: запросы
+(`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
+тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
+
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 5 passed»
+
+Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
+команды окна. Выгрузка на настоящей базе и её проверка:
+
+    GENMETRIC_KEEP_DB=/tmp/t.sqlite python3 db/test_export.py
+    (cd src-tauri && GENMETRIC_EXPORT_DB=/tmp/t.sqlite GENMETRIC_EXPORT_OUT=/tmp/out cargo test -p genmetric-core export_real -- --ignored)
+    dotnet run --project scripts/xlsx-validate -- /tmp/out/familio.xlsx db/export/familio_template.xlsx
 
 **Файл xlsx проверяется валидатором Open XML, а не только тем, что он
-«открылся»:** `dotnet run --project scripts/xlsx-validate -- файл.xlsx [образец.xlsx]`
-(нужен .NET; на Windows-раннере есть, e2e запускает сам). 01.10.2026 Excel у
-Романа открыл выгрузку с «восстановлением», хотя openpyxl и Numbers открывали
-её чисто.
+«открылся»** (нужен .NET; в конвейере — и в быстрой проверке, и в e2e на
+Windows). 01.10.2026 Excel у Романа открыл выгрузку с «восстановлением», хотя
+openpyxl и Numbers открывали её чисто.
 
 Шаблоны выгрузки — `db/export/`: образец Familio (прислал Роман, Mike
 разрешил держать в репозитории) и шапка листов индексатора, собранная
@@ -213,7 +221,7 @@ Python: быстрая проверка в конвейере идёт на 3.14
 
 **Не «чинить» поиск на `COLLATE NOCASE` и `lower()`** — в SQLite они понимают
 только латиницу, на кириллице молча возвращают ноль строк. Нормализация обязана
-совпадать в `build_seed.py`, `extract_from_xlsm.py` и `normalize()` в `main.rs`.
+совпадать в `build_seed.py`, `extract_from_xlsm.py` и `normalize()` в `src-tauri/core/src/text.rs`.
 
 **Всё, что трогает данные пользователя, живёт в общем SQL-файле**, который читают
 и приложение, и тест: `db/migrate.sql`, `db/statements.sql` (блоки `-- @имя`).

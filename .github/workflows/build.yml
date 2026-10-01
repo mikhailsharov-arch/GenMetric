@@ -70,6 +70,9 @@ jobs:
 
       - name: Проверить выгрузку в Familio и Excel
         run: python db/test_export.py
+        env:
+          # База, набранная тестом, — для выгрузки настоящих файлов ниже.
+          GENMETRIC_KEEP_DB: ${{ runner.temp }}/export.sqlite
 
       - name: Проверить стили
         run: python scripts/check_styles.py
@@ -98,6 +101,43 @@ jobs:
 
       - name: Собрать интерфейс
         run: npm run build
+
+      # --- логика без окна: крейт genmetric-core --------------------------
+      # Запросы, нормализация, заполнение xlsx — без Tauri, поэтому собирается
+      # на Linux за пару минут. 01.10.2026 ошибку «Excel просит восстановить
+      # файл» ловил тест этого кода, но шёл он только у разработчика.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: core
+
+      - name: Тесты логики без окна (xlsx, нормализация)
+        working-directory: src-tauri
+        run: cargo test -p genmetric-core
+
+      - name: Выгрузить тестовую базу в Familio и Excel
+        working-directory: src-tauri
+        run: cargo test -p genmetric-core export_real -- --ignored --nocapture
+        env:
+          GENMETRIC_EXPORT_DB: ${{ runner.temp }}/export.sqlite
+          GENMETRIC_EXPORT_OUT: ${{ runner.temp }}/export
+
+      # Файлы — валидатором формата (Open XML SDK): разбор XML и openpyxl
+      # прощают то, что Excel считает повреждением. С образцом в счёт идут
+      # только ошибки, которых нет в самом образце Familio.
+      # .NET в образе ubuntu-latest обычно есть, но состав образа меняется —
+      # ставим явно, чтобы шаг не стал красным по чужой причине.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Проверить файлы выгрузки валидатором Open XML
+        run: |
+          dotnet run --project scripts/xlsx-validate -- "$RUNNER_TEMP/export/familio.xlsx" db/export/familio_template.xlsx
+          dotnet run --project scripts/xlsx-validate -- "$RUNNER_TEMP/export/familio_1887.xlsx" db/export/familio_template.xlsx
+          dotnet run --project scripts/xlsx-validate -- "$RUNNER_TEMP/export/excel.xlsx"
 
   build:
     name: ${{ matrix.title }}

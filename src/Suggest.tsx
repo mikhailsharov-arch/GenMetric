@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { focusNextField } from "./focus";
+import { focusNextField, scrollInList } from "./focus";
 import { report } from "./errors";
 
 export type Item = { value: string; tier: number; count: number };
@@ -236,7 +236,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           {items.map((it, i) => (
             <li
               key={it.value}
-              ref={i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+              ref={i === active ? scrollInList : undefined}
               className={i === active ? "active" : ""}
               onMouseDown={(e) => {
                 e.preventDefault();

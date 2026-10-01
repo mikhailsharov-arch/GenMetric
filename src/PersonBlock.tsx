@@ -88,6 +88,9 @@ type Props = {
   preferInfant?: boolean;
   /** Подпись поля вероисповедания; в строке с «Брак» и «Лет» — короткая. */
   confessionLabel?: string;
+  /** Умерший: дети из записей о рождении этого дела — отдельными строками
+   *  подсказки ИОФ, каждый с родителем (Роман 30.09.2026). */
+  infantCase?: number | null;
   /** Без поля ИОФ — умерший, чья личность не установлена (Роман 30.09.2026). */
   noIof?: boolean;
 };
@@ -168,7 +171,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
-  confessionLabel, preferInfant, noIof,
+  confessionLabel, preferInfant, noIof, infantCase,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
@@ -293,6 +296,7 @@ export default function PersonBlock({
         inputRef={inputRef}
         gender={sex}
         preferInfant={preferInfant}
+        infantCase={infantCase}
       />
   );
 

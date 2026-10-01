@@ -52,6 +52,15 @@ def read(rel: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+def rust_all() -> str:
+    """Весь код на Rust: программа (src-tauri/src) и крейт без окна
+    (src-tauri/core/src). Проверки не должны зависеть от того, в каком из
+    файлов живёт функция, — 01.10.2026 перенос кода в крейт уронил шесть
+    проверок, хотя поведение не менялось (техдолг Д4)."""
+    files = sorted((REPO / "src-tauri" / "src").glob("*.rs")) + sorted((REPO / "src-tauri" / "core" / "src").glob("*.rs"))
+    return "\n".join(f.read_text(encoding="utf-8") for f in files)
+
+
 def strip_comments(text: str) -> str:
     """Убирает комментарии: в них описаны прошлые ошибки, и проверки
     не должны ругаться на собственную летопись."""
@@ -127,9 +136,11 @@ def incident_20260817_kirillica_i_lower():
     for rel in ("db/statements.sql", "db/schema.sql", "db/migrate.sql"):
         text = read(rel)
         check(f"{rel} без COLLATE NOCASE", "COLLATE NOCASE" not in text.upper())
-    rust = read("src-tauri/src/main.rs")
-    check("в main.rs нет lower() в запросах", "lower(" not in rust)
-    check("нормализация есть в main.rs", "fn normalize" in rust)
+    rust = rust_all()
+    check("в коде на Rust нет lower() в запросах", "lower(" not in rust)
+    check("нормализация своя, не средствами SQLite", "pub fn normalize(" in rust)
+    check("её поведение проверяет тест крейта (NFC, «ё», пробелы)",
+          "fn nfc()" in read("src-tauri/core/src/text.rs"))
     check("нормализация есть в build_seed.py", "def norm" in read("db/build_seed.py"))
 
 
@@ -150,7 +161,7 @@ def incident_20260824_np_iskalos_ne_tam():
         check(f"блок {block} в statements.sql", block in names)
     check("населённые пункты ищутся в таблице place",
           "FROM place" in sql.split("-- @suggest_place")[1].split("-- @")[0])
-    rust = read("src-tauri/src/main.rs")
+    rust = rust_all()
     body = rust.split("fn suggest(", 1)[-1].split("\n}\n", 1)[0]
     check("в suggest() не осталось своего SELECT", "SELECT" not in body.upper())
 
@@ -301,7 +312,7 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
     командах не используется. Живой прогон — сквозной проверкой на
     Windows-раннере (scripts/e2e/, msedgedriver «attach»), она стоит в конвейере перед выкладкой.
     """
-    rs = strip_comments(read("src-tauri/src/main.rs"))
+    rs = strip_comments(rust_all())
     check("команды не принимают сырое тело запроса",
           "tauri::ipc::Request" not in rs and "InvokeBody::Raw" not in rs)
     i = rs.find("fn import_archive(")
@@ -431,7 +442,7 @@ def incident_20260925_otchestvo_bez_familii():
     курсор переносится к восприемнику; первая строка — узкие год и счёт,
     страница не уже 10em, при нехватке места перенос строки.
     """
-    rust = strip_comments(read("src-tauri/src/main.rs"))
+    rust = strip_comments(rust_all())
     check("отчество без фамилии сверяется", "rest.len() >= 2 && looks_like_patronymic" not in rust
           and "!not_patr && looks_like_patronymic(first_rest)" in rust)
     form = strip_comments(read("src/BirthForm.tsx"))
@@ -453,8 +464,7 @@ def incident_20260925_lishnij_parametr():
     обязан входить в набор параметров блока X в statements.sql. С 30.09.2026 —
     во всех файлах src-tauri/src (выгрузка живёт в export.rs).
     """
-    rust = "\n".join(read(f"src-tauri/src/{f.name}")
-                     for f in sorted((REPO / "src-tauri" / "src").glob("*.rs")))
+    rust = rust_all()
     text = read("db/statements.sql")
     blocks, name, buf = {}, None, []
     for line in text.splitlines():
@@ -551,7 +561,7 @@ def incident_20260927_molchalivoe_sohranenie():
     iof = strip_comments(read("src/IofField.tsx"))
     check("окно сверки снимается сразу (flushSync) — фокус не теряется", "flushSync(() => setResolve(null))" in iof)
     check("скрытая форма не открывает окно после проверки", "inputEl.current?.offsetParent == null" in iof)
-    rust = strip_comments(read("src-tauri/src/main.rs"))
+    rust = strip_comments(rust_all())
     check("звания причта — в перечень rank_clergy", 'role_code.starts_with("clergy") { "rank_clergy" }' in rust)
     focus = strip_comments(read("src/focus.ts"))
     check("переход из формы при открытом окне не уводит фокус из окна",
@@ -567,11 +577,15 @@ def incident_20260928_spisok_vslepuyu():
     Защита: активная строка списка ИОФ прокручивается в видимую область —
     и у персон, и у слов.
     """
+    # С 01.10.2026 прокручивается сам список (scrollInList), а не страница.
     iof = strip_comments(read("src/IofField.tsx"))
-    check("строки списка ИОФ прокручиваются за стрелками",
-          iof.count('scrollIntoView({ block: "nearest" })') >= 2)
+    check("строки списка ИОФ прокручиваются за стрелками — и персоны, и слова",
+          iof.count("scrollInList") >= 3)
     for f in ("src/Suggest.tsx", "src/NameResolve.tsx"):
-        check(f"{f}: прокрутка к активной строке на месте", "scrollIntoView" in read(f))
+        check(f"{f}: прокрутка к активной строке на месте", "scrollInList" in read(f))
+    focus = strip_comments(read("src/focus.ts"))
+    check("прокручивается список, а страница — только если строка за краем окна",
+          "list.scrollTop" in focus and "window.innerHeight" in focus)
 
 
 # Поломки, которые уже известны, но ещё не исправлены. Проверка приходит вместе
@@ -632,10 +646,17 @@ def incident_20261001_excel_vosstanovlenie():
     сверяет число <Default> с образцом; e2e на Windows гоняет оба файла
     выгрузки через валидатор Open XML (scripts/xlsx-validate).
     """
-    rs = read("src-tauri/src/xlsx.rs")
-    check("drop_children не собирает обёртку заново", "kept_body.push_str(&body[from..s])" in rs)
-    check("тест xlsx.rs сверяет <Default> с образцом",
+    # Поведение проверяет тест крейта (fills_familio: число <Default> как в
+    # образце) — и теперь он идёт в быстрой проверке конвейера, как и
+    # валидатор Open XML на файлах, выгруженных из тестовой базы.
+    rs = read("src-tauri/core/src/xlsx.rs")
+    check("тест крейта сверяет <Default> с образцом",
           'elements(&ct, "Default").len(), elements(&template_ct, "Default").len()' in rs)
+    wf = read(".github/workflows/build.yml")
+    check_job = wf[wf.index("  check:"):wf.index("  build:")]
+    check("тесты крейта идут в быстрой проверке конвейера", "cargo test -p genmetric-core" in check_job)
+    check("быстрая проверка выгружает тестовую базу и гонит файлы через валидатор",
+          "export_real" in check_job and check_job.count("scripts/xlsx-validate") >= 3)
     e2e = read("scripts/e2e/windows.py")
     check("e2e проверяет оба файла выгрузки валидатором Open XML",
           'validate_xlsx(path, "Familio"' in e2e and 'validate_xlsx(path, "Excel")' in e2e)

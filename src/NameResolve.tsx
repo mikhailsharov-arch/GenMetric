@@ -1,3 +1,4 @@
+import { scrollInList } from "./focus";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
@@ -109,7 +110,7 @@ export default function NameResolve({ word, kind, gender, onPick, onCancel, onNo
         {list.map((r, i) => (
           <li
             key={r.value}
-            ref={i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+            ref={i === active ? scrollInList : undefined}
             className={i === active ? "active" : ""}
             onMouseDown={(e) => { e.preventDefault(); setActive(i); onPick(r.value); }}
           >

@@ -402,6 +402,7 @@ pub fn fill_template(
         }
     }
     let mut last_rows: BTreeMap<String, u32> = BTreeMap::new();
+    let mut filled_paths: Vec<(String, u32)> = Vec::new();
     for name in &sheet_names {
         let path = sheet_path(&workbook, &wb_rels, name).ok_or_else(|| format!("в шаблоне нет листа «{name}»"))?;
         let mut xml = match replaced.get(&path) { Some(x) => x.clone(), None => text(&files, &path)? };
@@ -410,12 +411,44 @@ pub fn fill_template(
             let (x, last) = fill_sheet(&xml, fill, cols)?;
             xml = x;
             last_rows.insert(name.clone(), last);
+            filled_paths.push((path.clone(), last));
         }
         let mine: Vec<&CellValue> = cells.iter().filter(|c| &c.sheet == name).collect();
         if !mine.is_empty() {
             xml = set_cells(&xml, &mine)?;
         }
         replaced.insert(path, xml);
+    }
+
+    // Таблица листа (ListObject): у location в образце она A2:I300 — 298
+    // пунктов. Больше пунктов — строки легли бы за её край, и структурные
+    // ссылки образца их не увидели бы (ревьюер #39). Растягиваем до данных;
+    // короче не делаем — пустые строки в таблице Excel не мешают.
+    for (sheet, last) in &filled_paths {
+        let (dir, file) = sheet.rsplit_once('/').unwrap_or(("", sheet.as_str()));
+        let rels_path = format!("{dir}/_rels/{file}.rels");
+        let Ok(rels) = text(&files, &rels_path) else { continue };
+        for (s, e) in elements(&rels, "Relationship") {
+            let tag = &rels[s..e];
+            if !attr(tag, "Type").map(|t| t.ends_with("/table")).unwrap_or(false) {
+                continue;
+            }
+            let Some(target) = attr(tag, "Target") else { continue };
+            let table_path = format!("xl/{}", target.trim_start_matches("../").trim_start_matches("/xl/"));
+            let Ok(mut table) = text(&files, &table_path) else { continue };
+            for name in ["table", "autoFilter"] {
+                let Some(&(ts, te)) = elements(&table, name).first() else { continue };
+                let open = open_tag(&table[ts..te]).to_string();
+                let Some(r) = attr(&open, "ref") else { continue };
+                let Some((a, b)) = r.split_once(':') else { continue };
+                let (letters, end) = split_ref(b);
+                if *last > end {
+                    let new = open.replacen(&format!("ref=\"{r}\""), &format!("ref=\"{a}:{letters}{last}\""), 1);
+                    table.replace_range(ts..ts + open.len(), &new);
+                }
+            }
+            replaced.insert(table_path, table);
+        }
     }
 
     // _FilterDatabase: скрытые имена автофильтров — на новую длину листа.
@@ -475,8 +508,7 @@ pub fn fill_template(
     Ok(out.into_inner())
 }
 
-/// Прочитать лист готового файла — для проверок: строки → (колонка → текст).
-#[cfg(test)]
+/// Прочитать лист готового файла — для проверок (тесты крейта и export_real): строки → (колонка → текст).
 pub fn read_sheet(xlsx: &[u8], sheet: &str) -> Result<BTreeMap<u32, BTreeMap<u32, String>>, String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(xlsx)).map_err(|e| e.to_string())?;
     let mut get = |name: &str| -> Result<String, String> {
@@ -534,7 +566,7 @@ pub fn read_sheet(xlsx: &[u8], sheet: &str) -> Result<BTreeMap<u32, BTreeMap<u32
 mod tests {
     use super::*;
 
-    const FAMILIO: &[u8] = include_bytes!("../../db/export/familio_template.xlsx");
+    const FAMILIO: &[u8] = include_bytes!("../../../db/export/familio_template.xlsx");
 
     #[test]
     fn letters() {
@@ -544,6 +576,25 @@ mod tests {
         assert_eq!(col_letters(69), "BQ");
         assert_eq!(col_index("BQ"), 69);
         assert_eq!(col_index("CS"), 97);
+    }
+
+    #[test]
+    fn stretches_location_table() {
+        // 400 пунктов при таблице образца на 298 (A2:I300).
+        let rows: Vec<Vec<Option<String>>> = (0..400).map(|i| vec![Some(format!("Деревня {i}"))]).collect();
+        let out = fill_template(FAMILIO, &[SheetRows { sheet: "location".into(), first_row: 3, rows }], &[], &[]).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(out.as_slice())).unwrap();
+        let mut table = String::new();
+        z.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+        assert!(table.contains("ref=\"A2:I402\""), "таблица растянута до последнего пункта: {}", &table[..400.min(table.len())]);
+        assert!(!table.contains("I300"), "и её автофильтр тоже");
+        // Мало пунктов — таблица образца не укорачивается.
+        let out = fill_template(FAMILIO, &[SheetRows { sheet: "location".into(), first_row: 3,
+            rows: vec![vec![Some("Одна".into())]] }], &[], &[]).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(out.as_slice())).unwrap();
+        let mut table = String::new();
+        z.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+        assert!(table.contains("ref=\"A2:I300\""));
     }
 
     #[test]

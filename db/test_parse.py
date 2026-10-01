@@ -165,10 +165,18 @@ def main() -> int:
     import build_seed
 
     sql = load_statements()
-    rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+    # Программа и крейт без окна вместе: normalize_name с 01.10.2026 живёт в
+    # src-tauri/core/src/text.rs, и там же её настоящий тест (cargo test).
+    rust = "\n".join(f.read_text(encoding="utf-8")
+                     for f in sorted((ROOT / "src-tauri" / "src").glob("*.rs"))
+                     + sorted((ROOT / "src-tauri" / "core" / "src").glob("*.rs")))
 
     print("\n0. Запросы и правило на месте")
-    rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+    # Программа и крейт без окна вместе: normalize_name с 01.10.2026 живёт в
+    # src-tauri/core/src/text.rs, и там же её настоящий тест (cargo test).
+    rust = "\n".join(f.read_text(encoding="utf-8")
+                     for f in sorted((ROOT / "src-tauri" / "src").glob("*.rs"))
+                     + sorted((ROOT / "src-tauri" / "core" / "src").glob("*.rs")))
     for required in ("alias_find", "alias_save", "name_headwords", "patr_forms",
                      "place_save", "place_names", "place_find", "place_get", "place_update",
                      "place_name_taken", "place_rename_persons", "place_rename_spouses",
@@ -354,7 +362,11 @@ def main() -> int:
         check("частоты подсказок — одна строка с новым названием, сложены (3+2)",
               db.execute("SELECT count FROM usage_stat WHERE kind='place' AND value IN "
                          "('Новая Деревенька', 'Новодеревенька')").fetchall() == [(5,)])
-        rust = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        # Программа и крейт без окна вместе: normalize_name с 01.10.2026 живёт в
+        # src-tauri/core/src/text.rs, и там же её настоящий тест (cargo test).
+        rust = "\n".join(f.read_text(encoding="utf-8")
+                         for f in sorted((ROOT / "src-tauri" / "src").glob("*.rs"))
+                         + sorted((ROOT / "src-tauri" / "core" / "src").glob("*.rs")))
         check("main.rs: переименование одной транзакцией вместе с памятью",
               "unchecked_transaction" in rust and 'statement("place_rename_usage")' in rust)
         check("main.rs: «название занято» проверяется только при смене названия",

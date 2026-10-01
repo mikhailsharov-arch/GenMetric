@@ -65,3 +65,41 @@ export function focusNextEmptyField(current: HTMLElement): void {
     next.select();
   }
 }
+
+/**
+ * Прокрутить список подсказок к активной строке — сам список, а не страницу.
+ * scrollIntoView двигал и форму под списком: строка подсказки уезжала из-под
+ * руки вместе с полем (техдолг А2, с #22).
+ */
+export function scrollInList(el: HTMLElement | null): void {
+  const list = el?.parentElement;
+  if (!el || !list) return;
+  if (el.closest(".modal")) {
+    // Окно сверки прокручивается само, страница под ним стоит.
+    el.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  // Сначала — поместить сам список на экран. Он может открыться у нижнего
+  // края невысокого окна (ноутбук, рабочая область 700 px) — за краем или
+  // под закреплённой внизу кнопкой «Сохранить». Тогда страница докручивается
+  // ровно настолько, чтобы список поместился (но поле ввода не уходит за
+  // верх), а если места всё равно мало — список укорачивается. В окне, где
+  // список помещается, страница не двигается вовсе (проверяющий, 01.10.2026:
+  // без этого активная строка уходила за экран).
+  const bar = Array.from(document.querySelectorAll<HTMLElement>(".savebar"))
+    .find((b) => b.offsetParent !== null);
+  const floor = bar ? Math.min(window.innerHeight, bar.getBoundingClientRect().top) : window.innerHeight;
+  let box = list.getBoundingClientRect();
+  if (box.bottom > floor) {
+    window.scrollBy(0, Math.min(box.bottom - floor + 4, Math.max(0, box.top - 48)));
+    box = list.getBoundingClientRect();
+    if (box.bottom > floor) {
+      list.style.maxHeight = `${Math.max(64, floor - box.top - 4)}px`;
+      box = list.getBoundingClientRect();
+    }
+  }
+  // Затем — активную строку внутри списка.
+  const item = el.getBoundingClientRect();
+  if (item.top < box.top) list.scrollTop -= box.top - item.top;
+  else if (item.bottom > box.bottom) list.scrollTop += item.bottom - box.bottom;
+}

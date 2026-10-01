@@ -422,6 +422,44 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
           uses DESC, iof
  LIMIT :limit;
 
+-- @infant_suggest
+-- Подсказка ИОФ умершего: каждый ребёнок из записей о рождении этого дела —
+-- отдельной строкой со своим родителем, местом и датой рождения. Роман
+-- 30.09.2026 на вопрос о детях с одним именем: «вариант с именем отца —
+-- хорошая идея». Раньше «Мария» была одной строкой на всех Марий, а при
+-- нескольких рождениях отец не подставлялся вовсе (birth_father ниже).
+-- Родитель — отец, а если его в записи нет (незаконнорождённые) — мать.
+-- Поиск по началу имени — через person_index (у него есть ключ iof_norm;
+-- некоррелированный IN, как в person_suggest_infant). Недавно родившиеся —
+-- первыми: умирают чаще всего в первые месяцы.
+WITH kid AS (
+    SELECT c.entry_id, c.gender, e.id AS eid, e.event_day, e.event_month, e.event_year,
+           trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) AS iof
+      FROM person_mention c
+      JOIN entry e ON e.id = c.entry_id AND e.section = 1 AND e.case_id = :case_id
+     WHERE c.role_code = 'child'
+),
+parent AS (
+    SELECT p.entry_id, p.role_code, p.rank,
+           (SELECT pl.name FROM place pl WHERE pl.id = p.place_id) AS place,
+           trim(coalesce(nullif(trim(p.first_name), ''), '') || coalesce(' ' || nullif(trim(p.patronymic), ''), '') || coalesce(' ' || nullif(trim(p.surname), ''), '')) AS iof
+      FROM person_mention p WHERE p.role_code IN ('father', 'mother')
+)
+SELECT k.iof, k.gender,
+       CASE WHEN f.iof <> '' THEN 'отец' WHEN m.iof <> '' THEN 'мать' END AS kin,
+       CASE WHEN f.iof <> '' THEN f.iof WHEN m.iof <> '' THEN m.iof END AS parent,
+       CASE WHEN f.iof <> '' THEN f.place ELSE m.place END AS place,
+       CASE WHEN f.iof <> '' THEN f.rank ELSE m.rank END AS rank,
+       k.event_day, k.event_month, k.event_year
+  FROM kid k
+  LEFT JOIN parent f ON f.entry_id = k.entry_id AND f.role_code = 'father'
+  LEFT JOIN parent m ON m.entry_id = k.entry_id AND m.role_code = 'mother'
+ WHERE k.iof <> ''
+   AND k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :prefix ESCAPE '\')
+   AND (:gender IS NULL OR k.gender IS NULL OR k.gender = :gender)
+ ORDER BY k.event_year DESC, k.event_month DESC, k.event_day DESC, k.eid DESC
+ LIMIT :limit;
+
 -- @birth_father
 -- Отец из записи о рождении ребёнка с этим ИОФ (Роман 28.09.2026: выбрали
 -- умершего младенца — родственник заполняется его отцом). Только своё дело

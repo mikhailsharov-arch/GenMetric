@@ -84,7 +84,7 @@ def main() -> int:
     print(f"\n0. Запросы из statements.sql: {len(sql)} блоков")
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
-                     "person_remember", "person_suggest", "person_suggest_infant", "birth_father", "spouse_remember", "spouse_lookup",
+                     "person_remember", "person_suggest", "person_suggest_infant", "infant_suggest", "birth_father", "spouse_remember", "spouse_lookup",
                      "clergy_remember", "clergy_list", "last_clergy", "entry_get", "mentions_of_entry"):
         check(f"блок {required} на месте", required in sql)
 
@@ -360,6 +360,33 @@ def main() -> int:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": e2})
         f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 1}).fetchone()
         check("два рождения с таким именем — видно, что их два", f is not None and f[3] == 2, str(f))
+        # Каждый ребёнок — своей строкой с родителем (Роман 30.09.2026): две
+        # «Татьяны Никитичны» различаются отцом, свежая запись первой.
+        iq = {"case_id": 1, "prefix": norm("Тать") + "%", "gender": None, "limit": 8}
+        kids = db.execute(sql["infant_suggest"], iq).fetchall()
+        check("infant_suggest: две строки на двух детей с одним именем",
+              [k[0] for k in kids] == ["Татьяна Никитична"] * 2, str(kids))
+        check("…у каждой свой отец; у первой записи — с НП и званием",
+              [k[2:4] for k in kids] == [("отец", "Никита Петров"), ("отец", "Никита Алексеев")]
+              and kids[1][4:6] == (place_name, "крестьянин"), str(kids))
+        check("…и дата рождения — различать тёзок", kids[0][6:9] == (1, 2, 1893), str(kids[0]))
+        check("взрослой «Татьяны Ивановой» среди младенцев нет",
+              all(k[0] != "Татьяна Иванова" for k in kids))
+        check("по полу: мальчиков с таким началом нет",
+              db.execute(sql["infant_suggest"], {**iq, "gender": "М"}).fetchall() == [])
+        check("другое дело — детей не предлагаем",
+              db.execute(sql["infant_suggest"], {**iq, "case_id": 99}).fetchall() == [])
+        plan = " ".join(r[3] for r in db.execute("EXPLAIN QUERY PLAN " + sql["infant_suggest"], iq))
+        check("infant_suggest без коррелированного подзапроса по person_index",
+              "CORRELATED LIST SUBQUERY" not in plan, plan)
+        # Незаконнорождённый: отца в записи нет — родитель мать.
+        for p in [dict(role_code="father", sort_order=20)]:
+            db.execute("DELETE FROM person_mention WHERE entry_id = ? AND role_code = 'father'", (e2,))
+        db.execute(sql["mention_insert"], {**blank, "role_code": "mother", "sort_order": 30,
+                                           "first_name": "Анна", "patronymic": "Иванова", "gender": "Ж",
+                                           "entry_id": e2})
+        kids = db.execute(sql["infant_suggest"], iq).fetchall()
+        check("без отца — родитель «мать»", kids[0][2:4] == ("мать", "Анна Иванова"), str(kids[0]))
         db.execute("DELETE FROM person_mention WHERE entry_id = ?", (e2,))
         db.execute("DELETE FROM entry WHERE id = ?", (e2,))
 

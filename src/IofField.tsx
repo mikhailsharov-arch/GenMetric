@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { focusNextField, focusNextEmptyField } from "./focus";
+import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
 import NameResolve from "./NameResolve";
@@ -33,6 +33,15 @@ export type PersonHint = {
   rank: string | null;
   gender: string | null;
   uses: number;
+  /** Ребёнок из записи о рождении (подсказка умершего): его родитель, место
+   *  родителя и дата рождения — чтобы различать тёзок (Роман 30.09.2026). */
+  infant?: { kin: string | null; parent: string | null; place: string | null;
+             rank: string | null; born: string | null };
+};
+
+type InfantHint = {
+  iof: string; gender: string | null; kin: string | null; parent: string | null;
+  place: string | null; rank: string | null; born: string | null;
 };
 
 /**
@@ -58,6 +67,9 @@ type Props = {
   /** Умерший: в подсказке первыми младенцы из записей о рождении
    *  (Роман 28.09.2026). */
   preferInfant?: boolean;
+  /** Номер дела: умершему предлагать детей из записей о рождении этого дела
+   *  отдельными строками, каждого со своим родителем (Роман 30.09.2026). */
+  infantCase?: number | null;
   label: string;
   value: string;
   onChange: (text: string, parsed: Parsed | null) => void;
@@ -78,6 +90,7 @@ type Props = {
 
 export default function IofField({
   label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant,
+  infantCase,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -85,6 +98,8 @@ export default function IofField({
   const [persons, setPersons] = useState<PersonHint[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  /** Сколько в списке детей-тёзок первой строки (0 — тёзок нет). */
+  const [namesakes, setNamesakes] = useState(0);
   const seq = useRef(0);
   const justPicked = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -188,9 +203,19 @@ export default function IofField({
         ? invoke<PersonHint[]>("suggest_person", {
             prefix: query, limit: 6,
             gender: gender ?? parsedRef.current?.gender ?? null,
-            preferInfant: preferInfant ?? false,
+            // Дети идут своими строками (infantCase) — тогда в общем списке
+            // их поднимать незачем.
+            preferInfant: (preferInfant ?? false) && infantCase == null,
           })
         : Promise.resolve([] as PersonHint[]),
+      wantPersons && infantCase != null
+        ? invoke<InfantHint[]>("suggest_infant", {
+            // 30 — чтобы при десятках тёзок за год нужный не выпал из списка
+            // (список прокручивается); порядок — от недавно родившихся.
+            caseId: infantCase, prefix: query, limit: 30,
+            gender: gender ?? parsedRef.current?.gender ?? null,
+          })
+        : Promise.resolve([] as InfantHint[]),
       currentWord.length > 0
         ? invoke<Item[]>("suggest", {
             kind, prefix: currentWord, limit: 6,
@@ -200,11 +225,24 @@ export default function IofField({
           })
         : Promise.resolve([] as Item[]),
     ])
-      .then(([foundPersons, foundWords]) => {
+      .then(([knownPersons, infants, foundWords]) => {
         if (mine !== seq.current) return;
+        // Дети — первыми, каждый своей строкой; из общего списка персон то же
+        // имя убирается: «Мария» одной строкой на всех Марий ни к чему.
+        const kids: PersonHint[] = infants.map((k) => ({
+          iof: k.iof, place: null, rank: null, gender: k.gender, uses: 0,
+          infant: { kin: k.kin, parent: k.parent, place: k.place, rank: k.rank, born: k.born },
+        }));
+        const foundPersons = [...kids, ...knownPersons.filter((p) => !kids.some((k) => k.iof === p.iof))];
         setPersons(foundPersons);
         setWords(foundWords);
-        setActive(0);
+        // Тёзки: первая строка — ребёнок, у которого в деле есть полный тёзка.
+        // Тогда заранее не выбрана ни одна строка: привычное «имя, Enter»
+        // иначе молча подставило бы отца случайной из Марий (ревьюер,
+        // 01.10.2026; та же осторожность, что у birth_father с #38).
+        const twins = kids.length > 1 && kids.filter((k) => k.iof === kids[0].iof).length > 1;
+        setNamesakes(twins ? kids.filter((k) => k.iof === kids[0].iof).length : 0);
+        setActive(twins ? -1 : 0);
         setOpen(foundPersons.length + foundWords.length > 0);
       })
       .catch((e) => {
@@ -405,14 +443,21 @@ export default function IofField({
       else focusNextField(e.currentTarget);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      if (listOpen) setActive((i) => (i - 1 + total) % total);
+      if (listOpen) setActive((i) => (i < 0 ? total - 1 : (i - 1 + total) % total));
       else focusNextField(e.currentTarget, -1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (listOpen) {
+      if (listOpen && active >= 0) {
         // Ctrl+Enter при открытом списке — только подставить, см. Suggest.tsx.
         if (e.ctrlKey || e.metaKey) e.stopPropagation();
         pickActive();
+      } else if (listOpen) {
+        // Ни одна строка не выбрана (тёзки): Enter — как без списка, дальше
+        // по форме; набранное остаётся как есть. Ctrl+Enter запись при этом
+        // не сохраняет — список ещё открыт (то же правило, что выше).
+        if (e.ctrlKey || e.metaKey) { e.stopPropagation(); return; }
+        closeSuggestions();
+        focusNextField(e.currentTarget, e.shiftKey ? -1 : 1);
       } else focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); // Shift+Enter — назад
     } else if (e.key === "Escape") {
       closeSuggestions();
@@ -479,12 +524,17 @@ export default function IofField({
         )}
         {open && total > 0 && (
           <ul className="suggest">
+            {namesakes > 1 && active < 0 && (
+              <li className="empty" onMouseDown={(e) => e.preventDefault()}>
+                в деле {namesakes} детей с этим именем — выберите стрелкой ↓
+              </li>
+            )}
             {persons.map((p, i) => (
               <li
                 key={`p${i}`}
                 // Список идёт за стрелками (Роман 28.09.2026: «выбирает
                 // элементы вслепую») — как у Suggest и окна сверки.
-                ref={i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                ref={i === active ? scrollInList : undefined}
                 className={i === active ? "active person" : "person"}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -493,19 +543,24 @@ export default function IofField({
               >
                 <span className="val">
                   {p.iof}
-                  {(p.place || p.rank) && (
+                  {p.infant ? (
+                    <span className="sub wrap">
+                      {[p.infant.parent && `${p.infant.kin ?? "родитель"} ${p.infant.parent}`,
+                        p.infant.place, p.infant.born && `род. ${p.infant.born}`].filter(Boolean).join(" · ")}
+                    </span>
+                  ) : (p.place || p.rank) && (
                     <span className="sub">
                       {[p.rank, p.place].filter(Boolean).join(", ")}
                     </span>
                   )}
                 </span>
-                <span className="tier t1">персона</span>
+                <span className="tier t1">{p.infant ? "младенец" : "персона"}</span>
               </li>
             ))}
             {words.map((w, i) => (
               <li
                 key={`w${i}`}
-                ref={persons.length + i === active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                ref={persons.length + i === active ? scrollInList : undefined}
                 className={persons.length + i === active ? "active" : ""}
                 onMouseDown={(e) => {
                   e.preventDefault();
