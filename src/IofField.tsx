@@ -67,9 +67,13 @@ type Props = {
   /** Умерший: в подсказке первыми младенцы из записей о рождении
    *  (Роман 28.09.2026). */
   preferInfant?: boolean;
-  /** Номер дела: умершему предлагать детей из записей о рождении этого дела
-   *  отдельными строками, каждого со своим родителем (Роман 30.09.2026). */
-  infantCase?: number | null;
+  /** Умершему предлагать детей из записей о рождении прихода отдельными
+   *  строками, каждого со своим родителем (Роман 30.09.2026). По всему
+   *  приходу, а не по делу года: умерший в январе родился в прошлом году. */
+  infantRows?: boolean;
+  /** Год на форме смертей: дети, родившиеся не позже него (и не раньше чем
+   *  за 7 лет) — после импорта в приходе рождения за много лет. */
+  infantYear?: number | null;
   label: string;
   value: string;
   onChange: (text: string, parsed: Parsed | null) => void;
@@ -90,7 +94,8 @@ type Props = {
 
 export default function IofField({
   label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant,
-  infantCase,
+  infantRows,
+  infantYear,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -203,16 +208,16 @@ export default function IofField({
         ? invoke<PersonHint[]>("suggest_person", {
             prefix: query, limit: 6,
             gender: gender ?? parsedRef.current?.gender ?? null,
-            // Дети идут своими строками (infantCase) — тогда в общем списке
+            // Дети идут своими строками (infantRows) — тогда в общем списке
             // их поднимать незачем.
-            preferInfant: (preferInfant ?? false) && infantCase == null,
+            preferInfant: (preferInfant ?? false) && !infantRows,
           })
         : Promise.resolve([] as PersonHint[]),
-      wantPersons && infantCase != null
+      wantPersons && infantRows
         ? invoke<InfantHint[]>("suggest_infant", {
             // 30 — чтобы при десятках тёзок за год нужный не выпал из списка
             // (список прокручивается); порядок — от недавно родившихся.
-            caseId: infantCase, prefix: query, limit: 30,
+            prefix: query, limit: 30, year: infantYear ?? null,
             gender: gender ?? parsedRef.current?.gender ?? null,
           })
         : Promise.resolve([] as InfantHint[]),

@@ -74,6 +74,11 @@ jobs:
           # База, набранная тестом, — для выгрузки настоящих файлов ниже.
           GENMETRIC_KEEP_DB: ${{ runner.temp }}/export.sqlite
 
+      # Приходы: общий файл и сверка справочников между файлами приходов
+      # (db/common.sql, db/parish_sync.sql — те же файлы выполняет программа).
+      - name: Проверить приходы и общие справочники
+        run: python db/test_parish.py
+
       - name: Проверить стили
         run: python scripts/check_styles.py
 

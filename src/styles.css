@@ -616,3 +616,21 @@ h2 .linkish.side, h3 .linkish.side { margin-left: 0.6em; font-weight: normal; }
 .yearbox { display: inline-flex; align-items: center; gap: 0.25em; }
 .yearbox input { width: auto; margin: 0; }
 .modal h3 { margin: 0.6em 0 0.3em; font-size: 0.9rem; }
+
+/* Дело — на год книги (02.10.2026): выбор года рядом с заголовком экрана
+   «Дело» и год в заголовке списка «Набрано». */
+h2.caseyear select { margin-left: 0.8em; font: inherit; font-weight: normal; }
+h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
+
+/* Окно «Приходы» и импорт из Excel (02.10.2026). */
+.parishrow { display: flex; align-items: baseline; gap: 0.6em; margin: 0 0 0.3em; font-size: 0.9rem; }
+.parishrow b { font-weight: 600; }
+.facts.parishes td { vertical-align: top; }
+.facts.parishes tr.editing td { background: #fff7e0; }
+.refused { margin: 0 0 0.5em; padding: 0.4em 0.6em; background: #fff7e0; border: 0.0625em solid #e6c766; border-radius: 0.4em; font-size: 0.85rem; }
+.importagain { margin: 0.4em 0; font-size: 0.88rem; }
+.importagain p { margin: 0 0 0.3em; }
+.importagain label { display: block; margin: 0.2em 0; line-height: 1.35; }
+.importnotes { margin: 0 0 0.5em 1.1em; padding: 0; font-size: 0.8rem; max-height: 9em; overflow-y: auto; }
+.modal:focus { outline: none; }
+.parishrow, .facts.parishes td, .modal p { overflow-wrap: anywhere; }

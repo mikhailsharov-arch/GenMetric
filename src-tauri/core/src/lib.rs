@@ -5,7 +5,12 @@
 //! (`cargo test -p genmetric-core`). Программа (src-tauri/src) только
 //! оборачивает это в команды окна.
 
+pub mod age;
+pub mod db;
 pub mod export;
+pub mod import;
+pub mod parish;
+pub mod records;
 pub mod text;
 pub mod xlsx;
 

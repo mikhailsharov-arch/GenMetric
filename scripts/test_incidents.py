@@ -511,7 +511,7 @@ def incident_20260927_otchyot_27_09():
     check("формы не восстанавливают причт сами — общий ClergyProvider",
           all('"last_clergy"' not in t and "useFormClergy" in t for t in forms.values()))
     clergy = strip_comments(read("src/clergy.tsx"))
-    check("общий причт — последняя запись любого раздела", '"last_clergy", { caseId, section: 0 }' in clergy)
+    check("общий причт — последняя запись любого раздела", '"last_clergy", { section: 0 }' in clergy)
     check("«Запись пустая» и «Не указан год» — предупреждение, не поломка",
           all('report("Запись пустая"' not in t and 'report("Не указан год"' not in t for t in forms.values())
           and all('warn("Запись пустая"' in t for t in forms.values()))
@@ -694,7 +694,53 @@ def incident_20261001_pustye_mesta():
     check("…и в test_upgrade", "пункт из архива без подробностей получил их из поставки" in read("db/test_upgrade.py"))
 
 
+def incident_20261002_odno_delo_na_vse_gody():
+    """Разбор Excel Романа 02.10.2026: реквизиты дела (фонд, опись, дело) были
+    одни на всю базу, а у каждого года книги своё архивное дело — у него 1889
+    год «Ф.56 Оп.31 Д.11», 1890 — «Д.12». Выгрузка в Familio поставила бы всем
+    годам одно дело; после импорта тринадцати лет — тем более.
+
+    Защита: запись привязывает к делу своего года книги программа, а не форма
+    (records.rs); новому году дело заводится копией с напоминанием; запросы
+    «в своё дело» смотрят в приход. Поведение — db/test_entry.py (§9г),
+    db/test_upgrade.py, db/test_export.py и тест импорта в крейте.
+    """
+    rec = strip_comments(read("src-tauri/core/src/records.rs"))
+    check("дело записи выбирает программа по году книги",
+          "case_for_year(conn, year)" in rec and "entry.rite_year.or(entry.event_year)" in rec)
+    sql = strip_comments(read("db/statements.sql"))
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
+    check("запросы дела на год есть", all(b in blocks for b in
+          ("case_current", "case_years", "case_for_year", "case_adopt_year", "case_copy_for_year", "case_spread_parish")))
+    check("правка записи переносит её в дело своего года", "case_id = :case_id" in blocks.get("entry_update", ""))
+    for name in ("entry_list", "last_clergy", "birth_father", "infant_suggest"):
+        check(f"«{name}» смотрит в приход, а не в дело года", ":case_id" not in strip_comments(blocks.get(name, ":case_id")))
+    check("у установленной программы записи разных лет получают свои дела",
+          "INSERT INTO mk_case" in read("db/migrate.sql") and "UPDATE entry SET case_id" in sql + read("db/migrate.sql"))
+    forms = [strip_comments(read(f"src/{f}")) for f in ("BirthForm.tsx", "MarriageForm.tsx", "DeathForm.tsx")]
+    check("формы не решают, к какому делу запись, и напоминают о новом годе",
+          all("new_case_year" in t and "caseId: mkCase.id" not in t for t in forms))
+    check("экран «Дело» показывает дело года и даёт выбрать другой",
+          "case_years" in read("src/CaseHeader.tsx") and "Дело за ${c.year} год" in read("src/CaseHeader.tsx"))
+    check("поведение проверено: test_entry, test_upgrade, test_export",
+          "9г. Дело — на год книги" in read("db/test_entry.py")
+          and "дело на год: у 1896 и 1897 годов" in read("db/test_upgrade.py")
+          and "дело на год: у 1886 года" in read("db/test_export.py"))
+
+    # Тот же класс, что 25.09 («тест, который не ходит через Rust»): окно зовёт
+    # команду, которой в программе нет, — видно только в собранной программе.
+    front = "".join(f.read_text(encoding="utf-8") for f in sorted((REPO / "src").glob("*.ts*")))
+    called = set(re.findall(r'invoke(?:<[^(]*>)?\(\s*"(\w+)"', front))
+    main_rs = read("src-tauri/src/main.rs")
+    handler = main_rs[main_rs.index("generate_handler!["):]
+    registered = set(re.findall(r"(?:\w+::)?(\w+)\s*[,\]]", handler[:handler.index("]")] + "]"))
+    missing = sorted(called - registered)
+    check("каждая команда, которую зовёт окно, зарегистрирована в программе", len(called) >= 30 and not missing,
+          ", ".join(missing) or f"{len(called)} команд")
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261002_odno_delo_na_vse_gody,
     incident_20261001_pustye_mesta,
     incident_20261001_excel_vosstanovlenie,
     incident_20260930_umershij_bez_imeni,

@@ -13,6 +13,7 @@ import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
 import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
+import { setDirty } from "./dirty";
 
 /**
  * Форма ввода записи о смерти (27.09.2026) — по образцу рождений и браков.
@@ -78,7 +79,7 @@ function kinGender(k: string): "М" | "Ж" | undefined {
   return undefined;
 }
 
-export default function DeathForm({ mkCase }: { mkCase: Case }) {
+export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: (caseId: number) => void }) {
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
   const [count, setCount] = useState<number | null>(null);
@@ -119,18 +120,24 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
   const root = useRef<HTMLDivElement>(null);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
 
-  useEffect(() => { refresh(); }, [mkCase.id]);
-  const restored = useRef(false);
+  // Список «Набрано» — записи года книги, который стоит на форме: после
+  // импорта из Excel в приходе тысячи записей (спека 2026-10-02, п. 3.4).
+  useEffect(() => { refresh(); }, [year]);
 
+  // Восстановление места работы — один раз при открытии формы, по последней
+  // записи раздела в приходе, какого бы года она ни была.
+  useEffect(() => {
+    invoke<Brief[]>("entry_list", { section: 3, year: null, last: true })
+      .then((rows) => { if (rows[0]) resume(rows[0]); })
+      .catch((e) => report("Не удалось узнать, на чём остановились", e));
+  }, []);
+
+  const listSeq = useRef(0);
   function refresh() {
-    invoke<Brief[]>("entry_list", { caseId: mkCase.id, section: 3 })
-      .then((rows) => {
-        setSaved(rows);
-        if (!restored.current) {
-          restored.current = true;
-          if (rows[0]) resume(rows[0]);
-        }
-      })
+    // Год набирают по цифре — ответ на прежний год отбрасывается.
+    const mine = ++listSeq.current;
+    invoke<Brief[]>("entry_list", { section: 3, year, last: false })
+      .then((rows) => { if (mine === listSeq.current) setSaved(rows); })
       .catch((e) => report("Не удалось прочитать список набранных смертей", e));
   }
 
@@ -156,12 +163,12 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
 
   /**
    * Выбрали умершего из подсказки: если это ребёнок из записи о рождении
-   * этого дела, родственник — его отец из той записи (Роман 28.09.2026).
+   * этого прихода, родственник — его отец из той записи (Роман 28.09.2026).
    *
    * Осторожно, чтобы не записать чужого отца (проверяющий и ревьюер #38):
    * - только в пустого родственника (ИОФ, НП, звание пусты, родство «отец»
    *   или пусто) или в того, кого подставили сами прошлым выбором;
-   * - если в деле несколько рождений с таким именем — не угадываем,
+   * - если в приходе несколько рождений с таким именем — не угадываем,
    *   говорим выбрать самому;
    * - ответ, пришедший после смены записи или другого выбора, отбрасывается.
    */
@@ -212,7 +219,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       setDead((d) => (d.place === stalePlace ? { ...d, place: "" } : d));
     autoPlace.current = null;
     invoke<{ iof: string; place: string | null; rank: string | null; births: number } | null>(
-      "birth_father", { caseId: mkCase.id, iof: hint.iof })
+      "birth_father", { iof: hint.iof, year })
       .then((f) => {
         if (mine !== pickSeq.current) return;
         const wasAuto = autoRel.current;
@@ -226,7 +233,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
             setRel((r) => (r.iof === wasAuto ? { ...NEW_RELATIVE } : r));
           autoRel.current = null;
           if (f && f.births > 1)
-            warn(`В деле ${f.births} записи о рождении «${hint.iof}»`,
+            warn(`В приходе ${f.births} записи о рождении «${hint.iof}»`,
                  "отец не подставлен — выберите его сами, чтобы не записать чужого");
           return;
         }
@@ -316,7 +323,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
 
     setBusy(true);
     try {
-      await invoke<number>("entry_save", {
+      const done = await invoke<{ id: number; case_id: number; new_case_year: number | null }>("entry_save", {
         entry: {
           id: editingId, case_id: mkCase.id, section: 3, page,
           no_male: columns.no_male, no_female: columns.no_female,
@@ -329,6 +336,12 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       });
       clergyState.bump();
       dismissWarn();
+      // Дело — на год книги: год встретился впервые — дело заведено копией
+      // прошлого, реквизиты надо проверить (спека 2026-10-02, п. 3.2).
+      if (done.new_case_year !== null)
+        warn(`Новый год книги ${done.new_case_year}`,
+             "ему заведено своё дело копией прошлого — проверьте фонд, опись и дело на экране «Дело»");
+      onSaved(done.case_id);
       if (editingId !== null) restoreAfterEdit();
       else next();
       refresh();
@@ -338,6 +351,12 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       setBusy(false);
     }
   }
+
+  // Несохранённое — для смены прихода: окно «Приходы» не даст потерять молча.
+  useEffect(() => {
+    setDirty("Смерти", formDirty() || editingId !== null);
+    return () => setDirty("Смерти", false);
+  });
 
   function formDirty(): boolean {
     return [dead, rel].some((p) => p.iof.trim() || p.place.trim() || p.rank.trim())
@@ -531,7 +550,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
       <div className="cols">
         <PersonBlock title="Умерший" person={dead} onChange={(p) => setDead((s) => ({ ...s, ...p }))}
                      gender={parsedSex ?? sexManual ?? undefined}
-                     onPickPerson={pickDeceased} preferInfant infantCase={mkCase.id}
+                     onPickPerson={pickDeceased} preferInfant infantRows infantYear={year}
                      {...common} extra={deadExtra}
                      noIof={nameless} titleAfter={namelessBox} />
         <PersonBlock title="Родственник" person={rel}
@@ -558,7 +577,7 @@ export default function DeathForm({ mkCase }: { mkCase: Case }) {
 
       {saved.length > 0 && (
         <section>
-          <h2>Набрано смертей: {saved.length}</h2>
+          <h2>Набрано смертей: {saved.length}{year !== null && <span className="ofyear"> — за {year} год</span>}</h2>
           <p className="hint">Нажмите «Открыть», чтобы поправить запись. Форма при этом должна быть пустой.</p>
           <table className="facts saved">
             <tbody>

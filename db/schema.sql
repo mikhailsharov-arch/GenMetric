@@ -139,6 +139,10 @@ CREATE TABLE place (
   familio_url     TEXT,
   origin          TEXT NOT NULL DEFAULT 'user',
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Когда карточку правил человек (схема 8, 02.10.2026): справочник пунктов
+  -- общий для всех приходов, и из двух разных карточек одного пункта верна
+  -- более поздняя (db/parish_sync.sql). Пусто — карточку не правили.
+  updated_at      TEXT,
   UNIQUE (name, np_type, uyezd, guberniya)
 );
 CREATE INDEX ix_place_norm ON place (name_norm);

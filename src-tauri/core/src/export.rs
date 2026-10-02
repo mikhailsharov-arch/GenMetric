@@ -154,6 +154,28 @@ pub fn familio_bytes(conn: &Connection, years: &[i64], about: &About)
     Ok((bytes, counts))
 }
 
+/// Строки листов Familio (рождения, браки, смерти) без файла — для сверки
+/// импорта с листами `f - 1…3` индексатора (import::tests::import_golden).
+pub fn familio_rows(conn: &Connection) -> Result<[Vec<Vec<Option<String>>>; 3], String> {
+    prepare(conn)?;
+    Ok([
+        query_rows(conn, &statement("familio_birth")?, "[]")?,
+        query_rows(conn, &statement("familio_marriage")?, "[]")?,
+        query_rows(conn, &statement("familio_death")?, "[]")?,
+    ])
+}
+
+/// Строки листов «Рождения», «Браки», «Смерти» выгрузки в Excel без файла —
+/// импорт сверяется с исходными листами индексатора «туда-обратно».
+pub fn excel_rows(conn: &Connection) -> Result<[Vec<Vec<Option<String>>>; 3], String> {
+    prepare(conn)?;
+    Ok([
+        query_rows(conn, &statement("excel_births")?, "[]")?,
+        query_rows(conn, &statement("excel_marriages")?, "[]")?,
+        query_rows(conn, &statement("excel_deaths")?, "[]")?,
+    ])
+}
+
 /// Файл Excel «для себя»: весь приход, листы как в индексаторе.
 pub fn excel_bytes(conn: &Connection) -> Result<(Vec<u8>, Exported), String> {
     let all = "[]";

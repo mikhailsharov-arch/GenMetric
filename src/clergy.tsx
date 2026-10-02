@@ -32,10 +32,9 @@ const Ctx = createContext<Shared | null>(null);
 
 type LastClergy = { role_code: string; iof: string; rank: string | null; note: string | null };
 
-export function ClergyProvider({ caseId, children }: { caseId: number; children: React.ReactNode }) {
+export function ClergyProvider({ children }: { children: React.ReactNode }) {
   const [people, setPeople] = useState<Trio>(EMPTY_TRIO);
   const [savedTimes, setSavedTimes] = useState(0);
-  const restoredFor = useRef<number | null>(null);
 
   function setAt(i: number, p: Upd) {
     setPeople((all) => {
@@ -45,14 +44,11 @@ export function ClergyProvider({ caseId, children }: { caseId: number; children:
     });
   }
 
-  // Продолжить с места: причт последней записи дела в любом разделе
-  // (заказчик 21.09.2026 — причт после перезапуска; 27.09 — общий).
+  // Продолжить с места: причт последней записи прихода в любом разделе
+  // (заказчик 21.09.2026 — причт после перезапуска; 27.09 — общий). Один раз:
+  // дело теперь на год книги, а причт от смены года не зависит (02.10.2026).
   useEffect(() => {
-    if (!caseId || restoredFor.current === caseId) return;
-    // Другое дело — причт прежнего ему не принадлежит (ревьюер 27.09.2026).
-    if (restoredFor.current !== null) setPeople(EMPTY_TRIO);
-    restoredFor.current = caseId;
-    invoke<LastClergy[]>("last_clergy", { caseId, section: 0 })
+    invoke<LastClergy[]>("last_clergy", { section: 0 })
       .then((rows) => {
         const idx = { clergy1: 0, clergy2: 1, clergy3: 2 } as Record<string, number>;
         for (const r of rows) {
@@ -63,7 +59,7 @@ export function ClergyProvider({ caseId, children }: { caseId: number; children:
         if (rows.length > 0) setSavedTimes((n) => n + 1); // свернуть заполненный причт
       })
       .catch((e) => report("Не удалось восстановить причт последней записи", e));
-  }, [caseId]);
+  }, []);
 
   return (
     <Ctx.Provider value={{ people, setAt, savedTimes, bump: () => setSavedTimes((n) => n + 1) }}>

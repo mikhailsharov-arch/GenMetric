@@ -73,7 +73,7 @@ def main() -> int:
     print("\n1. Целостность базы")
     check("integrity_check", one("PRAGMA integrity_check") == "ok")
     check("foreign_key_check", len(q("PRAGMA foreign_key_check")) == 0)
-    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 7)
+    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 8)
 
     print("\n2. Сверка с текстовыми справочниками")
     for csv_name, table in [("name_dict.csv", "name_dict"), ("lookup.csv", "lookup"),

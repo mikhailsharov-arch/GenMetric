@@ -13,6 +13,9 @@ type Startup = {
   error: string | null;
   db_path: string;
   log_path: string;
+  parish_id: number;
+  parish_name: string;
+  warning: string | null;
 };
 
 type LookupSize = { kind: string; title: string; count: number };
@@ -44,6 +47,14 @@ export default function App() {
   const [startup, setStartup] = useState<Startup | null>(null);
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
+  // Дело — на год книги (02.10.2026): запись другого года уводит работу в
+  // дело этого года, и экран «Дело» перечитывается.
+  const [caseReload, setCaseReload] = useState(0);
+  function entrySaved(caseId: number) {
+    // Дело без года с первой записью получает её год — экран «Дело» должен
+    // это узнать, иначе сохранит прежний пустой год (ревьюер 02.10.2026).
+    if (mkCase && (caseId !== mkCase.id || mkCase.year === null)) setCaseReload((n) => n + 1);
+  }
   const [screen, setScreen] = useState<"case" | "births" | "marriages" | "deaths" | "about">("case");
 
   useEffect(() => {
@@ -51,6 +62,9 @@ export default function App() {
       .then((state) => {
         setStartup(state);
         if (state.error) return; // база не открылась, остальное бессмысленно
+        // Приход открыт, но не всё гладко (справочники не сверены с общими,
+        // открыт не тот приход, что в прошлый раз) — сказать, работа идёт.
+        if (state.warning) report("Приход открыт с оговоркой", state.warning);
         invoke<DbInfo>("db_info")
           .then(setInfo)
           .catch((e) => report("Не удалось прочитать сведения о базе", e));
@@ -193,20 +207,20 @@ export default function App() {
           „Рождения“ становятся пустыми». Это была потеря работы, а не
           неудобство. */}
       <div hidden={screen !== "case"}>
-        <CaseHeader onSaved={setMkCase} />
+        <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""} />
       </div>
       {/* Причт общий для всех разделов (27.09.2026) — clergy.tsx. Формы
           браков и смертей (25.09, 27.09) так же не размонтируются. */}
       {mkCase && mkCase.id > 0 && (
-        <ClergyProvider caseId={mkCase.id}>
+        <ClergyProvider>
           <div hidden={screen !== "births"}>
-            <BirthForm mkCase={mkCase} />
+            <BirthForm mkCase={mkCase} onSaved={entrySaved} />
           </div>
           <div hidden={screen !== "marriages"}>
-            <MarriageForm mkCase={mkCase} />
+            <MarriageForm mkCase={mkCase} onSaved={entrySaved} />
           </div>
           <div hidden={screen !== "deaths"}>
-            <DeathForm mkCase={mkCase} />
+            <DeathForm mkCase={mkCase} onSaved={entrySaved} />
           </div>
         </ClergyProvider>
       )}

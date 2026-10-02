@@ -464,6 +464,17 @@ def main() -> int:
         check("без года — отдельной строкой, последней", years[-1] == (None, 1, 0, 0), str(years))
         check("весь приход ([]) — запись без года выгружается", len(rows(db, sql, "familio_birth")) == 3)
         check("по списку годов — нет", len(rows(db, sql, "familio_birth", json.dumps([1886, 1887]))) == 2)
+        # Дело — на год книги (спека 2026-10-02, п. 3): у записей разных лет
+        # в Familio свои фонд, опись и дело, а не одни на всю базу.
+        db.execute(sql["case_copy_for_year"], {"year": 1887})
+        case_1887 = db.execute(sql["case_for_year"], {"year": 1887}).fetchone()[0]
+        db.execute("UPDATE mk_case SET delo = '19' WHERE id = ?", (case_1887,))
+        db.execute("UPDATE entry SET case_id = ? WHERE coalesce(rite_year, event_year) = 1887", (case_1887,))
+        db.executescript(sql["export_prepare"])
+        by_year = {x[col("R")]: [x[col(c)] for c in "BCDE"] for x in rows(db, sql, "familio_birth") if x[col("R")]}
+        check("дело на год: у 1886 года — Д. 18, у 1887 — Д. 19; архив, фонд, опись — те же",
+              by_year == {1886: ["ГА Костромской области", "56", "31", "18"],
+                          1887: ["ГА Костромской области", "56", "31", "19"]}, str(by_year))
         check("в базе пользователя временных таблиц нет",
               db.execute("SELECT count(*) FROM sqlite_master WHERE name LIKE 'x_%'").fetchone()[0] == 0)
 

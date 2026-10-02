@@ -26,7 +26,9 @@ Microsoft) и проходим путь Романа руками робота.
   7. сохранённая запись открывается в форму, правится и сохраняется без дублей;
   …
   13. умерший без имени («личность не установлена») сохраняется;
-  14. выгрузка в Familio и в Excel пишет файлы, в них набранные записи.
+  14. выгрузка в Familio и в Excel пишет файлы, в них набранные записи;
+  15. новый приход — отдельный файл: записи не смешиваются;
+  16. импорт Excel-индексатора (db/fixtures/indexer.xlsx) через окно.
 
 Запуск (в конвейере, см. .github/workflows/build.yml):
     python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite путь\\к\\msedgedriver.exe
@@ -630,6 +632,197 @@ def resumed(driver, wait):
         time.sleep(1.5)
         errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
         check("«Показать в папке» отработала без ошибки", not errorbar, " | ".join(errorbar))
+
+    parishes(driver, wait)
+
+
+def fresh_window(driver, wait):
+    """Перечитать окно: формы пусты, несохранённого нет.
+
+    Смена прихода с набранной, но не сохранённой записью запрещена (и это
+    правильно), а сценарий к этому месту оставил в формах набранное (отец из
+    шага 10). Поле через clear() React не чистит — надёжнее перечитать окно,
+    как это делает сама программа при смене прихода.
+    """
+    driver.refresh()
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".parishrow")))
+    time.sleep(1.5)
+
+
+def feed_file(driver, path):
+    """Файл — в спрятанное поле окна «Приходы» (WebDriver кормит только видимое)."""
+    file_input = driver.find_element(By.CSS_SELECTOR, "input[data-import-file]")
+    driver.execute_script("arguments[0].hidden = false;", file_input)
+    file_input.send_keys(str(path))
+
+
+def open_parishes(driver, wait):
+    """Окно «Приходы» с экрана «Дело»."""
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    click(driver, "//div[contains(@class,'parishrow')]//button")
+    wait.until(EC.visibility_of_element_located((By.XPATH, PARISH)))
+
+
+def reloaded(driver, wait, name):
+    """После смены прихода окно перечитывается целиком: ждём новое название."""
+    try:
+        WebDriverWait(driver, 90).until(lambda d: name in " ".join(
+            e.text for e in d.find_elements(By.CSS_SELECTOR, ".parishrow")))
+    except TimeoutException:
+        pass
+    row = " ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".parishrow"))
+    check(f"открыт приход «{name}»", name in row, f"«{row}» | {error_details(driver)}")
+    time.sleep(1.0)  # формы дочитывают списки и место работы
+
+
+PARISH = "//div[@data-modal='parish']"
+
+
+def parishes(driver, wait):
+    """Приходы и импорт из Excel (спека 2026-10-02): каждый приход — свой файл."""
+    print("\n15. Приходы: новый приход, записи не смешиваются")
+    # С набранным в форме приход сменить нельзя — проверяем отказ, затем чистим.
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    fill(driver, "Ребёнок", "Мария", "//div[contains(@class,'birth')]//")
+    open_parishes(driver, wait)
+    click(driver, PARISH + "//button[normalize-space()='Новый приход…']")
+    time.sleep(0.6)
+    shown(driver, PARISH + "//input[@data-field]").send_keys("Отказ")
+    click(driver, PARISH + "//button[normalize-space()='Создать и открыть']")
+    time.sleep(1.0)
+    refused = " ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".refused"))
+    check("с несохранённой записью приход не меняется — программа говорит почему",
+          "Сначала сохраните или очистите набранное" in refused, refused or "отказа нет")
+    fresh_window(driver, wait)
+    open_parishes(driver, wait)
+    listing = driver.find_element(By.XPATH, PARISH).text
+    check("в перечне один приход — по селу дела, он открыт",
+          "Борисоглебское" in listing and "открыт" in listing, listing.replace("\n", " | ")[:200])
+    click(driver, PARISH + "//button[normalize-space()='Новый приход…']")
+    time.sleep(0.6)  # окно первые мгновения набор не принимает
+    name = shown(driver, PARISH + "//input[@data-field]")
+    name.send_keys("Николо-Макарово")
+    click(driver, PARISH + "//button[normalize-space()='Создать и открыть']")
+    reloaded(driver, wait, "Николо-Макарово")
+    body = driver.find_element(By.TAG_NAME, "body").text
+    check("новый приход пуст: дело не заполнено", "Дело за" not in body, body[:200].replace("\n", " | "))
+    for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Никольская"),
+                         ("Село", "Николо-Макарово"), ("Уезд", "Макарьевский"), ("Губерния", "Костромская")]:
+        fill(driver, label, value)
+    driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
+    wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    b = "//div[contains(@class,'birth')]//"
+    year = field(driver, "Год", b).get_attribute("value")
+    check("в новом приходе форма пустая — год не подставлен", year == "", f"«{year}»")
+    fill(driver, "Год", "1890", b)
+    fill(driver, "Счёт", "1", b)
+    fill(driver, "Ребёнок", "Ксения", b)
+    father = b + "section[.//h2[normalize-space()='Отец']]//"
+    field(driver, "ИОФ", father).send_keys("Никита Алексеев")
+    field(driver, "ИОФ", father).send_keys(Keys.ESCAPE)
+    time.sleep(1.0)  # разбор ИОФ — асинхронный
+    hints = driver.find_element(By.CSS_SELECTOR, ".birth").text
+    click(driver, b + "button[starts-with(normalize-space(),'Сохранить и следующая')]")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".birth"), "Набрано: 1"))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, ".birth").text
+    check("запись в новом приходе сохранена, список — за её год",
+          "Набрано: 1 — за 1890 год" in block, error_details(driver) + " | " + hints[:120].replace("\n", " | "))
+    # Общие справочники: пункт, заведённый в первом приходе (шаг 9), здесь известен.
+    open_parishes(driver, wait)
+    listing = driver.find_element(By.XPATH, PARISH).text
+    check("в перечне два прихода", "Борисоглебское" in listing and "Николо-Макарово" in listing,
+          listing.replace("\n", " | ")[:300])
+    click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+    reloaded(driver, wait, "Борисоглебское")
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".birth"), "Набрано: 4"))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, ".birth").text
+    check("в первом приходе — свои четыре рождения 1897 года, «Ксении» из второго нет",
+          "Набрано: 4 — за 1897 год" in block and "Ксения" not in block.split("Набрано")[-1],
+          block[-300:].replace("\n", " | "))
+
+    print("\n16. Импорт из Excel-индексатора — настоящим IPC, файл частями")
+    fixture = REPO / "db" / "fixtures" / "indexer.xlsx"
+    open_parishes(driver, wait)
+    feed_file(driver, fixture)
+    try:
+        WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-import-seen]")))
+    except TimeoutException:
+        pass
+    seen = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-import-seen]")]
+    check("файл прочитан: в нём 5 рождений, 2 брака, 4 смерти, село Никольское",
+          bool(seen) and "рождений 5, браков 2, смертей 4" in seen[0] and "Никольское" in seen[0],
+          (seen[0] if seen else driver.find_element(By.XPATH, PARISH).text.replace("\n", " | ")[:300])
+          + " | " + error_details(driver))
+    if not seen:
+        return
+    click(driver, PARISH + "//button[normalize-space()='Импортировать']")
+    try:
+        WebDriverWait(driver, 180).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-import-done]")))
+    except TimeoutException:
+        pass
+    done = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-import-done]")]
+    check("импорт прошёл: 4 рождения, 2 брака, 4 смерти",
+          bool(done) and "рождений 4, браков 2, смертей 4" in done[0],
+          (done[0] if done else "итога нет") + " | " + error_details(driver))
+    if not done:
+        return
+    report = driver.find_element(By.XPATH, PARISH).text
+    check("пропущенная строка и несверенное имя названы, не молча",
+          "Не перенесено строк: 1" in report and "Жданко" in report, report.replace("\n", " | ")[:400])
+    click(driver, PARISH + "//button[normalize-space()='Перейти в приход']")
+    reloaded(driver, wait, "Никольское (из Excel)")
+    head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
+    check("дело — на год: открыт последний год, в списке оба",
+          "Дело за 1890 год" in head and "1889" in head, head.replace("\n", " | "))
+    delo = field(driver, "Дело").get_attribute("value")
+    check("у 1890 года своё дело — 12", delo == "12", f"«{delo}»")
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".birth"), "Набрано: 3"))
+    except TimeoutException:
+        pass
+    block = driver.find_element(By.CSS_SELECTOR, ".birth").text
+    year = field(driver, "Год", b).get_attribute("value")
+    check("форма продолжает с последней записи импорта: 1890 год, три рождения",
+          year == "1890" and "Набрано: 3 — за 1890 год" in block and "Жданко" in block,
+          f"год «{year}» | " + block[-300:].replace("\n", " | "))
+    # Подсказки «прогреты»: отец из импорта подсказывается с местом и званием.
+    field(driver, "ИОФ", father).send_keys("Иван Сем")
+    time.sleep(1.2)
+    hints = driver.find_element(By.CSS_SELECTOR, ".birth").text
+    check("персона из импорта подсказывается", "Иван Семенов" in hints, hints[:300].replace("\n", " | "))
+    field(driver, "ИОФ", father).send_keys(Keys.ESCAPE)
+    fresh_window(driver, wait)  # набранное для подсказки — не запись, убрать
+    click(driver, "//button[normalize-space()='Выгрузить в Excel']")
+    path = exported_path(driver, wait, "Excel")
+    if path:
+        rows = xlsx_rows(path, "Рождения")
+        check("выгрузка — весь импортированный приход: 4 рождения, «Татьяна» 1889 года с делом 11 фонда 1",
+              sum(1 for r in rows if r >= 3) == 4
+              and any("Татьяна" in v.values() and "Ф.1 Оп.2 Д.11" in v.values() for v in rows.values()),
+              str(list(rows.values()))[-400:])
+        validate_xlsx(path, "Excel (импортированный приход)")
+    # Повторный импорт того же файла программа замечает.
+    open_parishes(driver, wait)
+    feed_file(driver, fixture)
+    try:
+        WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-import-seen]")))
+    except TimeoutException:
+        pass
+    again = driver.find_element(By.XPATH, PARISH).text
+    check("повторный импорт: программа спрашивает — заменить или создать ещё один",
+          "уже импортирован" in again and "заменить приход" in again, again.replace("\n", " | ")[:400])
+    click(driver, PARISH + "//button[normalize-space()='Назад']")
+    click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+    reloaded(driver, wait, "Борисоглебское")
 
 
 REPO = Path(__file__).resolve().parents[2]

@@ -36,7 +36,7 @@ REPO = DB_DIR.parent
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
 FROM_VERSION = 6
-TO_VERSION = 7
+TO_VERSION = 8
 
 ok_count = 0
 fail_count = 0
@@ -101,6 +101,10 @@ def build_old_database(path: Path) -> None:
                "VALUES (1, 1, 1, '957', 6, 12, 1896)")
     db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name) "
                "VALUES (1, 'child', 10, 'Евграф')")
+    # Запись другого года в том же деле: до 02.10.2026 дело было одно на всю
+    # базу, а реквизиты — у каждого года свои. Обновление заводит году своё дело.
+    db.execute("INSERT INTO entry (id, case_id, section, page, event_day, event_month, event_year, "
+               "rite_day, rite_month, rite_year) VALUES (90, 1, 3, '1001', 2, 3, 1897, 4, 3, 1897)")
     # Записи до 13.09.2026: счёт всегда в мужской колонке. Четыре случая —
     # девочка (чинить), мальчик (не трогать), девочка уже с женским номером
     # (не трогать), ребёнок без пола (не трогать: угадывать нельзя).
@@ -217,7 +221,7 @@ def main() -> int:
                          "(kind='rank_m' AND value='крестьянская вдова после 1-го брака')"
                          ).fetchone()[0] == 2)
         check("у человека есть набранная запись",
-              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 5)
+              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 6)
         db.close()
 
         upgrade(user, seed)
@@ -299,8 +303,9 @@ def main() -> int:
               one("SELECT count(*) FROM lookup WHERE value='крестьянин' AND kind='rank_m'") == 1)
         check("накопленная статистика подсказок цела",
               one("SELECT count FROM usage_stat WHERE value='крестьянин'") == 42)
-        check("заведённое дело на месте", one("SELECT count(*) FROM mk_case") == 1)
-        check("набранные записи на месте", one("SELECT count(*) FROM entry") == 5)
+        check("заведённое дело на месте (и дело второго года — рядом)", one("SELECT count(*) FROM mk_case") == 2
+              and one("SELECT church FROM mk_case WHERE id = 1") == "Христорождественская")
+        check("набранные записи на месте", one("SELECT count(*) FROM entry") == 6)
         check("персона записи на месте",
               one("SELECT first_name FROM person_mention WHERE entry_id=1") == "Евграф")
         check("настройка пользователя не перезаписана",
@@ -362,6 +367,17 @@ def main() -> int:
               db.execute("SELECT familio_url FROM place WHERE name_norm='бухарино'").fetchone()[0] is None)
         check("и правка человека не откатилась",
               db.execute("SELECT uyezd FROM place WHERE name_norm='бухарино'").fetchone()[0] == "Кинешемский")
+        cases = db.execute("SELECT id, year, church FROM mk_case ORDER BY year").fetchall()
+        check("дело на год: у 1896 и 1897 годов — свои дела, приход тот же",
+              [c[1] for c in cases] == [1896, 1897] and cases[0][2] == cases[1][2], str(cases))
+        by_year = {c[1]: c[0] for c in cases}
+        check("каждая запись с годом привязана к делу своего года",
+              db.execute("SELECT case_id FROM entry WHERE id = 90").fetchone()[0] == by_year[1897]
+              and db.execute("SELECT case_id FROM entry WHERE id = 1").fetchone()[0] == by_year[1896])
+        check("записи без года остались при прежнем деле",
+              db.execute("SELECT count(DISTINCT case_id) FROM entry WHERE event_year IS NULL").fetchone()[0] == 1)
+        check("повторное обновление дел не плодит",
+              db.execute("SELECT count(*) FROM mk_case").fetchone()[0] == 2)
         check("соответствие «Пискарь» → «Кесарь» пережило обновление",
               db.execute("SELECT target FROM name_alias WHERE form_norm='пискарь'").fetchone() == ("Кесарь",))
         db.close()

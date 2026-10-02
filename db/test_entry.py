@@ -84,7 +84,8 @@ def main() -> int:
     print(f"\n0. Запросы из statements.sql: {len(sql)} блоков")
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
-                     "person_remember", "person_suggest", "person_suggest_infant", "infant_suggest", "birth_father", "spouse_remember", "spouse_lookup",
+                     "person_remember", "person_suggest", "person_suggest_infant", "infant_suggest", "birth_father",
+                     "case_current", "case_years", "case_for_year", "case_adopt_year", "case_copy_for_year", "case_spread_parish", "spouse_remember", "spouse_lookup",
                      "clergy_remember", "clergy_list", "last_clergy", "entry_get", "mentions_of_entry"):
         check(f"блок {required} на месте", required in sql)
 
@@ -210,7 +211,7 @@ def main() -> int:
               one("SELECT count FROM usage_stat WHERE scope='case'")[0] == 2)
 
         print("\n7. Список записей для возврата и правки")
-        rows = db.execute(sql["entry_list"], {"case_id": 1, "section": 1}).fetchall()
+        rows = db.execute(sql["entry_list"], {"section": 1, "year": 1893, "last": 0}).fetchall()
         check("запись видна в списке", len(rows) == 1)
         check("в списке имя ребёнка", rows[0][8] == "Татьяна Никитична", rows[0][8])
         # Заказчик 15.09.2026: форма при запуске продолжает с места остановки —
@@ -220,7 +221,7 @@ def main() -> int:
 
         # Заказчик 21.09.2026: «надо сделать, чтобы церковнослужители также
         # сохранялись» — причт последней записи для восстановления после перезапуска.
-        clergy = db.execute(sql["last_clergy"], {"case_id": 1, "section": 1}).fetchall()
+        clergy = db.execute(sql["last_clergy"], {"section": 1}).fetchall()
         check("причт последней записи читается", len(clergy) == 1 and clergy[0][0] == "clergy1", str(clergy))
         check("ИОФ причта собран из частей без лишних пробелов",
               clergy and clergy[0][1] == "Александр Рождественский" and clergy[0][2] == "священник")
@@ -320,12 +321,12 @@ def main() -> int:
         check("жених: лет и каким браком читаются", groom[15] == 22 and groom[16] == "Первым браком", str(groom[15:]))
         rel = next(m for m in ms if m[0] == "groom_relative")
         check("родственник: родство «отец» без имени", rel[17] == "отец" and rel[3] is None, str(rel))
-        rows = db.execute(sql["entry_list"], {"case_id": 1, "section": 2}).fetchall()
+        rows = db.execute(sql["entry_list"], {"section": 2, "year": 1886, "last": 0}).fetchall()
         check("в списке браков одна запись", len(rows) == 1)
         check("в строке — жених и невеста", rows[0][11] == "Михаил Дмитриев" and rows[0][12] == "Евдокия Савельева",
               str(rows[0][11:]))
         check("список рождений браки не видит",
-              all(r[0] != mid for r in db.execute(sql["entry_list"], {"case_id": 1, "section": 1})))
+              all(r[0] != mid for r in db.execute(sql["entry_list"], {"section": 1, "year": 1893, "last": 0})))
 
         print("\n9в0. Умерший младенец (Роман 28.09.2026)")
         for iof, uses in (("Татьяна Никитична", 1), ("Татьяна Иванова", 9)):
@@ -338,14 +339,16 @@ def main() -> int:
         check("обычная подсказка — по частоте (взрослая первой)", plain[0] == "Татьяна Иванова", str(plain))
         check("подсказка умершего — первым ребёнок из записи о рождении",
               infant[0] == "Татьяна Никитична", str(infant))
-        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 1}).fetchone()
+        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None}).fetchone()
         place_name = one("SELECT name FROM place WHERE id = ?", place_id)[0]
         check("отец ребёнка из записи о рождении — ИОФ, НП, звание, одна запись",
               f == ("Никита Алексеев", place_name, "крестьянин", 1), str(f))
         check("чужого ИОФ в рождениях нет — отца нет",
-              db.execute(sql["birth_father"], {"iof": "Татьяна Иванова", "case_id": 1}).fetchone() is None)
-        check("другое дело — отца не ищем",
-              db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 99}).fetchone() is None)
+              db.execute(sql["birth_father"], {"iof": "Татьяна Иванова", "year": None}).fetchone() is None)
+        # С 02.10.2026 дело — на год: отец ищется по всему приходу (файлу).
+        check("список «Набрано» — только записи года книги",
+              db.execute(sql["entry_list"], {"section": 1, "year": 1700, "last": 0}).fetchall() == []
+              and len(db.execute(sql["entry_list"], {"section": 1, "year": None, "last": 1}).fetchall()) == 1)
         plan = " ".join(r[3] for r in db.execute("EXPLAIN QUERY PLAN " + sql["person_suggest_infant"], q))
         check("подсказка умершего без коррелированного подзапроса (скорость)",
               "CORRELATED" not in plan, plan)
@@ -358,11 +361,11 @@ def main() -> int:
         for p in [dict(role_code="child", sort_order=10, first_name="Татьяна", patronymic="Никитична", gender="Ж"),
                   dict(role_code="father", sort_order=20, first_name="Никита", patronymic="Петров", gender="М")]:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": e2})
-        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "case_id": 1}).fetchone()
+        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None}).fetchone()
         check("два рождения с таким именем — видно, что их два", f is not None and f[3] == 2, str(f))
         # Каждый ребёнок — своей строкой с родителем (Роман 30.09.2026): две
         # «Татьяны Никитичны» различаются отцом, свежая запись первой.
-        iq = {"case_id": 1, "prefix": norm("Тать") + "%", "gender": None, "limit": 8}
+        iq = {"prefix": norm("Тать") + "%", "gender": None, "limit": 8, "year": None}
         kids = db.execute(sql["infant_suggest"], iq).fetchall()
         check("infant_suggest: две строки на двух детей с одним именем",
               [k[0] for k in kids] == ["Татьяна Никитична"] * 2, str(kids))
@@ -372,10 +375,21 @@ def main() -> int:
         check("…и дата рождения — различать тёзок", kids[0][6:9] == (1, 2, 1893), str(kids[0]))
         check("взрослой «Татьяны Ивановой» среди младенцев нет",
               all(k[0] != "Татьяна Иванова" for k in kids))
+        # Год формы смертей ограничивает детей: не позже него, не раньше чем за
+        # 7 лет (после импорта в приходе рождения за много лет).
+        years = sorted({k[8] for k in kids})
+        in_window = db.execute(sql["infant_suggest"], {**iq, "year": 1893}).fetchall()
+        check("год формы: дети, родившиеся позже него, не предлагаются",
+              all(k[8] is None or k[8] <= 1893 for k in in_window) and any(k[8] == 1893 for k in in_window),
+              f"{years} → {[k[8] for k in in_window]}")
+        check("…и родившиеся больше чем за 7 лет до него — тоже",
+              db.execute(sql["infant_suggest"], {**iq, "year": 1893 + 8}).fetchall() == []
+              or all(k[8] is None or k[8] >= 1894 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1901}).fetchall()))
+        f93 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1893}).fetchone()
+        f80 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1880}).fetchone()
+        check("отец ищется среди рождений того же окна лет", f93 is not None and f80 is None, f"{f93} / {f80}")
         check("по полу: мальчиков с таким началом нет",
               db.execute(sql["infant_suggest"], {**iq, "gender": "М"}).fetchall() == [])
-        check("другое дело — детей не предлагаем",
-              db.execute(sql["infant_suggest"], {**iq, "case_id": 99}).fetchall() == [])
         plan = " ".join(r[3] for r in db.execute("EXPLAIN QUERY PLAN " + sql["infant_suggest"], iq))
         check("infant_suggest без коррелированного подзапроса по person_index",
               "CORRELATED LIST SUBQUERY" not in plan, plan)
@@ -389,6 +403,47 @@ def main() -> int:
         check("без отца — родитель «мать»", kids[0][2:4] == ("мать", "Анна Иванова"), str(kids[0]))
         db.execute("DELETE FROM person_mention WHERE entry_id = ?", (e2,))
         db.execute("DELETE FROM entry WHERE id = ?", (e2,))
+
+        print("\n9г. Дело — на год книги (02.10.2026)")
+        fod = lambda y: one("SELECT fond, opis, delo FROM mk_case WHERE year = ?", y)
+        n_cases = one("SELECT count(*) FROM mk_case")[0]
+        check("дело года находится", db.execute(sql["case_for_year"], {"year": one("SELECT year FROM mk_case")[0]}).fetchone() is not None)
+        check("у нового года дела ещё нет", db.execute(sql["case_for_year"], {"year": 1899}).fetchone() is None)
+        db.execute(sql["case_adopt_year"], {"year": 1899})
+        check("дело с годом новому году не отдаётся (отдаётся только дело без года)",
+              db.execute(sql["case_for_year"], {"year": 1899}).fetchone() is None)
+        db.execute(sql["case_copy_for_year"], {"year": 1899})
+        new_id = db.execute(sql["case_for_year"], {"year": 1899}).fetchone()[0]
+        check("новому году — дело копией: приход и реквизиты те же",
+              one("SELECT count(*) FROM mk_case")[0] == n_cases + 1
+              and one("SELECT church, village FROM mk_case WHERE id = ?", new_id) == ("Христорождественская", "Борисоглебское")
+              and fod(1899) == one("SELECT fond, opis, delo FROM mk_case WHERE id = 1"))
+        db.execute("UPDATE mk_case SET delo = '19' WHERE id = ?", (new_id,))
+        check("правка дела нового года не трогает прежний", one("SELECT delo FROM mk_case WHERE id = 1")[0] == "18")
+        db.execute(sql["case_spread_parish"], dict(id=new_id, archive="ГАКО", church="Никольская", village="Борисоглебское",
+                                                  uyezd="Макарьевский", guberniya="Костромская",
+                                                  parish_key="Никольская|Борисоглебское|Макарьевский|Костромская",
+                                                  indexer="Роман Чистов"))
+        check("церковь расходится на дела всех лет, фонд/опись/дело — нет, заполненный архив не затирается",
+              one("SELECT church, delo, archive FROM mk_case WHERE id = 1") == ("Никольская", "18", "ГА Костромской области"))
+        check("годы для экрана «Дело»: с числом записей",
+              (1899, 0) in db.execute(sql["case_years"]).fetchall())
+        cur = db.execute(sql["case_current"], {"year": None}).fetchone()
+        check("текущее дело — дело последней записи", cur[0] == one("SELECT case_id FROM entry ORDER BY id DESC LIMIT 1")[0])
+        check("дело по году", db.execute(sql["case_current"], {"year": 1899}).fetchone()[0] == new_id)
+        # Экран «Дело», открытый до первой записи, шлёт прежний пустой год:
+        # год дела им не затирается — иначе следующий год забрал бы это дело
+        # вместе с записями прошлого (ревьюер 02.10.2026).
+        row = dict(zip(("id", "archive", "fond", "opis", "delo", "church", "village", "uyezd", "guberniya", "year", "indexer"),
+                       db.execute(sql["case_current"], {"year": 1899}).fetchone()))
+        db.execute(sql["case_upsert"], {**row, "year": None, "delo": "20", "parish_key": "п"})
+        check("сохранение дела с пустым годом год не стирает, реквизиты правит",
+              one("SELECT year, delo FROM mk_case WHERE id = ?", new_id) == (1899, "20"))
+        db.execute(sql["case_adopt_year"], {"year": 1900})
+        check("…и дело с записями другому году не достаётся",
+              db.execute(sql["case_for_year"], {"year": 1900}).fetchone() is None)
+        db.execute("DELETE FROM mk_case WHERE id = ?", (new_id,))
+        db.execute("UPDATE mk_case SET church = 'Христорождественская' WHERE id = 1")
 
         print("\n9в. Запись о смерти (27.09.2026)")
         # Состав — лист «3» Excel Романа: умерший (НП, звание, ИОФ, причина,
@@ -417,12 +472,12 @@ def main() -> int:
         check("умерший: месяцы и дни разобраны в свои колонки",
               one("SELECT age_months || '/' || age_days FROM person_mention "
                   "WHERE entry_id = ? AND role_code = 'deceased'", did)[0] == "1/15")
-        rows = db.execute(sql["entry_list"], {"case_id": 1, "section": 3}).fetchall()
+        rows = db.execute(sql["entry_list"], {"section": 3, "year": 1886, "last": 0}).fetchall()
         check("в списке смертей одна запись, умерший в строке",
               len(rows) == 1 and rows[0][13] == "Анна Иванова", str(rows[0][11:]) if rows else "")
         check("номер девочки — в женской колонке", rows[0][3] == 7 and rows[0][2] is None)
         # Причт общий (27.09.2026): последняя запись дела в любом разделе.
-        cl = db.execute(sql["last_clergy"], {"case_id": 1, "section": 0}).fetchall()
+        cl = db.execute(sql["last_clergy"], {"section": 0}).fetchall()
         check("причт последней записи любого раздела — из смерти",
               [c[1] for c in cl] == ["Александр Рождественский"], str(cl))
 

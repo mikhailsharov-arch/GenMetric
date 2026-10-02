@@ -20,9 +20,61 @@ VALUES (:id, :archive, :fond, :opis, :delo, :church, :village, :uyezd,
 ON CONFLICT(id) DO UPDATE SET
     archive = excluded.archive, fond = excluded.fond, opis = excluded.opis,
     delo = excluded.delo, church = excluded.church, village = excluded.village,
-    uyezd = excluded.uyezd, guberniya = excluded.guberniya, year = excluded.year,
+    uyezd = excluded.uyezd, guberniya = excluded.guberniya,
+    -- Год дела пустым не затирается: экран «Дело» мог быть открыт до первой
+    -- записи и прислать прежний пустой год, а дело за это время стало делом
+    -- 1897 года. Иначе следующий год забрал бы это дело вместе с записями
+    -- прошлого (ревьюер 02.10.2026).
+    year = coalesce(excluded.year, mk_case.year),
     parish_key = excluded.parish_key, indexer = excluded.indexer,
     updated_at = datetime('now');
+
+-- @case_current
+-- Дело, с которым сейчас работают. С 02.10.2026 дело — на год книги: у
+-- каждого года своя строка mk_case (в Excel Романа 1889 год — «Д.11», 1890 —
+-- «Д.12»), а экран «Дело» остаётся одной формой (Роман 02.10: «менять эту
+-- логику не нужно»). :year задан — дело этого года; иначе — дело последней
+-- записи; записей нет — последнее сохранённое.
+SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya, year, indexer
+  FROM mk_case
+ WHERE id = coalesce((SELECT c.id FROM mk_case c WHERE c.year = :year ORDER BY c.id LIMIT 1),
+                     (SELECT e.case_id FROM entry e ORDER BY e.id DESC LIMIT 1),
+                     (SELECT c.id FROM mk_case c ORDER BY c.updated_at DESC, c.id DESC LIMIT 1));
+
+-- @case_years
+-- Годы, у которых есть дело, и сколько записей в каждом — для выбора года
+-- на экране «Дело» (поправить реквизиты прошлого года).
+SELECT c.year, (SELECT count(*) FROM entry e WHERE e.case_id = c.id) AS entries
+  FROM mk_case c WHERE c.year IS NOT NULL ORDER BY c.year;
+
+-- @case_for_year
+SELECT id FROM mk_case WHERE year = :year ORDER BY id LIMIT 1;
+
+-- @case_adopt_year
+-- Дело без года (первое дело новой базы: год набирают на форме, не в деле)
+-- становится делом первого встреченного года.
+UPDATE mk_case SET year = :year
+ WHERE id = (SELECT id FROM mk_case WHERE year IS NULL ORDER BY id LIMIT 1);
+
+-- @case_copy_for_year
+-- Новый год книги — новое дело копией того, с которым работали: приход тот
+-- же, а фонд, опись и дело человек поправит (программа напомнит полосой).
+INSERT INTO mk_case (archive, fond, opis, delo, church, village, uyezd, guberniya,
+                     year, parish_key, indexer, updated_at)
+SELECT archive, fond, opis, delo, church, village, uyezd, guberniya,
+       :year, parish_key, indexer, datetime('now')
+  FROM mk_case
+ ORDER BY (id = (SELECT e.case_id FROM entry e ORDER BY e.id DESC LIMIT 1)) DESC, updated_at DESC, id DESC
+ LIMIT 1;
+
+-- @case_spread_parish
+-- Церковь, село, уезд, губерния и индексатор — свойства прихода, не года:
+-- правка на экране «Дело» расходится на дела всех лет. Архив — туда, где пуст.
+UPDATE mk_case
+   SET church = :church, village = :village, uyezd = :uyezd, guberniya = :guberniya,
+       parish_key = :parish_key, indexer = :indexer,
+       archive = coalesce(nullif(trim(archive), ''), :archive)
+ WHERE id <> :id;
 
 -- @entry_insert
 INSERT INTO entry (case_id, section, page, no_male, no_female,
@@ -33,7 +85,7 @@ VALUES (:case_id, :section, :page, :no_male, :no_female,
         :rite_day, :rite_month, :rite_year, :note, :uncertain, :created_by);
 
 -- @entry_update
-UPDATE entry SET page = :page, no_male = :no_male, no_female = :no_female,
+UPDATE entry SET case_id = :case_id, page = :page, no_male = :no_male, no_female = :no_female,
                  event_day = :event_day, event_month = :event_month, event_year = :event_year,
                  rite_day = :rite_day, rite_month = :rite_month, rite_year = :rite_year,
                  note = :note, uncertain = :uncertain, updated_at = datetime('now')
@@ -76,14 +128,14 @@ INSERT INTO place (name, name_norm, origin) VALUES (:name, :name_norm, 'user');
 -- на Familio. short/full_location собираются здесь же — как в place.csv
 -- из Excel, чтобы выгрузка не различала свои и перенесённые места.
 INSERT INTO place (name, name_norm, np_type, guberniya, uyezd, volost,
-                   short_location, full_location, familio_url, origin)
+                   short_location, full_location, familio_url, origin, updated_at)
 VALUES (:name, :name_norm, :np_type, :guberniya, :uyezd, :volost,
         trim(coalesce(:np_type, '') || ' ' || :name),
         trim(coalesce(:np_type, '') || ' ' || :name)
           || CASE WHEN :volost    IS NULL OR :volost    = '' THEN '' ELSE ', ' || :volost    || ' волость'  END
           || CASE WHEN :uyezd     IS NULL OR :uyezd     = '' THEN '' ELSE ', ' || :uyezd     || ' уезд'     END
           || CASE WHEN :guberniya IS NULL OR :guberniya = '' THEN '' ELSE ', ' || :guberniya || ' губерния' END,
-        :familio_url, 'user');
+        :familio_url, 'user', strftime('%Y-%m-%d %H:%M:%f', 'now'));
 
 -- @place_get
 -- Карточка известного пункта на правку (Роман 24.09.2026: «должна быть
@@ -101,7 +153,7 @@ SELECT id, name, np_type, guberniya, uyezd, volost, familio_url, origin
 UPDATE place
    SET name = :name, name_norm = :name_norm,
        np_type = :np_type, guberniya = :guberniya, uyezd = :uyezd, volost = :volost,
-       familio_url = :familio_url,
+       familio_url = :familio_url, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now'),
        short_location = trim(coalesce(:np_type, '') || ' ' || :name),
        full_location = trim(coalesce(:np_type, '') || ' ' || :name)
           || CASE WHEN :volost    IS NULL OR :volost    = '' THEN '' ELSE ', ' || :volost    || ' волость'  END
@@ -114,7 +166,9 @@ UPDATE place
 SELECT name FROM place WHERE name_norm = :name_norm AND id <> :id LIMIT 1;
 
 -- @place_renamed_remember
-INSERT OR IGNORE INTO place_renamed (old_norm) VALUES (:old_norm);
+-- REPLACE: повторное переименование того же названия освежает время — по
+-- нему сверка приходов понимает, что было позже: переименование или карточка.
+INSERT OR REPLACE INTO place_renamed (old_norm, renamed_at) VALUES (:old_norm, strftime('%Y-%m-%d %H:%M:%f', 'now'));
 
 -- @place_rename_persons_merge
 -- Переименование в название, под которым этот же человек уже запомнен:
@@ -281,8 +335,13 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        -- году» он равен году обряда (сборка #38).
        e.rite_year
   FROM entry e
- WHERE e.case_id = :case_id AND e.section = :section
- ORDER BY e.id DESC;
+ -- Записи года книги (:year), а не всего прихода: после импорта из Excel в
+ -- списке иначе была бы тысяча строк. :last = 1 — одна последняя запись
+ -- раздела любого года, для «продолжить с места».
+ WHERE e.section = :section
+   AND (:last = 1 OR coalesce(e.rite_year, e.event_year) IS :year)
+ ORDER BY e.id DESC
+ LIMIT CASE WHEN :last = 1 THEN 1 ELSE -1 END;
 
 -- @entry_get
 -- Запись целиком — для правки уже сохранённого (заказчик 22.09.2026).
@@ -316,7 +375,7 @@ SELECT m.role_code,
             || CASE WHEN m.surname IS NULL THEN '' ELSE ' ' || m.surname END) AS iof,
        m.rank, m.note
   FROM person_mention m
- WHERE m.entry_id = (SELECT max(e.id) FROM entry e WHERE e.case_id = :case_id AND (:section = 0 OR e.section = :section))
+ WHERE m.entry_id = (SELECT max(e.id) FROM entry e WHERE (:section = 0 OR e.section = :section))
    AND m.role_code IN ('clergy1', 'clergy2', 'clergy3')
  ORDER BY m.sort_order;
 
@@ -423,7 +482,8 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
  LIMIT :limit;
 
 -- @infant_suggest
--- Подсказка ИОФ умершего: каждый ребёнок из записей о рождении этого дела —
+-- Подсказка ИОФ умершего: каждый ребёнок из записей о рождении прихода (всех
+-- лет: умерший в январе родился в прошлом году, а дело теперь на год) —
 -- отдельной строкой со своим родителем, местом и датой рождения. Роман
 -- 30.09.2026 на вопрос о детях с одним именем: «вариант с именем отца —
 -- хорошая идея». Раньше «Мария» была одной строкой на всех Марий, а при
@@ -431,12 +491,15 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
 -- Родитель — отец, а если его в записи нет (незаконнорождённые) — мать.
 -- Поиск по началу имени — через person_index (у него есть ключ iof_norm;
 -- некоррелированный IN, как в person_suggest_infant). Недавно родившиеся —
--- первыми: умирают чаще всего в первые месяцы.
+-- первыми: умирают чаще всего в первые месяцы. :year — год на форме смертей:
+-- дети, родившиеся не позже него и не раньше чем за 7 лет; иначе после
+-- импорта тринадцати лет нужная «Мария» не попадала бы в первые 30
+-- (ревьюер 02.10.2026).
 WITH kid AS (
     SELECT c.entry_id, c.gender, e.id AS eid, e.event_day, e.event_month, e.event_year,
            trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) AS iof
       FROM person_mention c
-      JOIN entry e ON e.id = c.entry_id AND e.section = 1 AND e.case_id = :case_id
+      JOIN entry e ON e.id = c.entry_id AND e.section = 1
      WHERE c.role_code = 'child'
 ),
 parent AS (
@@ -457,25 +520,28 @@ SELECT k.iof, k.gender,
  WHERE k.iof <> ''
    AND k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :prefix ESCAPE '\')
    AND (:gender IS NULL OR k.gender IS NULL OR k.gender = :gender)
+   AND (:year IS NULL OR k.event_year IS NULL OR k.event_year BETWEEN :year - 7 AND :year)
  ORDER BY k.event_year DESC, k.event_month DESC, k.event_day DESC, k.eid DESC
  LIMIT :limit;
 
 -- @birth_father
 -- Отец из записи о рождении ребёнка с этим ИОФ (Роман 28.09.2026: выбрали
--- умершего младенца — родственник заполняется его отцом). Только своё дело
--- и только отец с именем. Вторая колонка — сколько таких записей в деле:
--- если их больше одной (десятки «Марий» за год), отец не угадывается
--- (проверяющий #38).
+-- умершего младенца — родственник заполняется его отцом). Только отец с
+-- именем и только рождения не позже года формы и не раньше чем за 7 лет до
+-- него (:year; дело теперь на год, приход — на много лет). Вторая колонка —
+-- сколько таких записей: если их больше одной (десятки «Марий»), отец не
+-- угадывается (проверяющий #38).
 SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) AS iof,
        (SELECT p.name FROM place p WHERE p.id = f.place_id) AS place,
        f.rank,
        count(*) OVER () AS births
   FROM person_mention c
-  JOIN entry e ON e.id = c.entry_id AND e.section = 1 AND e.case_id = :case_id
+  JOIN entry e ON e.id = c.entry_id AND e.section = 1
   JOIN person_mention f ON f.entry_id = c.entry_id AND f.role_code = 'father'
  WHERE c.role_code = 'child'
    AND trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) = :iof
    AND trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) <> ''
+   AND (:year IS NULL OR e.event_year IS NULL OR e.event_year BETWEEN :year - 7 AND :year)
  ORDER BY e.id DESC
  LIMIT 1;
 

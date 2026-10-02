@@ -35,7 +35,10 @@ export default function Modal({ title, onClose, children, kind }: Props) {
       if (performance.now() - openedAt.current < GUARD_MS) e.preventDefault();
     };
     el?.addEventListener("beforeinput", guard, true);
-    const first = box.current?.querySelector<HTMLElement>("[data-similar], input");
+    // Скрытое поле выбора файла — не поле. Полей нет (окно «Приходы») —
+    // фокус на само окно: иначе он остаётся под ним, и Esc до окна не доходит.
+    const first = box.current?.querySelector<HTMLElement>(
+      "[data-similar], input:not([type='file']):not([hidden])") ?? box.current;
     first?.focus();
     if (first instanceof HTMLInputElement) first.select();
     return () => el?.removeEventListener("beforeinput", guard, true);
@@ -57,6 +60,7 @@ export default function Modal({ title, onClose, children, kind }: Props) {
         aria-label={title}
         data-focus-scope
         data-modal={kind}
+        tabIndex={-1}
         ref={box}
         onKeyDownCapture={(e) => {
           // Первые мгновения после открытия буквы и Enter в окно не идут: это

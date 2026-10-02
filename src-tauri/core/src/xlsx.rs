@@ -542,15 +542,20 @@ pub fn read_sheet(xlsx: &[u8], sheet: &str) -> Result<BTreeMap<u32, BTreeMap<u32
             let v = if let Some(p) = c.find("<t") {
                 let body = &c[p..];
                 let st = body.find('>').map(|x| x + 1).unwrap_or(0);
-                let en = body.find("</t>").unwrap_or(st);
+                // max: в битом файле «</t>» может стоять раньше «<t» — не паника.
+                let en = body.find("</t>").unwrap_or(st).max(st);
                 unescape(&body[st..en])
             } else if let Some(p) = c.find("<v>") {
-                let en = c.find("</v>").unwrap_or(p + 3);
-                let v = &c[p + 3..en];
-                if attr(open_tag(c), "t").as_deref() == Some("s") {
-                    v.parse::<usize>().ok().and_then(|i| shared.get(i).cloned()).unwrap_or_default()
-                } else {
-                    format!("#{v}")
+                let st = p + 3;
+                let en = c[st..].find("</v>").map(|x| st + x).unwrap_or(st);
+                let v = &c[st..en];
+                match attr(open_tag(c), "t").as_deref() {
+                    Some("s") => v.parse::<usize>().ok().and_then(|i| shared.get(i).cloned()).unwrap_or_default(),
+                    // Формула с текстовым результатом, логическое значение,
+                    // ошибка — текст как есть. Числом («#») считалось бы
+                    // «05.01.1889» из формулы, и импорт терял день (ревьюер 02.10.2026).
+                    Some("str") | Some("b") | Some("e") => unescape(v),
+                    _ => format!("#{v}"),
                 }
             } else {
                 String::new()

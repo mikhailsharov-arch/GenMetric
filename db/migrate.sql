@@ -206,6 +206,39 @@ DELETE FROM clergy_index
                WHERE c.iof = clergy_index.iof AND coalesce(c.rank, '') = coalesce(clergy_index.rank, ''));
 UPDATE clergy_index SET rank = '' WHERE rank IS NULL;
 
+-- Дело — на год книги (02.10.2026). До этого дело было одно на всю базу, а
+-- реквизиты у каждого года свои (Роман: «каждый год, как правило, представляет
+-- собой отдельное архивное дело») — выгрузка в Familio ставила всем годам
+-- одни фонд, опись и дело. Шаги повторяемы: второй прогон ничего не меняет.
+-- 1) дело получает год своей последней записи (в нём мог остаться год первой);
+UPDATE mk_case
+   SET year = (SELECT coalesce(e.rite_year, e.event_year) FROM entry e
+                WHERE e.case_id = mk_case.id AND coalesce(e.rite_year, e.event_year) IS NOT NULL
+                ORDER BY e.id DESC LIMIT 1)
+ WHERE EXISTS (SELECT 1 FROM entry e
+                WHERE e.case_id = mk_case.id AND coalesce(e.rite_year, e.event_year) IS NOT NULL)
+   AND NOT EXISTS (SELECT 1 FROM entry e
+                    WHERE e.case_id = mk_case.id AND coalesce(e.rite_year, e.event_year) = mk_case.year);
+-- 2) у записей других лет — своё дело, копией: реквизиты те же, пока человек
+--    не поправит (как было до обновления — в выгрузке ничего не меняется);
+INSERT INTO mk_case (archive, fond, opis, delo, church, village, uyezd, guberniya,
+                     year, parish_key, indexer, note, updated_at)
+SELECT c.archive, c.fond, c.opis, c.delo, c.church, c.village, c.uyezd, c.guberniya,
+       y.year, c.parish_key, c.indexer, c.note, c.updated_at
+  FROM (SELECT DISTINCT case_id, coalesce(rite_year, event_year) AS year FROM entry) y
+  JOIN mk_case c ON c.id = y.case_id
+ WHERE y.year IS NOT NULL AND y.year IS NOT c.year
+   AND NOT EXISTS (SELECT 1 FROM mk_case c2 WHERE c2.year = y.year)
+ GROUP BY y.year;
+-- 3) запись — к делу своего года.
+UPDATE entry
+   SET case_id = (SELECT c.id FROM mk_case c WHERE c.year = coalesce(entry.rite_year, entry.event_year)
+                   ORDER BY c.id LIMIT 1)
+ WHERE coalesce(rite_year, event_year) IS NOT NULL
+   AND EXISTS (SELECT 1 FROM mk_case c WHERE c.year = coalesce(entry.rite_year, entry.event_year))
+   AND case_id IS NOT (SELECT c.id FROM mk_case c WHERE c.year = coalesce(entry.rite_year, entry.event_year)
+                        ORDER BY c.id LIMIT 1);
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting

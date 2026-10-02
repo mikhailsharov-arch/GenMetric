@@ -9,6 +9,7 @@ import { useFormClergy } from "./clergy";
 import Suggest from "./Suggest";
 import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
+import { setDirty } from "./dirty";
 
 /**
  * Форма ввода записи о браке (25.09.2026) — по образцу рождений.
@@ -89,7 +90,7 @@ function kinGender(k: string): "М" | "Ж" | undefined {
   return undefined;
 }
 
-export default function MarriageForm({ mkCase }: { mkCase: Case }) {
+export default function MarriageForm({ mkCase, onSaved }: { mkCase: Case; onSaved: (caseId: number) => void }) {
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
   const [count, setCount] = useState<number | null>(null);
@@ -123,18 +124,24 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
   const witnessSetters = [setW1, setW2, setW3, setW4, setW5, setW6];
   const witnesses = [w1, w2, w3, w4, w5, w6];
 
-  useEffect(() => { refresh(); }, [mkCase.id]);
-  const restored = useRef(false);
+  // Список «Набрано» — записи года книги, который стоит на форме: после
+  // импорта из Excel в приходе тысячи записей (спека 2026-10-02, п. 3.4).
+  useEffect(() => { refresh(); }, [year]);
 
+  // Восстановление места работы — один раз при открытии формы, по последней
+  // записи раздела в приходе, какого бы года она ни была.
+  useEffect(() => {
+    invoke<Brief[]>("entry_list", { section: 2, year: null, last: true })
+      .then((rows) => { if (rows[0]) resume(rows[0]); })
+      .catch((e) => report("Не удалось узнать, на чём остановились", e));
+  }, []);
+
+  const listSeq = useRef(0);
   function refresh() {
-    invoke<Brief[]>("entry_list", { caseId: mkCase.id, section: 2 })
-      .then((rows) => {
-        setSaved(rows);
-        if (!restored.current) {
-          restored.current = true;
-          if (rows[0]) resume(rows[0]);
-        }
-      })
+    // Год набирают по цифре — ответ на прежний год отбрасывается.
+    const mine = ++listSeq.current;
+    invoke<Brief[]>("entry_list", { section: 2, year, last: false })
+      .then((rows) => { if (mine === listSeq.current) setSaved(rows); })
       .catch((e) => report("Не удалось прочитать список набранных браков", e));
   }
 
@@ -244,7 +251,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
 
     setBusy(true);
     try {
-      await invoke<number>("entry_save", {
+      const done = await invoke<{ id: number; case_id: number; new_case_year: number | null }>("entry_save", {
         entry: {
           id: editingId, case_id: mkCase.id, section: 2, page,
           no_male: count, no_female: null,
@@ -255,6 +262,12 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
       });
       clergyState.bump();
       dismissWarn();
+      // Дело — на год книги: год встретился впервые — дело заведено копией
+      // прошлого, реквизиты надо проверить (спека 2026-10-02, п. 3.2).
+      if (done.new_case_year !== null)
+        warn(`Новый год книги ${done.new_case_year}`,
+             "ему заведено своё дело копией прошлого — проверьте фонд, опись и дело на экране «Дело»");
+      onSaved(done.case_id);
       if (editingId !== null) restoreAfterEdit();
       else {
         next();
@@ -267,6 +280,12 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
       setBusy(false);
     }
   }
+
+  // Несохранённое — для смены прихода: окно «Приходы» не даст потерять молча.
+  useEffect(() => {
+    setDirty("Браки", formDirty() || editingId !== null);
+    return () => setDirty("Браки", false);
+  });
 
   function formDirty(): boolean {
     return [groom, bride, groomRel, brideRel, ...witnesses].some((p) => p.iof.trim().length > 0);
@@ -460,7 +479,7 @@ export default function MarriageForm({ mkCase }: { mkCase: Case }) {
 
       {saved.length > 0 && (
         <section>
-          <h2>Набрано браков: {saved.length}</h2>
+          <h2>Набрано браков: {saved.length}{year !== null && <span className="ofyear"> — за {year} год</span>}</h2>
           <p className="hint">Нажмите «Открыть», чтобы поправить запись. Форма при этом должна быть пустой.</p>
           <table className="facts saved">
             <tbody>

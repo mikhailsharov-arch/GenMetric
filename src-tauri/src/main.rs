@@ -17,16 +17,12 @@ use tauri::{Manager, State};
 
 mod export;
 
+use genmetric_core::parish;
+use genmetric_core::records::{parse_iof_in, remember, save_entry, Case, EntryInput, ParsedIof, Saved};
 use genmetric_core::statement;
 use genmetric_core::text::{normalize, normalize_name, normalize_words};
 
-/// Версия схемы, которую понимает эта сборка.
-const SCHEMA_VERSION: i64 = 7;
 
-/// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
-/// поэтому логика обновления проверена, хотя вызывающий её код на Rust
-/// в песочнице не собирается.
-const MIGRATE_SQL: &str = include_str!("../../db/migrate.sql");
 
 /// Слияние архива подсказок из Excel. Тот же файл прогоняет db/test_archive.py.
 const IMPORT_ARCHIVE_SQL: &str = include_str!("../../db/import_archive.sql");
@@ -38,7 +34,20 @@ const IMPORT_ARCHIVE_SQL: &str = include_str!("../../db/import_archive.sql");
 /// показать окно. Причина в этом случае лежит в startup_error.
 struct App {
     conn: Mutex<Option<Connection>>,
-    db_path: String,
+    /// Файл открытого прихода. С 02.10.2026 приходов несколько, и открытый
+    /// меняется на ходу (parish_open) — поэтому под замком.
+    db_path: Mutex<String>,
+    /// Открытый приход: номер в перечне и название.
+    parish: Mutex<(i64, String)>,
+    /// Не поломка, но сказать надо: справочники не сверены с общими, или
+    /// открыт не тот приход, что в прошлый раз.
+    warning: Mutex<Option<String>>,
+    /// Файл Excel для импорта: приходит из окна частями (он 7 МБ; байты —
+    /// обычными аргументами, инцидент 13.09.2026) и ждёт здесь команды.
+    import_file: Mutex<Vec<u8>>,
+    data_dir: PathBuf,
+    /// База поставки внутри программы: из неё создаётся и обновляется каждый приход.
+    bundled: Result<PathBuf, String>,
     log_path: PathBuf,
     startup_error: Option<String>,
 }
@@ -65,26 +74,6 @@ struct DbInfo {
     clergy_noname_entries: i64,
 }
 
-#[derive(Serialize)]
-struct ParsedIof {
-    first_name: Option<String>,
-    first_name_modern: Option<String>,
-    patronymic: Option<String>,
-    patronymic_modern: Option<String>,
-    surname: Option<String>,
-    gender: Option<String>,
-    father_name: Option<String>,
-    known_name: bool,
-    /// Имя опознано по соответствию, заведённому человеком в окне сверки
-    /// («Пискарь» → «Кесарь»): форма подставит целевое имя в поле и допишет
-    /// в примечание «Имя в документе: Пискарь» — как при первом решении.
-    name_alias: Option<String>,
-    /// То же для отчества.
-    patr_alias: Option<String>,
-    /// Второе слово не опознано как отчество, но похоже на него по окончанию
-    /// и за ним есть ещё слово — форма предложит сверить как отчество.
-    patr_unknown: Option<String>,
-}
 
 #[derive(Serialize)]
 struct Suggestion {
@@ -105,6 +94,9 @@ struct Startup {
     error: Option<String>,
     db_path: String,
     log_path: String,
+    parish_id: i64,
+    parish_name: String,
+    warning: Option<String>,
 }
 
 // ============================================================================
@@ -185,6 +177,27 @@ fn with_conn<T>(
     })
 }
 
+/// То же, и сразу — сверка справочников с общим файлом: карточка пункта,
+/// новое звание, решение окна сверки доезжают до других приходов без
+/// перезапуска (спека 2026-10-02, п. 2.2). Сбой сверки сохранению не мешает:
+/// сохранённое уже в приходе, а сверка повторится при следующем сохранении
+/// и при открытии.
+fn with_conn_shared<T>(
+    app: &State<App>,
+    what: &str,
+    body: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    with_conn(app, what, |conn| {
+        let out = body(conn)?;
+        if parish::has_common(conn) {
+            if let Err(e) = parish::sync(conn) {
+                write_log(&app.log_path, &format!("{what}: справочники не сверены с общими ({e})"));
+            }
+        }
+        Ok(out)
+    })
+}
+
 // ============================================================================
 //  Поиск и разбор
 // ============================================================================
@@ -256,10 +269,15 @@ fn like_prefix(input: &str) -> String {
 
 #[tauri::command]
 fn startup_state(app: State<App>) -> Startup {
+    let (parish_id, parish_name) = app.parish.lock().map(|p| p.clone()).unwrap_or((1, String::new()));
     Startup {
         error: app.startup_error.clone(),
-        db_path: app.db_path.clone(),
+        db_path: app.db_path.lock().map(|p| p.clone()).unwrap_or_default(),
         log_path: app.log_path.to_string_lossy().to_string(),
+        parish_id,
+        parish_name,
+        // Предупреждение показывается один раз — после чтения снимается.
+        warning: app.warning.lock().ok().and_then(|mut w| w.take()),
     }
 }
 
@@ -315,7 +333,7 @@ fn lookup_summary(app: State<App>) -> Result<Vec<LookupSize>, String> {
 
 #[tauri::command]
 fn db_info(handle: tauri::AppHandle, app: State<App>) -> Result<DbInfo, String> {
-    let db_path = app.db_path.clone();
+    let db_path = app.db_path.lock().map(|p| p.clone()).unwrap_or_default();
     let log_path = app.log_path.to_string_lossy().to_string();
     let version = handle.package_info().version.to_string();
     with_conn(&app, "Сведения о базе", |conn| {
@@ -444,131 +462,7 @@ fn parse_iof(app: State<App>, text: String) -> Result<ParsedIof, String> {
     with_conn(&app, &format!("Разбор «{text}»"), |conn| parse_iof_in(conn, &text))
 }
 
-/// Похоже ли слово на отчество по окончанию — чтобы не сверять как отчество
-/// фамилию, стоящую второй в записи без отчества.
-fn looks_like_patronymic(word: &str) -> bool {
-    let w = normalize_name(word);
-    ["ов", "ев", "ин", "ова", "ева", "ина", "ич", "на", "ых", "их"]
-        .iter().any(|e| w.ends_with(e))
-}
 
-fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    let mut out = ParsedIof {
-        first_name: None,
-        first_name_modern: None,
-        patronymic: None,
-        patronymic_modern: None,
-        surname: None,
-        gender: None,
-        father_name: None,
-        known_name: false,
-        name_alias: None,
-        patr_alias: None,
-        patr_unknown: None,
-    };
-    if tokens.is_empty() {
-        return Ok(out);
-    }
-
-    let alias_find = statement("alias_find")?;
-    let alias = |kind: &str, word: &str| -> Result<Option<(Option<String>, Option<String>)>, String> {
-        conn.query_row(&alias_find,
-                       rusqlite::named_params! { ":kind": kind, ":form_norm": normalize_name(word) },
-                       |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()
-            .map_err(|e| e.to_string())
-    };
-
-    out.first_name = Some(tokens[0].to_string());
-    // Сначала соответствие, заведённое человеком: оно сильнее словаря.
-    // Целевое имя ищется в словаре как обычное — с полом и основой.
-    let mut lookup_word = tokens[0].to_string();
-    match alias("name", tokens[0])? {
-        Some((Some(target), _)) => {
-            out.name_alias = Some(target.clone());
-            lookup_word = target;
-        }
-        Some((None, gender)) => {
-            // «Новое имя»: словарь его не знает, но человек сказал, что оно есть.
-            out.known_name = true;
-            out.gender = gender;
-            // Современное — без конечного «ъ»: «Жданъ» → «Ждан» (ревьюер 23.09.2026).
-            out.first_name_modern = Some(tokens[0].trim_end_matches('ъ').to_string());
-        }
-        None => {}
-    }
-    if !out.known_name {
-        // priority 0 — заголовочное написание, 1 — вариант: точное совпадение
-        // с самостоятельным именем важнее совпадения с вариантом другого.
-        let head: Option<(String, Option<String>, Option<String>)> = conn
-            .query_row(
-                "SELECT d.name, d.base_name, d.gender
-                   FROM name_form f JOIN name_dict d ON d.id = f.name_id
-                  WHERE f.kind IN ('name','variant') AND f.form_norm = ?1
-                  ORDER BY f.priority LIMIT 1",
-                [normalize_name(&lookup_word)],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if let Some((name, base, gender)) = head {
-            out.known_name = true;
-            out.gender = gender;
-            out.first_name_modern = Some(base.unwrap_or(name));
-        }
-    }
-
-    let mut rest = &tokens[1..];
-    if let Some(first_rest) = rest.first() {
-        let mut patr_word = first_rest.to_string();
-        // Соответствие отчества без цели — «Это не отчество»: человек сказал,
-        // что второе слово — часть фамилии; больше не спрашивать (техдолг,
-        // ревьюер 23.09 и проверяющий 24.09.2026).
-        let mut not_patr = false;
-        match alias("patr", first_rest)? {
-            Some((Some(target), _)) => {
-                out.patr_alias = Some(target.clone());
-                patr_word = target;
-            }
-            Some((None, _)) => not_patr = true,
-            None => {}
-        }
-        let patr: Option<(String, String, String)> = conn
-            .query_row(
-                "SELECT d.name,
-                        CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END,
-                        CASE WHEN f.kind LIKE '%_m' THEN 'М' ELSE 'Ж' END
-                   FROM name_form f JOIN name_dict d ON d.id = f.name_id
-                  WHERE f.kind LIKE 'patr%' AND f.form_norm = ?1
-                  ORDER BY f.priority LIMIT 1",
-                [normalize_name(&patr_word)],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if let Some((father, modern, sex)) = patr {
-            out.patronymic = Some(first_rest.to_string());
-            out.patronymic_modern = Some(modern);
-            out.father_name = Some(father);
-            if out.gender.is_none() {
-                out.gender = Some(sex);
-            }
-            rest = &rest[1..];
-        } else if !not_patr && looks_like_patronymic(first_rest) {
-            // «Иван Пискарев Сидоров» и «Иван Пискарев» без фамилии: второе
-            // слово не отчество по словарю, но стоит на месте отчества и
-            // выглядит как оно — форма спросит. Без фамилии тоже (Роман
-            // 25.09.2026: «считает, что это фамилия»); если это правда
-            // фамилия — «Это не отчество» запомнит ответ.
-            out.patr_unknown = Some(first_rest.to_string());
-        }
-    }
-    if !rest.is_empty() {
-        out.surname = Some(rest.join(" "));
-    }
-    Ok(out)
-}
 
 /// Похожие имена (kind = "name") или отчества ("patr") — для окна сверки.
 /// Пол сужает список, если известен.
@@ -621,7 +515,7 @@ fn dict_search(app: State<App>, prefix: String, kind: String, gender: Option<Str
 #[tauri::command]
 fn alias_save(app: State<App>, kind: String, form: String, target: Option<String>,
               gender: Option<String>) -> Result<(), String> {
-    with_conn(&app, &format!("Соответствие «{form}»"), |conn| {
+    with_conn_shared(&app, &format!("Соответствие «{form}»"), |conn| {
         if kind != "name" && kind != "patr" {
             return Err(format!("Неизвестный вид соответствия: {kind}"));
         }
@@ -636,24 +530,13 @@ fn alias_save(app: State<App>, kind: String, form: String, target: Option<String
 /// Чтение настройки. Настройки живут в базе, поэтому переживают перезапуск.
 #[tauri::command]
 fn get_setting(app: State<App>, key: String) -> Result<Option<String>, String> {
-    with_conn(&app, &format!("Чтение настройки «{key}»"), |conn| {
-        conn.query_row("SELECT value FROM setting WHERE key = ?1", [&key], |r| r.get(0))
-            .optional()
-            .map_err(|e| e.to_string())
-    })
+    // Настройки окна — в общем файле, одни на все приходы (parish.rs).
+    with_conn(&app, &format!("Чтение настройки «{key}»"), |conn| parish::setting_get(conn, &key))
 }
 
 #[tauri::command]
 fn set_setting(app: State<App>, key: String, value: String) -> Result<(), String> {
-    with_conn(&app, &format!("Запись настройки «{key}»"), |conn| {
-        conn.execute(
-            "INSERT INTO setting (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [&key, &value],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    })
+    with_conn(&app, &format!("Запись настройки «{key}»"), |conn| parish::setting_set(conn, &key, &value))
 }
 
 #[tauri::command]
@@ -665,237 +548,17 @@ fn set_always_on_top(window: tauri::Window, value: bool) -> Result<(), String> {
 //  Открытие и обновление базы
 // ============================================================================
 
-/// Открывает базу пользователя, при необходимости обновляя её из поставки.
-///
-/// База копируется в папку пользователя только при первой установке. Если
-/// оставить только копирование, обновления схемы и справочников до человека
-/// не доедут: он ставит новую версию поверх старой, а работает по-прежнему
-/// со старой базой. Именно так вышло 13.08.2026 — у тестировщика не появилась
-/// таблица name_form, и половина сборки молча не работала.
-fn open_database(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
-    if !db_path.exists() {
-        std::fs::copy(bundled, db_path)?;
-        let conn = Connection::open(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-        return Ok(conn);
-    }
 
-    let conn = Connection::open(db_path)?;
-    // WAL включается здесь, а не в schema.sql: это настройка соединения,
-    // и в файле схемы она ломает сборку на сетевых файловых системах.
-    // Именно execute_batch, а не pragma_update: PRAGMA journal_mode возвращает
-    // строку результата, и pragma_update на этом падает.
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
 
-    let version: i64 = conn
-        .query_row("SELECT coalesce(max(version), 0) FROM schema_version", [], |r| r.get(0))
-        .unwrap_or(0);
-    let stamp: String = conn
-        .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
-        .optional()?
-        .unwrap_or_default();
 
-    let bundled_stamp = {
-        let seed = Connection::open(bundled)?;
-        let value: Option<String> = seed
-            .query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0))
-            .optional()?;
-        value.unwrap_or_default()
-    };
-
-    if version >= SCHEMA_VERSION && stamp == bundled_stamp && !stamp.is_empty() {
-        return Ok(conn); // база свежая, делать нечего
-    }
-
-    backup(&conn, db_path)?;
-    upgrade(&conn, bundled, version)?;
-    Ok(conn)
-}
-
-/// Копия базы перед обновлением. Дёшево и один раз спасёт.
-///
-/// Сначала — контрольная точка WAL: после сбоя прошлого сеанса часть данных
-/// лежит в файле -wal, и копия одного основного файла отстала бы от базы.
-/// С 21.09.2026 обновление правит набранные записи, так что копия обязана
-/// быть полной (ревьюер).
-fn backup(conn: &Connection, db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-    let seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let name = format!("genmetric-до-обновления-{seconds}.sqlite");
-    let target = db_path.with_file_name(name);
-    std::fs::copy(db_path, target)?;
-    Ok(())
-}
-
-/// Колонки, которых нет в таблицах пользователя, — по образцу поставки
-/// (схема 6, 25.09.2026: `person_mention.kinship` для браков). Шаг
-/// «недостающие таблицы» новую колонку в старой таблице не видит; этот —
-/// видит. Только добавление: тип из поставки, без ограничений и значений по
-/// умолчанию — SQLite не даёт ALTER ADD COLUMN с ними в общем случае.
-/// Тот же шаг повторяет db/test_upgrade.py.
-fn add_missing_columns(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
-    let tables: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT name FROM seed.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    for table in tables {
-        let cols = |schema: &str| -> Result<Vec<(String, String)>, rusqlite::Error> {
-            let mut stmt = conn.prepare(&format!("PRAGMA {schema}.table_info(\"{table}\")"))?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
-            rows.collect()
-        };
-        let have: Vec<String> = cols("main")?.into_iter().map(|(n, _)| n).collect();
-        if have.is_empty() {
-            continue; // таблицы нет — её создал шаг выше или она не нужна
-        }
-        for (name, ty) in cols("seed")? {
-            if !have.contains(&name) {
-                conn.execute_batch(&format!("ALTER TABLE main.\"{table}\" ADD COLUMN \"{name}\" {ty}"))?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Обновление базы пользователя до текущей версии поставки.
-///
-/// Шаг первый: недостающие колонки в существующих таблицах (add_missing_columns,
-/// схема 6), затем недостающие таблицы и индексы по образцу из поставки.
-/// Колонки добавляются только простые: без NOT NULL и DEFAULT из поставки.
-///
-/// Шаг второй: обновляем справочники по db/migrate.sql. Тот же файл прогоняет
-/// тест db/test_upgrade.py, поэтому логика обновления проверена по-настоящему.
-fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<dyn std::error::Error>> {
-    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
-    conn.execute("ATTACH DATABASE ?1 AS seed", [bundled.to_string_lossy().to_string()])?;
-
-    let missing: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT name, sql FROM seed.sqlite_master
-              WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
-        )?;
-        let items: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut out = Vec::new();
-        for (name, sql) in items {
-            let exists: i64 = conn.query_row(
-                "SELECT count(*) FROM main.sqlite_master WHERE name = ?1",
-                [&name],
-                |r| r.get(0),
-            )?;
-            if exists == 0 {
-                out.push(sql);
-            }
-        }
-        out
-    };
-    // Сначала колонки в существующих таблицах, потом недостающие таблицы и
-    // индексы: будущий индекс по новой колонке иначе уронил бы обновление
-    // (ревьюер 25.09.2026). Таблиц, которых ещё нет, шаг колонок не трогает.
-    add_missing_columns(conn)?;
-    for sql in missing {
-        conn.execute_batch(&sql)?;
-    }
-
-    conn.execute_batch(MIGRATE_SQL)?;
-
-    if from < SCHEMA_VERSION {
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
-    }
-
-    conn.execute("DETACH DATABASE seed", [])?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-    Ok(())
-}
 
 // ============================================================================
 //  Дело и записи
 // ============================================================================
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-struct Case {
-    id: i64,
-    archive: Option<String>,
-    fond: Option<String>,
-    opis: Option<String>,
-    delo: Option<String>,
-    church: Option<String>,
-    village: Option<String>,
-    uyezd: Option<String>,
-    guberniya: Option<String>,
-    year: Option<i64>,
-    indexer: Option<String>,
-}
 
-impl Case {
-    /// Ключ прихода связывает годы одного прихода: по нему переносится
-    /// накопленная статистика подсказок. Индексируют именно приходами,
-    /// год за годом, поэтому на второй год подсказки уже почти всегда попадают.
-    fn parish_key(&self) -> String {
-        let part = |v: &Option<String>| v.clone().unwrap_or_default();
-        format!("{}|{}|{}|{}", part(&self.church), part(&self.village),
-                part(&self.uyezd), part(&self.guberniya))
-    }
-}
 
-#[derive(Deserialize)]
-struct PersonInput {
-    role_code: String,
-    sort_order: i64,
-    surname: Option<String>,
-    first_name: Option<String>,
-    patronymic: Option<String>,
-    surname_modern: Option<String>,
-    first_name_modern: Option<String>,
-    patronymic_modern: Option<String>,
-    maiden_surname: Option<String>,
-    gender: Option<String>,
-    rank: Option<String>,
-    confession: Option<String>,
-    place: Option<String>,
-    note: Option<String>,
-    uncertain: Option<String>,
-    // Браки (25.09.2026). У рождений не приходят — serde отдаёт None.
-    #[serde(default)]
-    age_years: Option<i64>,
-    #[serde(default)]
-    marriage_order: Option<String>,
-    #[serde(default)]
-    kinship: Option<String>,
-    // Смерти (27.09.2026): возраст как в книге и разобранный, причина смерти.
-    #[serde(default)]
-    age_months: Option<i64>,
-    #[serde(default)]
-    age_weeks: Option<i64>,
-    #[serde(default)]
-    age_days: Option<i64>,
-    #[serde(default)]
-    age_text: Option<String>,
-    #[serde(default)]
-    death_cause: Option<String>,
-}
 
-#[derive(Deserialize)]
-struct EntryInput {
-    id: Option<i64>,
-    case_id: i64,
-    section: i64,
-    page: Option<String>,
-    no_male: Option<i64>,
-    no_female: Option<i64>,
-    event_day: Option<i64>,
-    event_month: Option<i64>,
-    event_year: Option<i64>,
-    rite_day: Option<i64>,
-    rite_month: Option<i64>,
-    rite_year: Option<i64>,
-    note: Option<String>,
-    uncertain: Option<String>,
-    persons: Vec<PersonInput>,
-}
 
 #[derive(Serialize)]
 struct PersonHint {
@@ -932,13 +595,12 @@ struct EntryBrief {
     rite_year: Option<i64>,
 }
 
+/// Дело года (year) или текущее — дело последней записи. Дело — на год
+/// книги (спека 2026-10-02, п. 3); экран «Дело» остаётся одной формой.
 #[tauri::command]
-fn case_load(app: State<App>) -> Result<Option<Case>, String> {
+fn case_load(app: State<App>, year: Option<i64>) -> Result<Option<Case>, String> {
     with_conn(&app, "Чтение дела", |conn| {
-        conn.query_row(
-            "SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya,
-                    year, indexer FROM mk_case ORDER BY updated_at DESC, id DESC LIMIT 1",
-            [],
+        conn.query_row(&statement("case_current")?, rusqlite::named_params! { ":year": year },
             |r| Ok(Case {
                 id: r.get(0)?, archive: r.get(1)?, fond: r.get(2)?, opis: r.get(3)?,
                 delo: r.get(4)?, church: r.get(5)?, village: r.get(6)?, uyezd: r.get(7)?,
@@ -950,15 +612,40 @@ fn case_load(app: State<App>) -> Result<Option<Case>, String> {
     })
 }
 
+#[derive(Serialize)]
+struct CaseYear {
+    year: i64,
+    entries: i64,
+}
+
+/// Годы, у которых есть дело, — для выбора года на экране «Дело».
+#[tauri::command]
+fn case_years(app: State<App>) -> Result<Vec<CaseYear>, String> {
+    with_conn(&app, "Годы дел", |conn| {
+        let mut stmt = conn.prepare(&statement("case_years")?).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(CaseYear { year: r.get(0)?, entries: r.get(1)? }))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
 #[tauri::command]
 fn case_save(app: State<App>, case: Case) -> Result<i64, String> {
-    with_conn(&app, "Сохранение дела", |conn| {
+    with_conn_shared(&app, "Сохранение дела", |conn| {
         let id = if case.id > 0 { case.id } else { 1 };
         let sql = statement("case_upsert")?;
         conn.execute(&sql, rusqlite::named_params! {
             ":id": id, ":archive": case.archive, ":fond": case.fond, ":opis": case.opis,
             ":delo": case.delo, ":church": case.church, ":village": case.village,
             ":uyezd": case.uyezd, ":guberniya": case.guberniya, ":year": case.year,
+            ":parish_key": case.parish_key(), ":indexer": case.indexer,
+        })
+        .map_err(|e| e.to_string())?;
+        // Церковь, село, уезд, губерния, индексатор — свойства прихода: на
+        // дела всех лет. Фонд, опись и дело остаются у своего года.
+        conn.execute(&statement("case_spread_parish")?, rusqlite::named_params! {
+            ":id": id, ":archive": case.archive, ":church": case.church, ":village": case.village,
+            ":uyezd": case.uyezd, ":guberniya": case.guberniya,
             ":parish_key": case.parish_key(), ":indexer": case.indexer,
         })
         .map_err(|e| e.to_string())?;
@@ -977,181 +664,10 @@ fn case_save(app: State<App>, case: Case) -> Result<i64, String> {
     })
 }
 
-/// Сохранение записи со всеми упомянутыми персонами.
-///
-/// Попутно происходит три вещи, ради которых всё и затевалось: населённые
-/// пункты заводятся по первому упоминанию, введённые вручную звания попадают
-/// в справочник, а частота использования растёт — на ней держится порядок
-/// подсказок.
+/// Сохранение записи со всеми упомянутыми персонами — genmetric_core::records.
 #[tauri::command]
-fn entry_save(app: State<App>, entry: EntryInput) -> Result<i64, String> {
-    with_conn(&app, "Сохранение записи", |conn| {
-        let parish: String = conn
-            .query_row("SELECT parish_key FROM mk_case WHERE id = ?1", [entry.case_id], |r| r.get(0))
-            .optional()
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
-
-        conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
-        let result = (|| -> Result<i64, String> {
-            let entry_id = match entry.id {
-                Some(id) => {
-                    conn.execute(&statement("entry_update")?, rusqlite::named_params! {
-                        ":id": id, ":page": entry.page, ":no_male": entry.no_male,
-                        ":no_female": entry.no_female, ":event_day": entry.event_day,
-                        ":event_month": entry.event_month, ":event_year": entry.event_year,
-                        ":rite_day": entry.rite_day, ":rite_month": entry.rite_month,
-                        ":rite_year": entry.rite_year, ":note": entry.note,
-                        ":uncertain": entry.uncertain,
-                    }).map_err(|e| e.to_string())?;
-                    id
-                }
-                None => {
-                    conn.execute(&statement("entry_insert")?, rusqlite::named_params! {
-                        ":case_id": entry.case_id, ":section": entry.section, ":page": entry.page,
-                        ":no_male": entry.no_male, ":no_female": entry.no_female,
-                        ":event_day": entry.event_day, ":event_month": entry.event_month,
-                        ":event_year": entry.event_year, ":rite_day": entry.rite_day,
-                        ":rite_month": entry.rite_month, ":rite_year": entry.rite_year,
-                        ":note": entry.note, ":uncertain": entry.uncertain,
-                        ":created_by": Option::<String>::None,
-                    }).map_err(|e| e.to_string())?;
-                    conn.last_insert_rowid()
-                }
-            };
-
-            conn.execute(&statement("mentions_clear")?,
-                         rusqlite::named_params! { ":entry_id": entry_id })
-                .map_err(|e| e.to_string())?;
-
-            for person in &entry.persons {
-                let place_id = match person.place.as_deref().map(str::trim) {
-                    Some(name) if !name.is_empty() => Some(place_id_for(conn, name)?),
-                    _ => None,
-                };
-
-                conn.execute(&statement("mention_insert")?, rusqlite::named_params! {
-                    ":entry_id": entry_id, ":role_code": person.role_code,
-                    ":sort_order": person.sort_order, ":surname": person.surname,
-                    ":first_name": person.first_name, ":patronymic": person.patronymic,
-                    ":surname_modern": person.surname_modern,
-                    ":first_name_modern": person.first_name_modern,
-                    ":patronymic_modern": person.patronymic_modern,
-                    ":maiden_surname": person.maiden_surname, ":gender": person.gender,
-                    ":rank": person.rank, ":confession": person.confession,
-                    ":place_id": place_id, ":note": person.note, ":uncertain": person.uncertain,
-                    ":birth_year_from": Option::<i64>::None, ":birth_year_to": Option::<i64>::None,
-                    ":age_years": person.age_years, ":marriage_order": person.marriage_order,
-                    ":kinship": person.kinship,
-                    ":age_months": person.age_months, ":age_weeks": person.age_weeks,
-                    ":age_days": person.age_days, ":age_text": person.age_text,
-                    ":death_cause": person.death_cause,
-                }).map_err(|e| e.to_string())?;
-                if let Some(v) = person.marriage_order.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    remember(conn, "marriage_order", v, entry.case_id, &parish)?;
-                }
-                if let Some(v) = person.kinship.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    remember(conn, "kinship", v, entry.case_id, &parish)?;
-                }
-                if let Some(v) = person.death_cause.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    remember(conn, "death_cause", v, entry.case_id, &parish)?;
-                }
-
-                // Звание — в справочник и в статистику. Перечень выбирается
-                // по полу: у женщин свой список, это разные перечни.
-                if let Some(rank) = person.rank.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    // У причта свой перечень — из него и подсказка ClergyBlock
-                    // (ревьюер #37: звания причта засоряли мужские).
-                    let kind = if person.role_code.starts_with("clergy") { "rank_clergy" }
-                               else if person.gender.as_deref() == Some("Ж") { "rank_f" } else { "rank_m" };
-                    remember(conn, kind, rank, entry.case_id, &parish)?;
-                }
-                if let Some(place) = person.place.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    remember(conn, "place", place, entry.case_id, &parish)?;
-                }
-                if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    remember(conn, "first_name", name, entry.case_id, &parish)?;
-                }
-                if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                    remember(conn, "patronymic", patr, entry.case_id, &parish)?;
-                }
-
-                // Причт — в свою память, чтобы его можно было выбрать списком,
-                // а не набирать заново в каждом деле.
-                if person.role_code.starts_with("clergy") {
-                    let iof = person_iof(person);
-                    if !iof.is_empty() {
-                        conn.execute(&statement("clergy_remember")?, rusqlite::named_params! {
-                            ":iof": iof, ":iof_norm": normalize(&iof), ":rank": person.rank,
-                        }).map_err(|e| e.to_string())?;
-                    }
-                }
-
-                // Персона целиком — вместе с населённым пунктом и званием.
-                // Заказчик 17.08.2026: выбор персоны должен заполнять все три
-                // поля разом, а не заставлять набирать каждое.
-                // Умерший — нет: живым в следующих записях он не встретится, а в
-                // подсказках отцов и восприемников мешал бы (ревьюер 27.09.2026).
-                let iof = person_iof(person);
-                if !iof.is_empty() && person.role_code != "deceased" {
-                    conn.execute(&statement("person_remember")?, rusqlite::named_params! {
-                        ":iof": iof, ":iof_norm": normalize(&iof),
-                        ":place": person.place, ":rank": person.rank, ":gender": person.gender,
-                    }).map_err(|e| e.to_string())?;
-                }
-            }
-
-            // Кто чья жена: чтобы выбор отца заполнял мать.
-            let father = entry.persons.iter().find(|p| p.role_code == "father");
-            let mother = entry.persons.iter().find(|p| p.role_code == "mother");
-            if let (Some(f), Some(m)) = (father, mother) {
-                let husband = person_iof(f);
-                let wife = person_iof(m);
-                if !husband.is_empty() && !wife.is_empty() {
-                    conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
-                        ":husband_norm": normalize(&husband), ":wife_iof": wife,
-                        ":wife_place": m.place, ":wife_rank": m.rank,
-                    }).map_err(|e| e.to_string())?;
-                }
-            }
-            // Венчание — тоже пара: в рождениях после него жена подставится
-            // по мужу. Жить она будет у мужа — НП жениха; звание невесты
-            // («дочь-девица») жене не годится — пусто, форма поставит своё.
-            let groom = entry.persons.iter().find(|p| p.role_code == "groom");
-            let bride = entry.persons.iter().find(|p| p.role_code == "bride");
-            if let (Some(g), Some(b)) = (groom, bride) {
-                let husband = person_iof(g);
-                let wife = person_iof(b);
-                if !husband.is_empty() && !wife.is_empty() {
-                    conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
-                        ":husband_norm": normalize(&husband), ":wife_iof": wife,
-                        ":wife_place": g.place, ":wife_rank": Option::<String>::None,
-                    }).map_err(|e| e.to_string())?;
-                }
-            }
-            Ok(entry_id)
-        })();
-
-        match result {
-            Ok(id) => {
-                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                Ok(id)
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
-    })
-}
-
-/// Собирает ИОФ из частей — в том порядке, в каком он записан в книге.
-fn person_iof(p: &PersonInput) -> String {
-    [&p.first_name, &p.patronymic, &p.surname]
-        .iter()
-        .filter_map(|v| v.as_deref().map(str::trim).filter(|s| !s.is_empty()))
-        .collect::<Vec<_>>()
-        .join(" ")
+fn entry_save(app: State<App>, entry: EntryInput) -> Result<Saved, String> {
+    with_conn_shared(&app, "Сохранение записи", |conn| save_entry(conn, &entry))
 }
 
 /// Подсказка персонами: ИОФ вместе с населённым пунктом и званием.
@@ -1208,15 +724,15 @@ struct InfantHint {
 /// Дети из записей о рождении этого дела по началу имени — каждый отдельной
 /// строкой с родителем (Роман 30.09.2026).
 #[tauri::command]
-fn suggest_infant(app: State<App>, case_id: i64, prefix: String, limit: Option<i64>,
-                  gender: Option<String>) -> Result<Vec<InfantHint>, String> {
+fn suggest_infant(app: State<App>, prefix: String, limit: Option<i64>,
+                  gender: Option<String>, year: Option<i64>) -> Result<Vec<InfantHint>, String> {
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(6).clamp(1, 50);
     with_conn(&app, &format!("Поиск младенца «{prefix}»"), |conn| {
         let mut stmt = conn.prepare(&statement("infant_suggest")?).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::named_params! {
-                ":case_id": case_id, ":prefix": pattern, ":gender": gender, ":limit": limit,
+                ":prefix": pattern, ":gender": gender, ":limit": limit, ":year": year,
             }, |r| {
                 let (d, mo, y): (Option<i64>, Option<i64>, Option<i64>) = (r.get(6)?, r.get(7)?, r.get(8)?);
                 let part = |v: Option<i64>| v.map(|n| format!("{n:02}")).unwrap_or_else(|| "??".into());
@@ -1246,10 +762,10 @@ struct FatherHint {
 /// Отец ребёнка из записи о рождении — для «Смертей»: выбрали умершего
 /// младенца, родственник заполняется сам (Роман 28.09.2026).
 #[tauri::command]
-fn birth_father(app: State<App>, case_id: i64, iof: String) -> Result<Option<FatherHint>, String> {
+fn birth_father(app: State<App>, iof: String, year: Option<i64>) -> Result<Option<FatherHint>, String> {
     with_conn(&app, "Отец из записи о рождении", |conn| {
         conn.query_row(&statement("birth_father")?, rusqlite::named_params! {
-            ":iof": iof.trim(), ":case_id": case_id,
+            ":iof": iof.trim(), ":year": year,
         }, |r| Ok(FatherHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, births: r.get(3)? }))
             .optional()
             .map_err(|e| e.to_string())
@@ -1294,7 +810,8 @@ fn import_archive(app: State<App>, bytes: Vec<u8>) -> Result<ImportReport, Strin
     }
     // Архив кладём рядом с базой во временный файл: SQLite подключает
     // только файлы, а не память.
-    let tmp = Path::new(&app.db_path)
+    let db_path = app.db_path.lock().map(|p| p.clone()).unwrap_or_default();
+    let tmp = Path::new(&db_path)
         .parent()
         .map(|d| d.join("archive-import.tmp.sqlite"))
         .ok_or("не найдена папка базы")?;
@@ -1480,7 +997,7 @@ fn place_get(app: State<App>, name: String) -> Result<Option<PlaceInfo>, String>
 /// памяти подсказок.
 #[tauri::command]
 fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String> {
-    with_conn(&app, &format!("Правка НП «{}»", card.name), |conn| {
+    with_conn_shared(&app, &format!("Правка НП «{}»", card.name), |conn| {
         let name = card.name.trim().to_string();
         if name.is_empty() {
             return Err("Название населённого пункта пустое".to_string());
@@ -1566,7 +1083,7 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
 /// не задваивается — возвращается прежний id.
 #[tauri::command]
 fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
-    with_conn(&app, &format!("Карточка НП «{}»", card.name), |conn| {
+    with_conn_shared(&app, &format!("Карточка НП «{}»", card.name), |conn| {
         let name = card.name.trim().to_string();
         if name.is_empty() {
             return Err("Название населённого пункта пустое".to_string());
@@ -1591,57 +1108,7 @@ fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
     })
 }
 
-/// Находит населённый пункт по названию или заводит новый.
-fn place_id_for(conn: &Connection, name: &str) -> Result<i64, String> {
-    let norm = normalize(name);
-    if let Some(id) = conn
-        .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
-                   |r| r.get::<_, i64>(0))
-        .optional()
-        .map_err(|e| e.to_string())?
-    {
-        return Ok(id);
-    }
-    conn.execute(&statement("place_insert")?,
-                 rusqlite::named_params! { ":name": name, ":name_norm": norm })
-        .map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
-}
 
-/// Запоминает введённое значение: пополняет справочник и наращивает частоту
-/// в трёх охватах — дело, приход, вся база. Именно в таком порядке потом
-/// выдаются подсказки.
-fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &str)
-    -> Result<(), String>
-{
-    // Звание в старой орфографии, которое в перечне уже есть по-современному,
-    // перечень не пополняет и частоту наращивает прежнему («крестьянинъ» →
-    // «крестьянин»). В записи остаётся как набрано.
-    let canonical: Option<String> = if kind.starts_with("rank") {
-        conn.query_row(&statement("lookup_by_norm")?,
-                       rusqlite::named_params! { ":kind": kind, ":value_norm": normalize_words(value) },
-                       |r| r.get(0))
-            .optional()
-            .map_err(|e| e.to_string())?
-    } else {
-        None
-    };
-    let value = canonical.as_deref().unwrap_or(value);
-    let norm = normalize(value);
-    conn.execute(&statement("lookup_extend")?, rusqlite::named_params! {
-        ":kind": kind, ":value": value, ":value_norm": norm,
-    }).map_err(|e| e.to_string())?;
-
-    let bump = statement("usage_bump")?;
-    for (scope, key) in [("case", case_id.to_string()), ("parish", parish.to_string()),
-                         ("global", String::new())] {
-        conn.execute(&bump, rusqlite::named_params! {
-            ":kind": kind, ":scope": scope, ":scope_key": key,
-            ":value": value, ":value_norm": norm,
-        }).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
 
 #[derive(Serialize)]
 struct MentionOut {
@@ -1723,11 +1190,11 @@ struct ClergyMention {
 
 /// Причт последней записи дела — форма продолжает с ним после перезапуска.
 #[tauri::command]
-fn last_clergy(app: State<App>, case_id: i64, section: i64) -> Result<Vec<ClergyMention>, String> {
+fn last_clergy(app: State<App>, section: i64) -> Result<Vec<ClergyMention>, String> {
     with_conn(&app, "Причт последней записи", |conn| {
         let mut stmt = conn.prepare(&statement("last_clergy")?).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::named_params! { ":case_id": case_id, ":section": section }, |r| {
+            .query_map(rusqlite::named_params! { ":section": section }, |r| {
                 Ok(ClergyMention { role_code: r.get(0)?, iof: r.get(1)?, rank: r.get(2)?, note: r.get(3)? })
             })
             .map_err(|e| e.to_string())?;
@@ -1740,11 +1207,17 @@ fn last_clergy(app: State<App>, case_id: i64, section: i64) -> Result<Vec<Clergy
 }
 
 #[tauri::command]
-fn entry_list(app: State<App>, case_id: i64, section: i64) -> Result<Vec<EntryBrief>, String> {
+fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<bool>)
+    -> Result<Vec<EntryBrief>, String>
+{
+    // year — год книги: список «Набрано» показывает его записи; last — одна
+    // последняя запись раздела любого года, для «продолжить с места».
     with_conn(&app, "Список записей", |conn| {
         let mut stmt = conn.prepare(&statement("entry_list")?).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::named_params! { ":case_id": case_id, ":section": section }, |r| {
+            .query_map(rusqlite::named_params! {
+                ":section": section, ":year": year, ":last": last.unwrap_or(false) as i64,
+            }, |r| {
                 Ok(EntryBrief {
                     id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
@@ -1783,27 +1256,234 @@ fn fit_height(win: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+// ============================================================================
+//  Приходы (спека 2026-10-02): каждый — свой файл, открыт один
+// ============================================================================
+
+/// Название прихода — в заголовке окна: при двух приходах человек должен
+/// видеть, в каком он сейчас.
+fn window_title(parish_name: &str) -> String {
+    if parish_name.trim().is_empty() {
+        "GenMetric — индексатор метрических книг".to_string()
+    } else {
+        format!("GenMetric — {parish_name}")
+    }
+}
+
+fn bundled_seed(app: &State<App>) -> Result<PathBuf, String> {
+    app.bundled.clone().map_err(|e| format!("в программе не найдена база поставки: {e}"))
+}
+
+#[tauri::command]
+fn parish_list(app: State<App>) -> Result<Vec<parish::ParishRow>, String> {
+    parish::list(&app.data_dir).map_err(|e| {
+        let msg = format!("Перечень приходов: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    })
+}
+
+/// Сменить открытый приход. Прежнее соединение закрывается только после
+/// того, как новый приход открылся: при ошибке человек остаётся в прежнем.
+/// Окно после этого перечитывает всё заново (перезагрузка на стороне окна).
+fn switch_parish(app: &State<App>, window: &tauri::Window, id: i64) -> Result<String, String> {
+    let fail = |e: String| {
+        let msg = format!("Открытие прихода: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    };
+    let bundled = bundled_seed(app).map_err(fail)?;
+    let mut guard = app.conn.lock().map_err(|e| fail(e.to_string()))?;
+    // Тот же приход открыт сейчас: два соединения с одним файлом и общим
+    // файлом ни к чему — закрываем прежнее заранее.
+    let same = app.parish.lock().map(|p| p.0 == id).unwrap_or(false);
+    if same {
+        *guard = None;
+    }
+    let opened = match parish::open(&app.data_dir, &bundled, id) {
+        Ok(o) => o,
+        Err(e) => {
+            if same {
+                // Вернуть как было, чтобы окно не осталось без базы.
+                *guard = parish::open(&app.data_dir, &bundled, id).ok().map(|o| o.conn);
+            }
+            return Err(fail(e));
+        }
+    };
+    if let Some(w) = &opened.warning {
+        write_log(&app.log_path, w);
+    }
+    *guard = Some(opened.conn);
+    if let Ok(mut p) = app.db_path.lock() {
+        *p = opened.path.to_string_lossy().to_string();
+    }
+    if let Ok(mut p) = app.parish.lock() {
+        *p = (opened.id, opened.name.clone());
+    }
+    if let Ok(mut w) = app.warning.lock() {
+        *w = opened.warning;
+    }
+    let _ = window.set_title(&window_title(&opened.name));
+    Ok(opened.name)
+}
+
+#[tauri::command]
+fn parish_open(app: State<App>, window: tauri::Window, id: i64) -> Result<String, String> {
+    switch_parish(&app, &window, id)
+}
+
+/// Новый приход: пустой файл из поставки — и сразу открыт.
+#[tauri::command]
+fn parish_create(app: State<App>, window: tauri::Window, name: String) -> Result<String, String> {
+    let bundled = bundled_seed(&app)?;
+    let id = parish::create(&app.data_dir, &bundled, &name).map_err(|e| {
+        let msg = format!("Новый приход «{}»: {e}", name.trim());
+        write_log(&app.log_path, &msg);
+        msg
+    })?;
+    switch_parish(&app, &window, id)
+}
+
+// ----------------------------------------------------------------------------
+//  Импорт из Excel-индексатора (спека 2026-10-02, п. 4)
+// ----------------------------------------------------------------------------
+
+/// Очередная часть файла. `first` — начало нового файла: прежний сбрасывается.
+#[tauri::command]
+fn import_chunk(app: State<App>, bytes: Vec<u8>, first: bool) -> Result<usize, String> {
+    let mut file = app.import_file.lock().map_err(|e| e.to_string())?;
+    if first {
+        file.clear();
+    }
+    file.extend_from_slice(&bytes);
+    Ok(file.len())
+}
+
+#[derive(Serialize)]
+struct ImportSeen {
+    #[serde(flatten)]
+    seen: genmetric_core::import::Inspect,
+    size: usize,
+    /// Приход, уже импортированный из этого файла (по имени и размеру).
+    already_id: Option<i64>,
+    already_name: Option<String>,
+}
+
+/// Что в присланном файле — до импорта: тот ли это файл и сколько в нём записей.
+#[tauri::command]
+async fn import_inspect(app: State<'_, App>, file_name: String) -> Result<ImportSeen, String> {
+    let fail = |e: String| {
+        let msg = format!("Чтение файла «{file_name}»: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    };
+    let file = app.import_file.lock().map_err(|e| fail(e.to_string()))?;
+    let seen = genmetric_core::import::inspect(&file).map_err(fail)?;
+    let already = parish::imported_from(&app.data_dir, &file_name, file.len() as i64).map_err(fail)?;
+    Ok(ImportSeen {
+        seen,
+        size: file.len(),
+        already_id: already.as_ref().map(|a| a.0),
+        already_name: already.map(|a| a.1),
+    })
+}
+
+#[derive(Serialize)]
+struct ImportDone {
+    #[serde(flatten)]
+    report: genmetric_core::import::ImportReport,
+    parish_name: String,
+}
+
+/// Импорт: новый приход из присланного файла — и он же открыт. В открытый
+/// приход ничего не добавляется. Ошибка — файла прихода не остаётся.
+/// async — не в главном потоке: тысячи записей идут секунды.
+#[tauri::command]
+async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, file_name: String,
+                    replace: Option<i64>) -> Result<ImportDone, String> {
+    let fail = |e: String| {
+        let msg = format!("Импорт «{file_name}»: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    };
+    let bundled = bundled_seed(&app).map_err(fail)?;
+    // Файл остаётся в памяти до удачи: занятое название — не повод выбирать
+    // его заново (проверяющий 02.10.2026).
+    let mut file = app.import_file.lock().map_err(|e| fail(e.to_string()))?;
+    let bytes: &[u8] = &file;
+    if bytes.is_empty() {
+        return Err(fail("файл не прочитан — выберите его ещё раз".into()));
+    }
+    // Заменяемый приход открыт сейчас — его файл надо отпустить: открытый
+    // файл Windows переименовать не даст.
+    let current = app.parish.lock().map(|p| p.0).unwrap_or(1);
+    let was_open = replace == Some(current);
+    if was_open {
+        if let Ok(mut guard) = app.conn.lock() {
+            *guard = None;
+        }
+    }
+    let made = parish::create_with(&app.data_dir, &bundled, &name, Some((&file_name, bytes.len() as i64)),
+                                   replace, |conn| genmetric_core::import::import_into(conn, bytes));
+    let (id, report) = match made {
+        Ok(v) => v,
+        Err(e) => {
+            if was_open {
+                // Вернуть прежний приход, чтобы окно не осталось без базы.
+                if let Ok(mut guard) = app.conn.lock() {
+                    *guard = parish::open(&app.data_dir, &bundled, current).ok().map(|o| o.conn);
+                }
+            }
+            return Err(fail(e));
+        }
+    };
+    write_log(&app.log_path, &format!(
+        "Импорт «{file_name}»: рождений {}, браков {}, смертей {}; пропущено строк {}; имён не сверено {}",
+        report.births, report.marriages, report.deaths, report.skipped.len(), report.unknown_names));
+    file.clear();
+    file.shrink_to_fit();
+    drop(file);
+    let parish_name = switch_parish(&app, &window, id)?;
+    Ok(ImportDone { report, parish_name })
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+            // GENMETRIC_DATA_DIR — папка данных для проверок разработчика:
+            // настоящая программа на чужих данных, не трогая свои. У
+            // пользователя переменной нет — папка обычная.
+            let data_dir = match std::env::var_os("GENMETRIC_DATA_DIR") {
+                Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+                _ => app.path().app_data_dir()?,
+            };
             std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("genmetric.sqlite");
             let log_path = data_dir.join("genmetric-журнал.txt");
 
             // База справочников поставляется внутри установщика и при первом
             // запуске копируется в папку данных пользователя: там её можно
-            // пополнять, не трогая файлы программы.
-            let opened = app
+            // пополнять, не трогая файлы программы. С 02.10.2026 базы —
+            // приходы: открывается тот, с которым работали последним
+            // (прежняя genmetric.sqlite — первый приход).
+            let bundled = app
                 .path()
                 .resolve("resources/seed.sqlite", BaseDirectory::Resource)
-                .map_err(|e| e.to_string())
-                .and_then(|bundled| {
-                    open_database(&bundled, &db_path).map_err(|e| e.to_string())
-                });
+                .map_err(|e| e.to_string());
+            let opened = bundled.clone().and_then(|bundled| parish::open_current(&data_dir, &bundled));
 
+            let mut db_path = data_dir.join(parish::FIRST_FILE).to_string_lossy().to_string();
+            let mut current = (1, String::new());
+            let mut warning = None;
             let (conn, startup_error) = match opened {
-                Ok(conn) => (Some(conn), None),
+                Ok(opened) => {
+                    db_path = opened.path.to_string_lossy().to_string();
+                    current = (opened.id, opened.name);
+                    if let Some(w) = &opened.warning {
+                        write_log(&log_path, w);
+                    }
+                    warning = opened.warning;
+                    (Some(opened.conn), None)
+                }
                 Err(message) => {
                     // Программа всё равно запускается: человек должен увидеть
                     // объяснение, а не отсутствие окна.
@@ -1813,9 +1493,15 @@ fn main() {
             };
 
             let log_for_window = log_path.clone();
+            let title = window_title(&current.1);
             app.manage(App {
                 conn: Mutex::new(conn),
-                db_path: db_path.to_string_lossy().to_string(),
+                db_path: Mutex::new(db_path),
+                parish: Mutex::new(current),
+                warning: Mutex::new(warning),
+                import_file: Mutex::new(Vec::new()),
+                data_dir,
+                bundled,
                 log_path,
                 startup_error,
             });
@@ -1846,6 +1532,7 @@ fn main() {
                 ));
             }
             let win = builder.build()?;
+            let _ = win.set_title(&title);
             // Высота окна — по рабочей области экрана (без панели задач):
             // Роман 24.09.2026, «программа при открытии становилась по высоте
             // экрана пользователя». Ширина прежняя. Любая ошибка здесь не
@@ -1863,6 +1550,7 @@ fn main() {
             db_info,
             lookup_summary,
             case_load,
+            case_years,
             case_save,
             entry_save,
             entry_list,
@@ -1886,6 +1574,12 @@ fn main() {
             place_get,
             place_update,
             set_always_on_top,
+            parish_list,
+            parish_open,
+            parish_create,
+            import_chunk,
+            import_inspect,
+            import_run,
             export::export_years,
             export::export_familio,
             export::export_excel,

@@ -11,6 +11,7 @@ import { useFormClergy } from "./clergy";
 import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
+import { setDirty } from "./dirty";
 
 /**
  * Форма ввода записи о рождении.
@@ -83,7 +84,7 @@ type PersonPayload = {
   uncertain: string | null;
 };
 
-export default function BirthForm({ mkCase }: { mkCase: Case }) {
+export default function BirthForm({ mkCase, onSaved }: { mkCase: Case; onSaved: (caseId: number) => void }) {
   // Страница — текст: «938об-939» (заказчик 21.09.2026), в базе колонка TEXT.
   const [page, setPage] = useState<string | null>(null);
   // Год — на форме, а не только в деле: «он меняется в процессе индексации»
@@ -173,22 +174,24 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   // «.sexpick» и «Год» (проверяющий 27.09.2026).
   const root = useRef<HTMLDivElement>(null);
 
+  // Список «Набрано» — записи года книги, который стоит на форме: после
+  // импорта из Excel в приходе тысячи записей (спека 2026-10-02, п. 3.4).
+  useEffect(() => { refresh(); }, [year]);
+
+  // Восстановление места работы — один раз при открытии формы, по последней
+  // записи раздела в приходе, какого бы года она ни была.
   useEffect(() => {
-    refresh();
-  }, [mkCase.id]);
+    invoke<Brief[]>("entry_list", { section: 1, year: null, last: true })
+      .then((rows) => { if (rows[0]) resume(rows[0]); })
+      .catch((e) => report("Не удалось узнать, на чём остановились", e));
+  }, []);
 
-  // Восстановление места работы — один раз при открытии формы.
-  const restored = useRef(false);
-
+  const listSeq = useRef(0);
   function refresh() {
-    invoke<Brief[]>("entry_list", { caseId: mkCase.id, section: 1 })
-      .then((rows) => {
-        setSaved(rows);
-        if (!restored.current) {
-          restored.current = true;
-          if (rows[0]) resume(rows[0]);
-        }
-      })
+    // Год набирают по цифре — ответ на прежний год отбрасывается.
+    const mine = ++listSeq.current;
+    invoke<Brief[]>("entry_list", { section: 1, year, last: false })
+      .then((rows) => { if (mine === listSeq.current) setSaved(rows); })
       .catch((e) => report("Не удалось прочитать список набранных записей", e));
   }
 
@@ -448,7 +451,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
     setBusy(true);
     try {
-      await invoke<number>("entry_save", {
+      const done = await invoke<{ id: number; case_id: number; new_case_year: number | null }>("entry_save", {
         entry: {
           id: editingId,
           case_id: mkCase.id,
@@ -469,6 +472,12 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
       });
       clergyState.bump();
       dismissWarn();
+      // Дело — на год книги: год встретился впервые — дело заведено копией
+      // прошлого, реквизиты надо проверить (спека 2026-10-02, п. 3.2).
+      if (done.new_case_year !== null)
+        warn(`Новый год книги ${done.new_case_year}`,
+             "ему заведено своё дело копией прошлого — проверьте фонд, опись и дело на экране «Дело»");
+      onSaved(done.case_id);
       if (editingId !== null) restoreAfterEdit();
       else next();
       refresh();
@@ -480,6 +489,12 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
   }
 
   /** В форме уже что-то набрано — открывать поверх нельзя, потеряется. */
+  // Несохранённое — для смены прихода: окно «Приходы» не даст потерять молча.
+  useEffect(() => {
+    setDirty("Рождения", formDirty() || editingId !== null);
+    return () => setDirty("Рождения", false);
+  });
+
   function formDirty(): boolean {
     return [child, father.iof, mother.iof, god1.iof, god2.iof, god3.iof, god4.iof]
       .some((v) => v.trim().length > 0);
@@ -817,7 +832,7 @@ export default function BirthForm({ mkCase }: { mkCase: Case }) {
 
       {saved.length > 0 && (
         <section>
-          <h2>Набрано: {saved.length}</h2>
+          <h2>Набрано: {saved.length}{year !== null && <span className="ofyear"> — за {year} год</span>}</h2>
           <p className="hint">Нажмите «Открыть», чтобы поправить запись. Форма при этом должна быть пустой.</p>
           <table className="facts saved">
             <tbody>

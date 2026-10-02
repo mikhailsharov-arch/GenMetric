@@ -25,17 +25,18 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 46, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 56, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 60, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 86, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 105, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 55 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
-    python3 db/test_export.py                                   # → «Итог: успешно 112, ошибок 0» (выгрузка Familio и Excel)
+    python3 db/test_export.py                                   # → «Итог: успешно 113, ошибок 0» (выгрузка Familio и Excel)
+    python3 db/test_parish.py                                   # → «Итог: успешно 34, ошибок 0» (приходы, общие справочники)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 123, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 135, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -49,10 +50,29 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 5 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 10 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
-команды окна. Выгрузка на настоящей базе и её проверка:
+команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
+сохранение записи и разбор ИОФ (`records.rs`), разбор возраста (`age.rs`,
+копия `src/age.ts` — правишь одно, правь другое), приходы (`parish.rs`),
+импорт из Excel-индексатора (`import.rs`).
+
+**Приходы.** Каждый приход — свой файл SQLite; общий файл
+`genmetric-общее.sqlite` (схема — `db/common.sql`) хранит перечень приходов,
+настройки окна и общие справочники; сверка — `db/parish_sync.sql` (его же
+гоняет `db/test_parish.py`). Дело — на год книги: к делу своего года запись
+привязывает `records::save_entry`, не форма.
+
+**Импорт из Excel** проверяется синтетическим индексатором
+`db/fixtures/indexer.xlsx` (собирает `python3 scripts/make_indexer_fixture.py`,
+данные выдуманы). «Золотая» сверка на файле заказчика — только у
+разработчика, файла в репозитории нет:
+
+    GENMETRIC_IMPORT_XLSM=…/Индексатор.xlsm cargo test -p genmetric-core --release import_golden -- --ignored --nocapture
+
+Настоящую программу на чужих данных, не трогая свои, запускает
+`GENMETRIC_DATA_DIR=/путь npm run tauri dev`. Выгрузка на настоящей базе и её проверка:
 
     GENMETRIC_KEEP_DB=/tmp/t.sqlite python3 db/test_export.py
     (cd src-tauri && GENMETRIC_EXPORT_DB=/tmp/t.sqlite GENMETRIC_EXPORT_OUT=/tmp/out cargo test -p genmetric-core export_real -- --ignored)
