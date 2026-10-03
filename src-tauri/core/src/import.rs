@@ -297,6 +297,23 @@ struct Importer<'a> {
     unknown_total: usize,
     unknown_patr: BTreeMap<String, usize>,
     unknown_patr_total: usize,
+    /// Несверенное в персонах текущей строки — в список на сверку, когда
+    /// запись сохранится и у неё появится номер: (вид, текст).
+    pending: Vec<(&'static str, String)>,
+}
+
+/// Роль словами — для списка на сверку.
+fn role_title(code: &str) -> &'static str {
+    match code {
+        "child" => "ребёнок", "father" => "отец", "mother" => "мать",
+        "groom" => "жених", "bride" => "невеста",
+        "groom_relative" => "родственник жениха", "bride_relative" => "родственник невесты",
+        "deceased" => "умерший", "deceased_relative" => "родственник умершего",
+        c if c.starts_with("godparent") => "восприемник",
+        c if c.starts_with("witness") => "поручитель",
+        c if c.starts_with("clergy") => "причт",
+        _ => "персона",
+    }
 }
 
 struct Who {
@@ -325,10 +342,16 @@ impl Importer<'_> {
         let parsed = parse_iof_in(self.conn, &iof)?;
         if !iof.is_empty() && !parsed.known_name {
             self.unknown_total += 1;
-            *self.unknown.entry(parsed.first_name.clone().unwrap_or_default()).or_default() += 1;
+            let name = parsed.first_name.clone().unwrap_or_default();
+            self.pending.push(("name", format!("{}: имени «{name}» нет в словаре — «{iof}»", role_title(w.role))));
+            *self.unknown.entry(name).or_default() += 1;
         }
-        if let Some(word) = &parsed.patr_unknown {
+        // У причта два слова — имя и фамилия («Василий Промтов»): фамилия на
+        // «-ов» там не отчество вне словаря, в список на сверку не идёт.
+        if let Some(word) = parsed.patr_unknown.as_ref().filter(|_| !w.role.starts_with("clergy")) {
             self.unknown_patr_total += 1;
+            self.pending.push(("patronymic", format!(
+                "{}: «{word}» похоже на отчество, но в словаре его нет — записано в фамилию: «{iof}»", role_title(w.role))));
             *self.unknown_patr.entry(word.clone()).or_default() += 1;
         }
         Ok(PersonInput {
@@ -454,7 +477,18 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
 
     let mut imp = Importer {
         conn, unknown: BTreeMap::new(), unknown_total: 0, unknown_patr: BTreeMap::new(), unknown_patr_total: 0,
+        pending: Vec::new(),
     };
+    // Список на сверку (спека 2026-10-03, п. 5): всё, что названо в итоге
+    // импорта, остаётся в приходе с номером записи.
+    let review_add = statement("review_add")?;
+    let review = |kind: &str, text: &str, sheet: &str, row: u32, entry: Option<i64>| -> Result<(), String> {
+        conn.execute(&review_add, rusqlite::named_params! {
+            ":kind": kind, ":text": text, ":sheet": sheet, ":row": row, ":entry_id": entry,
+        }).map(|_| ()).map_err(|e| e.to_string())
+    };
+    // «лист «1», строка 7: текст» → «текст»: место хранится отдельно.
+    let bare = |line: &str| line.split_once(": ").map(|x| x.1.to_string()).unwrap_or_else(|| line.to_string());
     for (i, sheet) in book.sheets.iter().enumerate() {
         let section = i as i64 + 1;
         let name = SHEETS[i].0;
@@ -465,14 +499,24 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
             let year = book_year(i, row);
             let (ed, em, ey) = date(row, 10);
             let (rd, rm, ry) = date(row, 11);
+            let notes_from = report.notes.len();
+            imp.pending.clear();
             // Дата, которую не понять или которой не бывает, — не молча.
             for (c, parts) in [(10u32, (ed, em, ey)), (11, (rd, rm, ry))] {
                 let raw = cell(row, c);
                 if raw.is_empty() || (section == 2 && c == 11) {
                     continue;
                 }
+                // «32.13.1890»: день или месяц набраны, но таких не бывает —
+                // в записи их нет (проверяющий 03.10.2026).
+                let typed: Vec<&str> = raw.split('.').map(str::trim).collect();
+                let lost = |i: usize, got: Option<i64>| {
+                    got.is_none() && typed.get(i).map(|t| t.chars().any(|ch| ch.is_ascii_digit())).unwrap_or(false)
+                };
                 let odd = match parts {
                     (None, None, None) => Some("не разобрана — в записи даты нет"),
+                    (d, m, _) if typed.len() == 3 && (lost(0, d) || lost(1, m)) =>
+                        Some("день или месяц вне календаря — в записи их нет"),
                     (Some(d), Some(m), _) if d > [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m as usize - 1] =>
                         Some("такого дня в месяце нет — перенесена как есть"),
                     (_, _, Some(y)) if !(1500..=2100).contains(&y) => Some("год вне разумных пределов — перенесена как есть"),
@@ -644,6 +688,7 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                 // Строка с номером, но без единого имени — заготовка индексатора.
                 if (2..=55).any(|c| c != 4 && c != 5 && c != 6 && opt(row, c).is_some()) {
                     report.skipped.push(format!("лист «{name}», строка {r}: нет ни одного имени — не перенесена"));
+                    review("skipped", "строка не перенесена: в ней нет ни одного имени", name, *r, None)?;
                 }
                 continue;
             }
@@ -694,8 +739,14 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                 uncertain: None,
                 persons,
             };
-            save_entry_in_tx(conn, &entry, &parish_key)
+            let saved = save_entry_in_tx(conn, &entry, &parish_key)
                 .map_err(|e| format!("лист «{name}», строка {r}: {e}"))?;
+            for line in &report.notes[notes_from..] {
+                review("note", &bare(line), name, *r, Some(saved.id))?;
+            }
+            for (kind, text) in imp.pending.drain(..) {
+                review(kind, &text, name, *r, Some(saved.id))?;
+            }
             match section {
                 1 => report.births += 1,
                 2 => report.marriages += 1,
@@ -833,6 +884,14 @@ mod tests {
         assert_eq!(dead("", "rank || '|' || gender || '|' || death_cause"), "тело неизвестного человека|М|утонул");
         assert_eq!(text("SELECT group_concat(kinship || ':' || first_name || ':' || gender || ':' || coalesce(note, '-'), ' ') FROM (SELECT * FROM person_mention WHERE role_code = 'deceased_relative' ORDER BY entry_id)"),
                    "мать:Дарья:Ж:- отец:Евдоким:М:проживающий в селе");
+
+        // Список на сверку: несверенное имя и оговорки — с номером записи,
+        // пропущенная строка — без него.
+        assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'name' AND text LIKE '%Жданко%' AND entry_id IS NOT NULL AND sheet = '1' AND row = 6"), 1);
+        assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'skipped' AND entry_id IS NULL AND row = 7"), 1);
+        assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'note'") as usize, rep.notes.len());
+        assert_eq!(num("SELECT count(*) FROM review_item r JOIN entry e ON e.id = r.entry_id WHERE r.kind = 'note' AND r.text LIKE 'родство%' AND e.section = 3"), 1);
+        assert_eq!(num("SELECT count(*) FROM review_item WHERE text LIKE 'лист %'"), 0, "место — в колонках, не в тексте");
 
         // Тот же путь, что набор руками: память персон, жён, причта, перечни.
         assert!(num("SELECT count(*) FROM person_index WHERE iof = 'Никита Алексеев'") == 1);

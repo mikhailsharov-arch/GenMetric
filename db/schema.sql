@@ -370,6 +370,23 @@ CREATE INDEX ix_clergy_uses ON clergy_index (uses DESC, iof);
 --  НАСТРОЙКИ
 -- ============================================================================
 
+-- Список на сверку после импорта из Excel (схема 9, 03.10.2026). Роман:
+-- «Нужен отдельный список на сверку, не только имен, а всех нестандартных
+-- моментов». kind: name — имя вне словаря, patronymic — отчество вне словаря,
+-- note — строка перенесена с оговоркой, skipped — строка не перенесена.
+-- sheet и row — место в файле Excel; entry_id — запись (у пропущенных пусто).
+CREATE TABLE review_item (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT    NOT NULL,
+  text        TEXT    NOT NULL,
+  sheet       TEXT,
+  row         INTEGER,
+  entry_id    INTEGER,
+  done        INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX ix_review_open ON review_item (done, id);
+
 CREATE TABLE setting (
   key    TEXT PRIMARY KEY,
   value  TEXT

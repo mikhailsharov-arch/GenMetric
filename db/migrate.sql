@@ -239,6 +239,46 @@ UPDATE entry
    AND case_id IS NOT (SELECT c.id FROM mk_case c WHERE c.year = coalesce(entry.rite_year, entry.event_year)
                         ORDER BY c.id LIMIT 1);
 
+-- ---------------------------------------------------------------------------
+-- Двойники населённых пунктов (03.10.2026). В базе Романа рядом с пунктом
+-- поставки лежали строки с тем же названием без подробностей (9 строк) и
+-- точные копии пунктов поставки (16 строк); на них 66 упоминаний. Выгрузку
+-- это уже не портило (x_place берёт лучшую строку), но карточка и общий
+-- справочник видели пункт по-разному. Строка без подробностей или с теми же
+-- подробностями, что у лучшей строки с этим названием, сливается с ней:
+-- упоминания переводятся, лишняя строка удаляется. Строка с ДРУГИМИ
+-- подробностями (тёзка из другого уезда) остаётся. Остаётся и строка, у
+-- которой название написано иначе («Кнышёво» рядом с «Кнышево» — запись
+-- показала бы другое написание) или полное место набрано руками и отличается
+-- (ревьюер 03.10.2026): слияние ничего набранного не стирает.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS temp.m_dup;
+CREATE TEMP TABLE m_dup AS
+WITH s AS (
+    SELECT p.id, p.name_norm, p.name,
+           trim(coalesce(p.full_location, '')) AS full_loc,
+           trim(coalesce(p.np_type, '')) || '|' || trim(coalesce(p.guberniya, '')) || '|'
+            || trim(coalesce(p.uyezd, '')) || '|' || trim(coalesce(p.volost, '')) || '|'
+            || trim(coalesce(p.familio_url, '')) AS sig,
+           (SELECT b.id FROM main.place b WHERE b.name_norm = p.name_norm
+             ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''), (b.origin = 'archive'), b.id
+             LIMIT 1) AS best_id
+      FROM main.place p
+)
+SELECT s.id, s.best_id
+  FROM s JOIN s b ON b.id = s.best_id
+ WHERE s.id <> s.best_id AND s.name = b.name
+   AND (s.sig = '||||' OR s.sig = b.sig)
+   AND (s.full_loc = '' OR s.full_loc = s.name OR s.full_loc = b.full_loc);
+UPDATE main.person_mention
+   SET place_id = (SELECT d.best_id FROM temp.m_dup d WHERE d.id = main.person_mention.place_id)
+ WHERE place_id IN (SELECT id FROM temp.m_dup);
+UPDATE main.person
+   SET place_id = (SELECT d.best_id FROM temp.m_dup d WHERE d.id = main.person.place_id)
+ WHERE place_id IN (SELECT id FROM temp.m_dup);
+DELETE FROM main.place WHERE id IN (SELECT id FROM temp.m_dup);
+DROP TABLE IF EXISTS temp.m_dup;
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting

@@ -175,6 +175,9 @@ pub fn list(dir: &Path) -> Result<Vec<ParishRow>, String> {
 /// Подключить общий файл к соединению прихода и перенести туда настройки
 /// окна, которых там ещё нет (у первого прихода они лежали в его базе).
 fn attach_common(conn: &Connection, dir: &Path) -> Result<(), String> {
+    // Общий файл на мгновение занят другим соединением (перечень приходов,
+    // настройка из окна) — подождать, а не падать с «database is locked».
+    conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(s)?;
     conn.execute("ATTACH DATABASE ?1 AS common", [common_path(dir).to_string_lossy().to_string()])
         .map_err(|e| format!("общий файл не подключился: {e}"))?;
     for key in COMMON_SETTINGS {
@@ -330,7 +333,11 @@ pub fn create_with<T>(
         // уже с учётом набранного в других приходах.
         attach_common(&conn, dir)?;
         sync(&conn)?;
-        conn.execute_batch("BEGIN IMMEDIATE").map_err(s)?;
+        // Обычная транзакция, не IMMEDIATE: та заняла бы и подключённый общий
+        // файл на всё время импорта, и запись настройки из окна ждала бы и
+        // падала с «database is locked» (ревьюер 02.10.2026). Наполнение в
+        // общий файл не пишет.
+        conn.execute_batch("BEGIN").map_err(s)?;
         let out = match fill(&conn) {
             Ok(v) => v,
             Err(e) => {

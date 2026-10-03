@@ -50,6 +50,15 @@ export default function App() {
   // Дело — на год книги (02.10.2026): запись другого года уводит работу в
   // дело этого года, и экран «Дело» перечитывается.
   const [caseReload, setCaseReload] = useState(0);
+  // «Сохранить дело» с годом — формы встают на него (спека 2026-10-03, п. 1.2);
+  // «Открыть запись» из списка на сверку — запись в форме своего раздела.
+  // n — счётчик: то же значение второй раз тоже должно сработать.
+  const [workYear, setWorkYear] = useState<{ year: number; n: number } | null>(null);
+  const [openReq, setOpenReq] = useState<{ section: number; id: number; n: number } | null>(null);
+  function openEntry(section: number, id: number) {
+    setScreen(section === 1 ? "births" : section === 2 ? "marriages" : "deaths");
+    setOpenReq((prev) => ({ section, id, n: (prev?.n ?? 0) + 1 }));
+  }
   function entrySaved(caseId: number) {
     // Дело без года с первой записью получает её год — экран «Дело» должен
     // это узнать, иначе сохранит прежний пустой год (ревьюер 02.10.2026).
@@ -207,20 +216,22 @@ export default function App() {
           „Рождения“ становятся пустыми». Это была потеря работы, а не
           неудобство. */}
       <div hidden={screen !== "case"}>
-        <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""} />
+        <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""}
+                    onWorkYear={(year) => setWorkYear((prev) => ({ year, n: (prev?.n ?? 0) + 1 }))}
+                    onOpenEntry={openEntry} />
       </div>
       {/* Причт общий для всех разделов (27.09.2026) — clergy.tsx. Формы
           браков и смертей (25.09, 27.09) так же не размонтируются. */}
       {mkCase && mkCase.id > 0 && (
         <ClergyProvider>
           <div hidden={screen !== "births"}>
-            <BirthForm mkCase={mkCase} onSaved={entrySaved} />
+            <BirthForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} />
           </div>
           <div hidden={screen !== "marriages"}>
-            <MarriageForm mkCase={mkCase} onSaved={entrySaved} />
+            <MarriageForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} />
           </div>
           <div hidden={screen !== "deaths"}>
-            <DeathForm mkCase={mkCase} onSaved={entrySaved} />
+            <DeathForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} />
           </div>
         </ClergyProvider>
       )}

@@ -183,6 +183,92 @@ impl Case {
     }
 }
 
+/// Итог «Сохранить дело».
+#[derive(Serialize, Debug)]
+pub struct CaseSaved {
+    pub id: i64,
+    /// saved — дело поправлено; created — году заведено новое дело; exists —
+    /// у набранного года уже есть другое дело, ничего не записано: окно
+    /// спросит, заменять ли его реквизиты.
+    pub status: String,
+    /// Реквизиты того дела («Ф.56 Оп.31 Д.18») — для вопроса.
+    pub existing: Option<String>,
+}
+
+/// «Сохранить дело» (спека 2026-10-03, п. 1). Роман: «дать пользователю
+/// возможность сначала изменить архивный шифр …, а уже затем выбрать или
+/// изменить Год». Год тот же — правится открытое дело; год новый — ему
+/// заводится своё дело с набранными реквизитами, прежний год не меняется;
+/// год другой и его дело уже есть — только с согласия (`overwrite`).
+pub fn save_case(conn: &Connection, case: &Case, overwrite: bool) -> Result<CaseSaved, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let loaded_year: Option<i64> = if case.id > 0 {
+        conn.query_row(&statement("case_year_of")?, rusqlite::named_params! { ":id": case.id }, |r| r.get(0))
+            .optional().map_err(e)?.flatten()
+    } else {
+        None
+    };
+    let other: Option<i64> = match case.year {
+        Some(year) => conn
+            .query_row(&statement("case_for_year")?, rusqlite::named_params! { ":year": year }, |r| r.get(0))
+            .optional().map_err(e)?,
+        None => None,
+    };
+    let (id, status) = match (other, case.year, loaded_year) {
+        // У набранного года есть своё дело, и это не открытое.
+        (Some(o), _, _) if o != case.id => {
+            if !overwrite {
+                let brief: String = conn
+                    .query_row(&statement("case_brief")?, rusqlite::named_params! { ":id": o }, |r| r.get(0))
+                    .map_err(e)?;
+                return Ok(CaseSaved { id: o, status: "exists".into(), existing: Some(brief) });
+            }
+            (o, "saved")
+        }
+        // Новый год при открытом деле другого года — новое дело.
+        (None, Some(year), Some(was)) if year != was => {
+            let id: i64 = conn.query_row(&statement("case_new_id")?, [], |r| r.get(0)).map_err(e)?;
+            (id, "created")
+        }
+        _ => (if case.id > 0 { case.id } else { 1 }, "saved"),
+    };
+    let parish = case.parish_key();
+    conn.execute(&statement("case_upsert")?, rusqlite::named_params! {
+        ":id": id, ":archive": case.archive, ":fond": case.fond, ":opis": case.opis,
+        ":delo": case.delo, ":church": case.church, ":village": case.village,
+        ":uyezd": case.uyezd, ":guberniya": case.guberniya, ":year": case.year,
+        ":parish_key": parish, ":indexer": case.indexer,
+    }).map_err(e)?;
+    // Церковь, село, уезд, губерния, индексатор — свойства прихода: на
+    // дела всех лет. Фонд, опись и дело остаются у своего года.
+    conn.execute(&statement("case_spread_parish")?, rusqlite::named_params! {
+        ":id": id, ":archive": case.archive, ":church": case.church, ":village": case.village,
+        ":uyezd": case.uyezd, ":guberniya": case.guberniya,
+        ":parish_key": parish, ":indexer": case.indexer,
+    }).map_err(e)?;
+    // Архив, церковь, уезд, губерния — в справочники, как звания при
+    // сохранении записи. Заказчик 21.09.2026: «должна сохраниться
+    // возможность добавить свой [архив], если его нет в списке, и чтобы
+    // он добавлялся в базу». Перечни помечены autoextend в lookup_kind.
+    for (kind, value) in [("archive", &case.archive), ("church", &case.church),
+                          ("uyezd", &case.uyezd), ("guberniya", &case.guberniya)] {
+        if let Some(v) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            remember(conn, kind, v, id, &parish)?;
+        }
+    }
+    Ok(CaseSaved { id, status: status.into(), existing: None })
+}
+
+/// Набранное в карточке пункта — в перечни (губерния, уезд, волость), чтобы
+/// следующая карточка их подсказала (Роман 02.10.2026). Без частот: это не
+/// подсказка по привычке, а список.
+pub fn extend_lookup(conn: &Connection, kind: &str, value: Option<&str>) -> Result<(), String> {
+    let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) else { return Ok(()) };
+    conn.execute(&statement("lookup_extend")?, rusqlite::named_params! {
+        ":kind": kind, ":value": v, ":value_norm": normalize(v),
+    }).map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[derive(Deserialize)]
 pub struct PersonInput {
     pub role_code: String,
@@ -513,4 +599,72 @@ pub fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish
         }).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// «Сохранить дело»: три ветки спеки 2026-10-03, п. 1, и сценарий Романа —
+    /// сначала реквизиты и год, потом запись.
+    #[test]
+    fn case_free_order() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
+        if !seed.exists() {
+            eprintln!("нет resources/seed.sqlite — тест дела пропущен");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("genmetric-case-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(&seed, &path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let case = |id: i64, year: Option<i64>, delo: &str| Case {
+            id, archive: Some("ГА".into()), fond: Some("56".into()), opis: Some("31".into()),
+            delo: Some(delo.into()), church: Some("Никольская".into()), village: Some("Тестово".into()),
+            uyezd: None, guberniya: None, year, indexer: None,
+        };
+        let fod = |year: i64| -> String {
+            conn.query_row("SELECT delo FROM mk_case WHERE year = ?1", [year], |r| r.get(0)).unwrap()
+        };
+        let count = || -> i64 { conn.query_row("SELECT count(*) FROM mk_case", [], |r| r.get(0)).unwrap() };
+
+        // Первое дело — без года, потом с годом: то же дело.
+        let first = save_case(&conn, &case(0, None, "11"), false).unwrap();
+        assert_eq!((first.id, first.status.as_str()), (1, "saved"));
+        let same = save_case(&conn, &case(1, Some(1897), "11"), false).unwrap();
+        assert_eq!((same.id, same.status.as_str(), count()), (1, "saved", 1));
+
+        // Сценарий Романа: поправил дело, поставил новый год, сохранил.
+        let new = save_case(&conn, &case(1, Some(1898), "12"), false).unwrap();
+        assert_eq!((new.status.as_str(), count()), ("created", 2));
+        assert_eq!((fod(1897), fod(1898)), ("11".to_string(), "12".to_string()), "прежний год не тронут");
+
+        // Запись нового года ложится в это дело, копии не заводится.
+        let entry = EntryInput {
+            id: None, case_id: 1, section: 2, page: None, no_male: Some(1), no_female: None,
+            event_day: Some(1), event_month: Some(2), event_year: Some(1898),
+            rite_day: None, rite_month: None, rite_year: None, note: None, uncertain: None, persons: vec![],
+        };
+        let saved = save_entry(&conn, &entry).unwrap();
+        assert_eq!((saved.case_id, saved.new_case_year, count()), (new.id, None, 2));
+
+        // Год другого дела: без согласия — вопрос, ничего не записано.
+        let asked = save_case(&conn, &case(new.id, Some(1897), "99"), false).unwrap();
+        assert_eq!((asked.status.as_str(), asked.existing.as_deref()), ("exists", Some("Ф.56 Оп.31 Д.11")));
+        assert_eq!((fod(1897), fod(1898)), ("11".to_string(), "12".to_string()));
+        let forced = save_case(&conn, &case(new.id, Some(1897), "99"), true).unwrap();
+        assert_eq!((forced.id, forced.status.as_str(), fod(1897), fod(1898)), (1, "saved", "99".to_string(), "12".to_string()));
+
+        // Пустой год уходит, год с записями и последнее дело — нет.
+        save_case(&conn, &case(1, Some(1987), "1"), false).unwrap();
+        let drop = |year: i64| conn.execute(&statement("case_delete_empty").unwrap(),
+                                             rusqlite::named_params! { ":year": year }).unwrap();
+        assert_eq!((drop(1987), drop(1898), count()), (1, 0, 2));
+        drop(1897);
+        assert_eq!((count(), drop(1898)), (1, 0), "последнее дело прихода не убирается");
+
+        std::mem::drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DB_DIR = Path(__file__).resolve().parent
 SEED_DIR = DB_DIR / "seed"
 
@@ -146,6 +146,12 @@ def build(db_path: Path) -> dict:
           nz(r["uyezd"]), nz(r["volost"]), nz(r["short_location"]),
           nz(r["full_location"]), nz(r["familio_url"])) for r in rows])
     stats["place"] = len(rows)
+    # Волости справочника пунктов — в перечень `volost`: карточка нового пункта
+    # подсказывает их (Роман 02.10.2026: губерния, уезд, волость в карточке).
+    volosts = sorted({r["volost"].strip() for r in rows if nz(r["volost"])})
+    db.executemany(
+        "INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin) VALUES ('volost',?,?,?,'seed')",
+        [(v, norm(v), (i + 1) * 10) for i, v in enumerate(volosts)])
 
     rows = read_csv("setting.csv")
     db.executemany("INSERT INTO setting (key, value) VALUES (?,?)",

@@ -73,21 +73,24 @@ def main() -> int:
     print("\n1. Целостность базы")
     check("integrity_check", one("PRAGMA integrity_check") == "ok")
     check("foreign_key_check", len(q("PRAGMA foreign_key_check")) == 0)
-    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 8)
+    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 9)
 
     print("\n2. Сверка с текстовыми справочниками")
     for csv_name, table in [("name_dict.csv", "name_dict"), ("lookup.csv", "lookup"),
                             ("lookup_kind.csv", "lookup_kind"), ("role.csv", "role"),
                             ("place.csv", "place"), ("setting.csv", "setting")]:
         n_csv = len(read_csv(csv_name))
-        # к настройкам сборщик добавляет отпечаток поставки — его в CSV нет
+        # к настройкам сборщик добавляет отпечаток поставки — его в CSV нет;
+        # к перечням — волости из справочника пунктов (перечень volost, 03.10.2026)
         expected = n_csv + 1 if table == "setting" else n_csv
+        if table == "lookup":
+            expected += len({r["volost"].strip() for r in read_csv("place.csv") if r["volost"].strip()})
         n_db = one(f"SELECT count(*) FROM {table}")
         check(f"{table} перенесена полностью", expected == n_db, f"ожидалось {expected}, в базе {n_db}")
 
     kinds_csv = {r["kind"] for r in read_csv("lookup.csv")}
     kinds_db = {r["kind"] for r in q("SELECT DISTINCT kind FROM lookup")}
-    check("состав перечней совпадает", kinds_csv == kinds_db,
+    check("состав перечней совпадает (плюс волости из справочника пунктов)", kinds_csv | {"volost"} == kinds_db,
           f"{len(kinds_db)} перечней")
     check("у каждого перечня есть название",
           one("SELECT count(*) FROM lookup l LEFT JOIN lookup_kind k USING(kind) WHERE k.kind IS NULL") == 0)
@@ -137,7 +140,9 @@ def main() -> int:
                      FROM lookup_kind k LEFT JOIN lookup l ON l.kind = k.kind
                     GROUP BY k.kind, k.title
                     ORDER BY count(l.id) DESC, k.title""")
-    check("состав справочников считается", len(summary) == 14, f"{len(summary)} перечней")
+    check("состав справочников считается", len(summary) == 15, f"{len(summary)} перечней")
+    check("волости справочника пунктов — в перечне volost",
+          one("SELECT count(*) FROM lookup WHERE kind = 'volost'") > 10)
     check("в сводке нет перечней без названия", all(r[1] for r in summary))
 
     print("\n6. Ранжирование подсказок по частоте")

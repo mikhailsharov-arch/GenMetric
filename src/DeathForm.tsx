@@ -12,8 +12,9 @@ import { parseAge } from "./age";
 import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
 import { dismissWarn, report, warn } from "./errors";
-import type { Case } from "./CaseHeader";
 import { setDirty } from "./dirty";
+import { titleCase } from "./names";
+import type { FormProps } from "./formprops";
 
 /**
  * Форма ввода записи о смерти (27.09.2026) — по образцу рождений и браков.
@@ -79,7 +80,7 @@ function kinGender(k: string): "М" | "Ж" | undefined {
   return undefined;
 }
 
-export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: (caseId: number) => void }) {
+export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormProps) {
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
   const [count, setCount] = useState<number | null>(null);
@@ -175,6 +176,9 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
   const pickSeq = useRef(0);
   const autoRel = useRef<string | null>(null);
   const autoPlace = useRef<string | null>(null);
+  const autoRank = useRef<string | null>(null);
+  /** НП умершего, набранный человеком (не подставленный программой). */
+  const placeTyped = autoPlace.current !== null && dead.place === autoPlace.current ? null : dead.place;
   function pickDeceased(hint: PersonHint) {
     pickInto(setDead)(hint);
     const mine = ++pickSeq.current;
@@ -192,6 +196,18 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
       const placeOurs = !dead.place.trim() || (wasPlace !== null && dead.place === wasPlace);
       if (placeOurs) setDead((d) => ({ ...d, place: k.place ?? "" }));
       autoPlace.current = placeOurs ? k.place ?? null : null;
+      // Звание младенца — по полу ребёнка из записи о рождении (ошибка из
+      // ответа Романа 03.10.2026: «поле „Звание“ … остается пустым»). В его
+      // Excel у детей почти всегда так: «сын младенец» 268, «дочь младенец»
+      // 253. Набранное руками не трогаем; подставленное прошлым выбором — меняем.
+      const babyRank = hint.gender === "М" ? "сын младенец" : hint.gender === "Ж" ? "дочь младенец" : null;
+      const rankOurs = !dead.rank.trim() || (autoRank.current !== null && dead.rank === autoRank.current);
+      if (rankOurs && babyRank) {
+        setDead((d) => ({ ...d, rank: babyRank }));
+        autoRank.current = babyRank;
+      } else if (!rankOurs) {
+        autoRank.current = null;
+      }
       const relOurs = (rel.iof.trim() === "" && !rel.place.trim() && !rel.rank.trim()
           && (!rel.kinship.trim() || rel.kinship.trim() === KIN_DEFAULT))
         || (wasAuto !== null && rel.iof === wasAuto);
@@ -217,9 +233,14 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
     const stalePlace = autoPlace.current;
     if (stalePlace !== null && !hint.place)
       setDead((d) => (d.place === stalePlace ? { ...d, place: "" } : d));
+    // То же со званием «сын/дочь младенец» от прошлого выбора (проверяющий 03.10.2026).
+    const staleRank = autoRank.current;
+    if (staleRank !== null && !hint.rank)
+      setDead((d) => (d.rank === staleRank ? { ...d, rank: "" } : d));
     autoPlace.current = null;
+    autoRank.current = null;
     invoke<{ iof: string; place: string | null; rank: string | null; births: number } | null>(
-      "birth_father", { iof: hint.iof, year })
+      "birth_father", { iof: hint.iof, year, place: hint.place ? null : placeTyped?.trim() || null })
       .then((f) => {
         if (mine !== pickSeq.current) return;
         const wasAuto = autoRel.current;
@@ -247,6 +268,10 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
   }
 
   async function withParsed<T extends Person>(p: T): Promise<T> {
+    // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
+    // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
+    const iof = titleCase(p.iof);
+    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof }) };
     if (!p.iof.trim() || p.parsed) return p;
     return { ...p, parsed: await invoke<Parsed>("parse_iof", { text: p.iof }) };
   }
@@ -352,6 +377,15 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
     }
   }
 
+  // Экран «Дело» сохранён с годом — форма встаёт на него; запись, открытую
+  // на правку, это не трогает. «Открыть запись» из списка на сверку — сюда же.
+  useEffect(() => {
+    if (workYear && editingId === null) setYear(workYear.year);
+  }, [workYear?.n]);
+  useEffect(() => {
+    if (openReq && openReq.section === 3) void openEntry(openReq.id);
+  }, [openReq?.n]);
+
   // Несохранённое — для смены прихода: окно «Приходы» не даст потерять молча.
   useEffect(() => {
     setDirty("Смерти", formDirty() || editingId !== null);
@@ -378,6 +412,7 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
       pickSeq.current++;
       autoRel.current = null;
       autoPlace.current = null;
+    autoRank.current = null;
       if (editingId === null)
         beforeEdit.current = { page, count, year, deathMonth, burialMonth };
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
@@ -426,6 +461,7 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
     pickSeq.current++;
     autoRel.current = null;
     autoPlace.current = null;
+    autoRank.current = null;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -457,11 +493,13 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
     if (wasAuto !== null) setRel((r) => (r.iof === wasAuto ? { ...NEW_RELATIVE } : r));
     autoRel.current = null;
     autoPlace.current = null;
+    autoRank.current = null;
   }
 
   const namelessBox = (
     <label className="unknownbox" title="Имени в книге нет — запись сохранится без ИОФ">
-      <input type="checkbox" checked={nameless}
+      {/* Вне обхода Tab: нужен редко, мышью (Роман 03.10.2026). */}
+      <input type="checkbox" checked={nameless} tabIndex={-1}
              onChange={(e) => changeNameless(e.target.checked)}
              onKeyDown={(e) => {
                // Не data-field: иначе Enter заходил бы на флажок в каждой записи.
@@ -541,7 +579,7 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
           <NumberField label="Смерть, день" value={deathDay} onChange={setDeathDay} min={1} max={31} />
           <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12} />
           <NumberField label="Погреб., день" value={burialDay} onChange={setBurialDay} min={1} max={31} />
-          <NumberField label="месяц" value={burialMonth} onChange={setBurialMonth} min={1} max={12} />
+          <NumberField label="месяц" value={burialMonth} onChange={setBurialMonth} min={1} max={12} noTab />
         </div>
         <NextYear eventMonth={deathMonth} riteMonth={burialMonth} year={year} rite="погребение"
                   checked={burialNextYear} onChange={setBurialNextYear} />
@@ -551,6 +589,10 @@ export default function DeathForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
         <PersonBlock title="Умерший" person={dead} onChange={(p) => setDead((s) => ({ ...s, ...p }))}
                      gender={parsedSex ?? sexManual ?? undefined}
                      onPickPerson={pickDeceased} preferInfant infantRows infantYear={year}
+                     // НП, который программа сама подставила от родителя прошлого
+                     // выбора, список не сужает: выбрали не ту «Евдокию» — нужная
+                     // из другой деревни должна остаться в списке (ревьюер 03.10.2026).
+                     infantPlace={placeTyped}
                      {...common} extra={deadExtra}
                      noIof={nameless} titleAfter={namelessBox} />
         <PersonBlock title="Родственник" person={rel}

@@ -339,12 +339,12 @@ def main() -> int:
         check("обычная подсказка — по частоте (взрослая первой)", plain[0] == "Татьяна Иванова", str(plain))
         check("подсказка умершего — первым ребёнок из записи о рождении",
               infant[0] == "Татьяна Никитична", str(infant))
-        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None}).fetchone()
+        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None, "place": None}).fetchone()
         place_name = one("SELECT name FROM place WHERE id = ?", place_id)[0]
         check("отец ребёнка из записи о рождении — ИОФ, НП, звание, одна запись",
               f == ("Никита Алексеев", place_name, "крестьянин", 1), str(f))
         check("чужого ИОФ в рождениях нет — отца нет",
-              db.execute(sql["birth_father"], {"iof": "Татьяна Иванова", "year": None}).fetchone() is None)
+              db.execute(sql["birth_father"], {"iof": "Татьяна Иванова", "year": None, "place": None}).fetchone() is None)
         # С 02.10.2026 дело — на год: отец ищется по всему приходу (файлу).
         check("список «Набрано» — только записи года книги",
               db.execute(sql["entry_list"], {"section": 1, "year": 1700, "last": 0}).fetchall() == []
@@ -361,11 +361,12 @@ def main() -> int:
         for p in [dict(role_code="child", sort_order=10, first_name="Татьяна", patronymic="Никитична", gender="Ж"),
                   dict(role_code="father", sort_order=20, first_name="Никита", patronymic="Петров", gender="М")]:
             db.execute(sql["mention_insert"], {**blank, **p, "entry_id": e2})
-        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None}).fetchone()
+        f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None, "place": None}).fetchone()
         check("два рождения с таким именем — видно, что их два", f is not None and f[3] == 2, str(f))
         # Каждый ребёнок — своей строкой с родителем (Роман 30.09.2026): две
         # «Татьяны Никитичны» различаются отцом, свежая запись первой.
-        iq = {"prefix": norm("Тать") + "%", "gender": None, "limit": 8, "year": None}
+        iq = {"prefix": norm("Тать") + "%", "gender": None, "limit": 8, "year": None,
+              "name": None, "parent": None, "place": None}
         kids = db.execute(sql["infant_suggest"], iq).fetchall()
         check("infant_suggest: две строки на двух детей с одним именем",
               [k[0] for k in kids] == ["Татьяна Никитична"] * 2, str(kids))
@@ -382,12 +383,33 @@ def main() -> int:
         check("год формы: дети, родившиеся позже него, не предлагаются",
               all(k[8] is None or k[8] <= 1893 for k in in_window) and any(k[8] == 1893 for k in in_window),
               f"{years} → {[k[8] for k in in_window]}")
-        check("…и родившиеся больше чем за 7 лет до него — тоже",
-              db.execute(sql["infant_suggest"], {**iq, "year": 1893 + 8}).fetchall() == []
-              or all(k[8] is None or k[8] >= 1894 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1901}).fetchall()))
-        f93 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1893}).fetchone()
-        f80 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1880}).fetchone()
+        check("…и родившиеся больше чем за 2 года до него — тоже (Роман 03.10: окно 2 года)",
+              all(k[8] is None or k[8] >= 1894 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1896}).fetchall())
+              and not any(k[8] == 1893 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1896}).fetchall())
+              and any(k[8] == 1893 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1895}).fetchall()))
+        f93 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1893, "place": None}).fetchone()
+        f80 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1880, "place": None}).fetchone()
         check("отец ищется среди рождений того же окна лет", f93 is not None and f80 is None, f"{f93} / {f80}")
+        # Деревня умершего отбирает детей этой деревни; второе слово — родителя.
+        here = db.execute(sql["infant_suggest"], {**iq, "place": norm(place_name)}).fetchall()
+        check("НП набран — только дети этой деревни",
+              [k[3] for k in here] == ["Никита Алексеев"], str(here))
+        check("…в чужой деревне — никого",
+              db.execute(sql["infant_suggest"], {**iq, "place": norm("Нигде")}).fetchall() == [])
+        # Отец попадает в память персон при сохранении записи; здесь запись
+        # заведена напрямую, поэтому запоминаем его тем же запросом.
+        db.execute(sql["person_remember"], dict(iof="Никита Петров", iof_norm=norm("Никита Петров"),
+                                                place=None, rank=None, gender="М"))
+        by_parent = db.execute(sql["infant_suggest"], {**iq, "prefix": norm("Татьяна Никита П") + "%",
+                                                       "name": norm("Татьяна") + "%", "parent": norm("Никита П") + "%"}).fetchall()
+        check("второе слово отбирает по началу имени родителя",
+              [k[3] for k in by_parent] == ["Никита Петров"], str(by_parent))
+        both = db.execute(sql["infant_suggest"], {**iq, "prefix": norm("Татьяна Ник") + "%",
+                                                  "name": norm("Татьяна") + "%", "parent": norm("Ник") + "%"}).fetchall()
+        check("«Татьяна Ник» — и по отчеству ребёнка, и по имени отца, без повторов",
+              len(both) == 2 and len({k[3] for k in both}) == 2, str(both))
+        check("отец по записи о рождении — в той же деревне",
+              db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None, "place": norm("Нигде")}).fetchone() is None)
         check("по полу: мальчиков с таким началом нет",
               db.execute(sql["infant_suggest"], {**iq, "gender": "М"}).fetchall() == [])
         plan = " ".join(r[3] for r in db.execute("EXPLAIN QUERY PLAN " + sql["infant_suggest"], iq))

@@ -634,3 +634,12 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 .importnotes { margin: 0 0 0.5em 1.1em; padding: 0; font-size: 0.8rem; max-height: 9em; overflow-y: auto; }
 .modal:focus { outline: none; }
 .parishrow, .facts.parishes td, .modal p { overflow-wrap: anywhere; }
+
+/* Сборка «Скорость набора» (03.10.2026). */
+button.toggle.small { width: auto; padding: 0.15em 0.7em; font-size: 0.82rem; }
+.caseyearrow { align-items: center; }
+.caseyearrow .fieldhint { flex: 1 1 12em; }
+.facts.review td:last-child { white-space: nowrap; }
+.facts.review td:last-child button + button { margin-left: 0.4em; }
+.facts.review tr.done td { opacity: 0.55; }
+.modal[data-modal="review"] { max-width: 44em; }

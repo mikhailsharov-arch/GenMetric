@@ -135,17 +135,27 @@ export default function ExportPanel({ mkCase }: { mkCase: Case }) {
           {busy === "excel" ? "Выгружаю…" : "Выгрузить в Excel"}
         </button>
       </div>
+      {/* Итог — отдельным окном: строку под кнопками «легко пропустить, а
+          гиперссылка не всегда удобна для нажатия» (Роман 03.10.2026). */}
       {done && (
-        <p className="hint exportdone" data-export-path={done.path}>
-          Выгружено в {done.kind}: рождений {done.births}, браков {done.marriages}, смертей {done.deaths}
-          {done.kind === "Familio" ? `, населённых пунктов ${done.places}` : `, персон ${done.persons}`}.
-          {" "}Файл: <span className="mono">{done.path}</span>{" "}
-          <button type="button" className="linkish"
-                  onClick={() => invoke("reveal_path", { path: done.path })
-                    .catch((e) => report("Не удалось открыть папку", e))}>
-            Показать в папке
-          </button>
-        </p>
+        <Modal title={`Выгружено в ${done.kind}`} kind="exported" onClose={() => setDone(null)}>
+          <p className="exportdone" data-export-path={done.path}>
+            Выгружено в {done.kind}: рождений {done.births}, браков {done.marriages}, смертей {done.deaths}
+            {done.kind === "Familio" ? `, населённых пунктов ${done.places}` : `, персон ${done.persons}`}.
+          </p>
+          <p className="hint">Файл:</p>
+          <p className="path mono">{done.path}</p>
+          <div className="modalbar">
+            <button type="button" className="primary"
+                    onClick={() => invoke("reveal_path", { path: done.path })
+                      .catch((e) => report("Не удалось открыть папку", e))}>
+              Показать в папке
+            </button>
+            {/* Фокус — на «ОК»: Enter закрывает окно, рука с клавиатуры не уходит. */}
+            <button type="button" className="toggle" data-autofocus
+                    onClick={() => setDone(null)}>ОК</button>
+          </div>
+        </Modal>
       )}
       {open && (
         <FamilioDialog mkCase={mkCase} years={years} busy={busy === "familio"}

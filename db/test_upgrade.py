@@ -36,7 +36,7 @@ REPO = DB_DIR.parent
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
 FROM_VERSION = 6
-TO_VERSION = 8
+TO_VERSION = 9
 
 ok_count = 0
 fail_count = 0
@@ -143,6 +143,20 @@ def build_old_database(path: Path) -> None:
     db.execute("INSERT INTO place (name, name_norm, full_location, origin) "
                "VALUES ('Поселихино', 'поселихино', 'мой текст', 'user')")
     db.execute("INSERT INTO place (name, name_norm, uyezd, origin) VALUES ('Логинцево Малое', 'логинцево малое', ' ', 'archive')")
+    # Двойники (03.10.2026, база Романа): пустая строка рядом с пунктом
+    # поставки, на неё ссылается упоминание; и тёзка из другого уезда — он
+    # не двойник и должен остаться.
+    for pid, nm in ((9003, "Борисоглебское"), (9004, "Малово")):
+        db.execute("INSERT INTO place (id, name, name_norm, np_type, guberniya, uyezd, volost, full_location, origin) "
+                   "VALUES (?, ?, ?, ?, 'Костромская', 'Макарьевский', 'Завражная', ?, 'seed')",
+                   (pid, nm, nm.lower(), "с." if pid == 9003 else "д.", f"{nm}, Завражная волость, Макарьевский уезд"))
+    db.execute("INSERT INTO place (id, name, name_norm, origin) VALUES (9001, 'Борисоглебское', 'борисоглебское', 'user')")
+    db.execute("INSERT INTO place (id, name, name_norm, np_type, uyezd, origin) "
+               "VALUES (9002, 'Малово', 'малово', 'д.', 'Нерехтский', 'user')")
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id) "
+               "VALUES (1, 'clergy1', 130, 'Двойник', 9001)")
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id) "
+               "VALUES (1, 'clergy1', 140, 'Тёзка', 9002)")
     # Память персон с дублями (техдолг В6, 27.09.2026): без места персона
     # задваивалась при каждом сохранении — NULL в UNIQUE не равен NULL.
     db.executemany(
@@ -288,6 +302,22 @@ def main() -> int:
         check("справочник НП доехал до пользователя", n_place > 100, f"{n_place} пунктов")
         check("Борисоглебское на месте",
               one("SELECT count(*) FROM place WHERE name='Борисоглебское'") == 1)
+        check("двойник без подробностей слит с пунктом поставки, упоминание переведено",
+              one("SELECT count(*) FROM place WHERE id = 9001") == 0
+              and db.execute("SELECT p.np_type FROM person_mention m JOIN place p ON p.id = m.place_id "
+                             "WHERE m.first_name = 'Двойник'").fetchone() == ("с.",))
+        check("тёзка с другими подробностями остался, упоминание — при нём",
+              one("SELECT count(*) FROM place WHERE name_norm = 'малово'") == 2
+              and one("SELECT place_id FROM person_mention WHERE first_name = 'Тёзка'") == 9002)
+        check("упоминаний без пункта после слияния нет",
+              one("SELECT count(*) FROM person_mention m WHERE m.place_id IS NOT NULL "
+                  "AND NOT EXISTS (SELECT 1 FROM place p WHERE p.id = m.place_id)") == 0)
+        check("список на сверку после импорта доехал: таблица и индекс (схема 9)",
+              one("SELECT count(*) FROM sqlite_master WHERE name IN ('review_item', 'ix_review_open')") == 2
+              and one("SELECT count(*) FROM review_item") == 0)
+        check("перечень волостей доехал — карточка пункта их подскажет",
+              one("SELECT count(*) FROM lookup_kind WHERE kind = 'volost'") == 1
+              and one("SELECT count(*) FROM lookup WHERE kind = 'volost'") > 10)
         check("разбор ИОФ заработает: «Никита» не подменяется",
               db.execute("SELECT d.name FROM name_form f JOIN name_dict d ON d.id=f.name_id "
                          "WHERE f.kind IN ('name','variant') AND f.form_norm='никита' "

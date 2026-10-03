@@ -93,6 +93,8 @@ type Props = {
   infantRows?: boolean;
   /** Год формы смертей — окно лет для этих строк. */
   infantYear?: number | null;
+  /** НП для отбора этих строк по деревне; не задан — НП самой персоны. */
+  infantPlace?: string | null;
   /** Без поля ИОФ — умерший, чья личность не установлена (Роман 30.09.2026). */
   noIof?: boolean;
 };
@@ -173,7 +175,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
-  confessionLabel, preferInfant, noIof, infantRows, infantYear,
+  confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
 }: Props) {
   const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
@@ -300,6 +302,7 @@ export default function PersonBlock({
         preferInfant={preferInfant}
         infantRows={infantRows}
         infantYear={infantYear}
+        infantPlace={infantPlace === undefined ? person.place : infantPlace}
       />
   );
 

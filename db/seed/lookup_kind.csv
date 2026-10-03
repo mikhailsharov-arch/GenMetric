@@ -2,6 +2,7 @@ kind,title,editable,autoextend
 archive,Архивы,1,1
 church,Церкви,1,1
 uyezd,Уезды,1,1
+volost,Волости,1,1
 guberniya,Губернии,1,1
 rank_m,Звания мужские,1,1
 rank_f,Звания женские,1,1

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension};
 
 /// Версия схемы, которую понимает эта сборка.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust

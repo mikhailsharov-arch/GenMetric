@@ -19,10 +19,13 @@ type Props = {
   max?: number;
   width?: string;
   inputRef?: React.RefObject<HTMLInputElement>;
+  /** Вне обхода клавишей Tab: поле подставляется само (месяц крещения,
+   *  месяц погребения), править его — мышью (Роман 03.10.2026). */
+  noTab?: boolean;
 };
 
 export default function NumberField({
-  label, value, onChange, min = 0, max = 9999, width, inputRef,
+  label, value, onChange, min = 0, max = 9999, width, inputRef, noTab,
 }: Props) {
   const own = useRef<HTMLInputElement>(null);
   const field = inputRef ?? own;
@@ -69,6 +72,7 @@ export default function NumberField({
         <input
           ref={field}
           data-field
+          tabIndex={noTab ? -1 : undefined}
           inputMode="numeric"
           value={value ?? ""}
           onChange={(e) => {

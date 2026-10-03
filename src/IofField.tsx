@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { titleCase } from "./names";
 import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
@@ -74,6 +75,9 @@ type Props = {
   /** Год на форме смертей: дети, родившиеся не позже него (и не раньше чем
    *  за 7 лет) — после импорта в приходе рождения за много лет. */
   infantYear?: number | null;
+  /** НП умершего, если уже набран: только дети этой деревни (Роман 03.10.2026:
+   *  19 «Евдокий» на весь приход). */
+  infantPlace?: string | null;
   label: string;
   value: string;
   onChange: (text: string, parsed: Parsed | null) => void;
@@ -96,6 +100,7 @@ export default function IofField({
   label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant,
   infantRows,
   infantYear,
+  infantPlace,
 }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
@@ -218,6 +223,7 @@ export default function IofField({
             // 30 — чтобы при десятках тёзок за год нужный не выпал из списка
             // (список прокручивается); порядок — от недавно родившихся.
             prefix: query, limit: 30, year: infantYear ?? null,
+            place: infantPlace?.trim() || null,
             gender: gender ?? parsedRef.current?.gender ?? null,
           })
         : Promise.resolve([] as InfantHint[]),
@@ -502,6 +508,16 @@ export default function IofField({
           onKeyDown={onKeyDown}
           onBlur={(e) => {
             closeSuggestions();
+            // «иван иванов» → «Иван Иванов» (Роман 03.10.2026). До сверки:
+            // она читает текст из valueRef.
+            // Только при настоящем уходе из поля: окно программы потеряло
+            // фокус (клик в скан) — человек вернётся и допишет слово; правка
+            // текста здесь запустила бы сверку недописанного (ревьюер 03.10.2026).
+            const proper = titleCase(e.currentTarget.value);
+            if (proper !== e.currentTarget.value && (e.relatedTarget !== null || document.hasFocus())) {
+              valueRef.current = proper;
+              onChange(proper, null);
+            }
             void checkOnLeave(e.relatedTarget);
           }}
         />

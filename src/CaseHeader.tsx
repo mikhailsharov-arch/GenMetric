@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { focusNextField } from "./focus";
-import { report, warn } from "./errors";
+import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
 import ExportPanel from "./ExportPanel";
 import ParishDialog from "./ParishDialog";
+import ReviewDialog from "./ReviewDialog";
+import NumberField from "./NumberField";
+import Modal from "./Modal";
 
 /**
  * Шапка дела: архив, фонд, опись, дело, приход, год, кто индексирует.
@@ -56,20 +59,36 @@ type ImportReport = {
 
 type CaseYear = { year: number; entries: number };
 
-export default function CaseHeader({ onSaved, reload, parishName }: {
+type CaseSaved = { id: number; status: "saved" | "created" | "exists"; existing: string | null };
+
+export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, onOpenEntry }: {
   onSaved: (c: Case) => void; reload: number; parishName: string;
+  /** Дело сохранено с этим годом — формы встают на него (спека 2026-10-03, п. 1.2). */
+  onWorkYear: (year: number) => void;
+  /** «Открыть запись» из списка на сверку. */
+  onOpenEntry: (section: number, id: number) => void;
 }) {
+  // Год открытого дела — отдельно от года в поле: поле можно поменять и
+  // сохранить, и тогда новому году заводится своё дело (Роман 03.10.2026:
+  // «сначала изменить архивный шифр …, а уже затем выбрать или изменить Год»).
+  const [loadedYear, setLoadedYear] = useState<number | null>(null);
+  const [ask, setAsk] = useState<{ year: number; existing: string } | null>(null);
+  const [okText, setOkText] = useState("");
+  const [review, setReview] = useState(false);
+  const [toReview, setToReview] = useState(0);
+  const [c, setC] = useState<Case>(EMPTY);
   const [parishes, setParishes] = useState(false);
   // Реквизиты поправлены, но не сохранены: смена года или прихода их не
   // должна терять молча (проверяющий 02.10.2026).
   const [edited, setEdited] = useState(false);
   const editedRef = useRef(false);
-  editedRef.current = edited;
+  // Несохранённым считается и изменённый год: перечитывание его не выбрасывает.
+  editedRef.current = edited || c.year !== loadedYear;
+  const yearChanged = c.year !== loadedYear;
   useEffect(() => {
-    setDirty("Дело", edited);
+    setDirty("Дело", edited || yearChanged);
     return () => setDirty("Дело", false);
-  }, [edited]);
-  const [c, setC] = useState<Case>(EMPTY);
+  }, [edited, yearChanged]);
   const [years, setYears] = useState<CaseYear[]>([]);
   const [busy, setBusy] = useState(false);
   const [ok, setOk] = useState(false);
@@ -114,6 +133,7 @@ export default function CaseHeader({ onSaved, reload, parishName }: {
       .then((loaded) => {
         if (!loaded) return;
         setC(loaded);
+        setLoadedYear(loaded.year);
         setEdited(false);
         setOk(false);
         // Формам — только текущее дело: открытое ради правки реквизитов
@@ -124,13 +144,36 @@ export default function CaseHeader({ onSaved, reload, parishName }: {
     invoke<CaseYear[]>("case_years")
       .then(setYears)
       .catch((e) => report("Не удалось прочитать годы дел", e));
+    invoke<number>("review_count")
+      .then(setToReview)
+      .catch((e) => report("Не удалось прочитать список на сверку", e));
   }
   // Запись другого года увела работу в другое дело — перечитать; но не поверх
   // несохранённой правки реквизитов.
   useEffect(() => { if (!editedRef.current) load(null); }, [reload]);
 
+  const emptyYear = loadedYear !== null && years.length > 1
+    && years.find((y) => y.year === loadedYear)?.entries === 0;
+
+  /** Убрать дело года без записей: опечатка года или год, из которого ушла
+   *  последняя запись. */
+  async function dropYear() {
+    if (loadedYear === null) return;
+    try {
+      const gone = await invoke<boolean>("case_delete", { year: loadedYear });
+      if (!gone) warn("Дело не убрано", "в этом году есть записи, или это единственное дело прихода");
+      load(null);
+      // Формы стояли на убранном годе — следующая запись завела бы его дело
+      // заново. Возвращаем их на год текущего дела (ревьюер 03.10.2026).
+      const current = await invoke<Case | null>("case_load", { year: null });
+      if (gone && current?.year != null) onWorkYear(current.year);
+    } catch (e) {
+      report("Не удалось убрать дело", e);
+    }
+  }
+
   function pickYear(year: number) {
-    if (edited) {
+    if (edited || (yearChanged && c.year !== year)) {
       warn("Сначала сохраните дело", "реквизиты этого года поправлены, но не сохранены — при смене года они пропали бы");
       return;
     }
@@ -180,18 +223,48 @@ export default function CaseHeader({ onSaved, reload, parishName }: {
     </div>
   );
 
-  async function save() {
+  /** Год набран, реквизиты не тронуты, дело этого года есть — открыть его
+   *  (то же, что выбор в списке годов). */
+  function yearLeft() {
+    if (!edited && c.year !== null && c.year !== loadedYear && years.some((y) => y.year === c.year))
+      load(c.year);
+  }
+
+  async function save(overwrite = false) {
+    // Год — четыре цифры в разумных пределах: «189» завело бы дело 189 года.
+    if (c.year !== null && (c.year < 1500 || c.year > 2100)) {
+      warn("Год книги набран не полностью", `«${c.year}» — не год; поправьте поле «Год книги»`);
+      return;
+    }
     setBusy(true);
     setOk(false);
+    setAsk(null);
     try {
-      const id = await invoke<number>("case_save", { case: { ...c, id: c.id || 1 } });
-      const next = { ...c, id };
+      // Стёртый год год дела не стирает (так и в базе) — возвращаем его в поле.
+      const toSave = c.year === null && loadedYear !== null ? { ...c, year: loadedYear } : c;
+      const r = await invoke<CaseSaved>("case_save", { case: toSave, overwrite });
+      if (r.status === "exists") {
+        // У набранного года уже есть своё дело — молча его не переписываем.
+        if (c.year !== null) setAsk({ year: c.year, existing: r.existing ?? "" });
+        return;
+      }
+      // Прежняя жёлтая полоса («Новый год книги…», «Сначала сохраните дело»)
+      // после сохранения устарела.
+      dismissWarn();
+      const next = { ...toSave, id: r.id };
       setC(next);
+      setLoadedYear(next.year);
       setEdited(false);
       // Церковь, село, уезд, губерния и индексатор разошлись на все годы —
       // формам нужно текущее дело с ними, а не то, что открыто здесь.
       const current = await invoke<Case | null>("case_load", { year: null });
       onSaved(current ?? next);
+      invoke<CaseYear[]>("case_years").then(setYears)
+        .catch((e) => report("Не удалось прочитать годы дел", e));
+      if (next.year !== null) onWorkYear(next.year);
+      setOkText(r.status === "created"
+        ? `Году ${next.year} заведено своё дело. Реквизиты прежнего года не изменились. Формы встали на ${next.year} год.`
+        : "Сохранено. Можно переходить к записям.");
       setOk(true);
     } catch (e) {
       report("Не удалось сохранить дело", e);
@@ -205,13 +278,42 @@ export default function CaseHeader({ onSaved, reload, parishName }: {
       {/* Приход — файл; открыт один (спека 2026-10-02, п. 1.4). */}
       <div className="parishrow">
         <span>Приход: <b>{parishName || c.village || "без названия"}</b></span>
-        <button type="button" className="linkish" onClick={() => setParishes(true)}>Сменить…</button>
+        {/* Кнопкой, не ссылкой: Роман 03.10.2026 — «не всегда интуитивно
+            понятно, что это кликабельные элементы». */}
+        <button type="button" className="toggle small" onClick={() => setParishes(true)}>Сменить…</button>
       </div>
       {parishes && <ParishDialog onClose={() => setParishes(false)} />}
+      {toReview > 0 && (
+        <div className="parishrow">
+          <span>На сверку после импорта: <b>{toReview}</b></span>
+          <button type="button" className="toggle small" onClick={() => setReview(true)}>Показать…</button>
+        </div>
+      )}
+      {review && (
+        <ReviewDialog
+          onClose={() => { setReview(false); invoke<number>("review_count").then(setToReview)
+            .catch((e) => report("Не удалось прочитать список на сверку", e)); }}
+          onOpenEntry={(section, id) => { setReview(false); onOpenEntry(section, id); }}
+        />
+      )}
+      {ask && (
+        <Modal title={`У ${ask.year} года уже есть дело`} kind="case-exists" onClose={() => setAsk(null)}>
+          <p>
+            Дело {ask.year} года: {ask.existing || "реквизиты не заполнены"}. Заменить его
+            реквизиты набранными{c.fond || c.opis || c.delo
+              ? ` (Ф.${c.fond ?? ""} Оп.${c.opis ?? ""} Д.${c.delo ?? ""})` : ""}?
+          </p>
+          <p className="hint">Записи {ask.year} года останутся при своём деле — изменятся только фонд, опись и дело.</p>
+          <div className="modalbar">
+            <button type="button" className="primary" onClick={() => void save(true)}>Заменить</button>
+            <button type="button" className="toggle" onClick={() => setAsk(null)}>Отмена (Esc)</button>
+          </div>
+        </Modal>
+      )}
       <h2 className="caseyear">
-        {c.year !== null ? `Дело за ${c.year} год` : "Дело"}
+        {loadedYear !== null ? `Дело за ${loadedYear} год` : "Дело"}
         {years.length > 1 && (
-          <select value={c.year ?? ""} title="Реквизиты дела другого года"
+          <select value={loadedYear ?? ""} title="Реквизиты дела другого года"
                   onChange={(e) => pickYear(Number(e.target.value))}>
             {years.map((y) => (
               <option key={y.year} value={y.year}>{y.year} — записей: {y.entries}</option>
@@ -232,19 +334,40 @@ export default function CaseHeader({ onSaved, reload, parishName }: {
         {text("Опись", "opis")}
         {text("Дело", "delo")}
       </div>
+      {/* Год книги — полем: поправили фонд, опись, дело, поставили год,
+          сохранили — и набираете (спека 2026-10-03, п. 1). */}
+      <div className="row tight caseyearrow" onBlur={yearLeft}>
+        <NumberField label="Год книги" value={c.year} min={1700} max={1930}
+                     onChange={(year) => setC((prev) => ({ ...prev, year }))} />
+        <div className="fieldhint">
+          {yearChanged && c.year !== null
+            ? years.some((y) => y.year === c.year)
+              ? edited
+                ? `у ${c.year} года своё дело — «Сохранить» спросит, заменять ли его реквизиты`
+                : `у ${c.year} года своё дело — оно откроется, когда вы выйдете из поля`
+              : `«Сохранить» заведёт дело ${c.year} года; дело ${loadedYear ?? "прежнего"} года не изменится`
+            : "новый год книги: поправьте фонд, опись, дело, поставьте год и сохраните"}
+        </div>
+      </div>
       <Suggest label="Церковь" kind="church" value={c.church ?? ""} onChange={set("church")} />
       <Suggest label="Село" kind="place" value={c.village ?? ""} onChange={set("village")} />
       <Suggest label="Уезд" kind="uyezd" browse value={c.uyezd ?? ""} onChange={set("uyezd")} />
       <Suggest label="Губерния" kind="guberniya" browse value={c.guberniya ?? ""} onChange={set("guberniya")} />
-      {/* Года здесь больше нет — он на форме рождений и меняется по ходу
-          индексации. Заказчик 22.09.2026: «чтобы наличие двух годов не путало».
-          В деле год остаётся в базе как год первой записи. */}
+      {/* 22.09.2026 год с этого экрана убирали («чтобы наличие двух годов не
+          путало»); 03.10.2026 Роман попросил свободный порядок — «Год книги»
+          вернулся выше, рядом с фондом, описью и делом. */}
       {text("Кто индексирует", "indexer")}
 
-      <button className="primary" onClick={save} disabled={busy}>
+      <button className="primary" onClick={() => void save()} disabled={busy}>
         {busy ? "Сохраняю…" : "Сохранить дело"}
       </button>
-      {ok && <p className="hint">Сохранено. Можно переходить к записям.</p>}
+      {ok && <p className="hint">{okText}</p>}
+      {emptyYear && (
+        <p className="hint">
+          В {loadedYear} году нет ни одной записи.{" "}
+          <button type="button" className="linkish" onClick={() => void dropYear()}>Убрать дело этого года</button>
+        </p>
+      )}
 
       {/* Память подсказок из Excel. Без неё программа помнит только набранное
           в ней самой, и подсказка людьми на первых страницах пуста. */}

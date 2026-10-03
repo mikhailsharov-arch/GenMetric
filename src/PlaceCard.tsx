@@ -123,14 +123,9 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
       <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse />
       <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse />
       <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse />
-      <div className="field">
-        <label>Волость</label>
-        <div className="fieldbody">
-          <input data-field value={volost} onChange={(e) => setVolost(e.target.value)}
-                 autoComplete="off" spellCheck={false}
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); } }} />
-        </div>
-      </div>
+      {/* Волость — со списком уже известных; набранная в карточке губерния,
+          уезд и волость запоминаются (Роман 02.10.2026). */}
+      <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse />
       <div className="field">
         <label>Familio</label>
         <div className="fieldbody">

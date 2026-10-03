@@ -28,7 +28,8 @@ Microsoft) и проходим путь Романа руками робота.
   13. умерший без имени («личность не установлена») сохраняется;
   14. выгрузка в Familio и в Excel пишет файлы, в них набранные записи;
   15. новый приход — отдельный файл: записи не смешиваются;
-  16. импорт Excel-индексатора (db/fixtures/indexer.xlsx) через окно.
+  16. импорт Excel-индексатора (db/fixtures/indexer.xlsx) через окно, список
+      на сверку; свободный порядок на экране «Дело».
 
 Запуск (в конвейере, см. .github/workflows/build.yml):
     python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite путь\\к\\msedgedriver.exe
@@ -616,7 +617,10 @@ def resumed(driver, wait):
         check("about: название справочника по селу", "Борисоглебское" in title, f"«{title}»")
         validate_xlsx(path, "Familio", REPO / "db" / "export" / "familio_template.xlsx")
     click(driver, "//button[normalize-space()='Выгрузить в Excel']")
-    path = exported_path(driver, wait, "Excel")
+    # «Показать в папке»: ветка для Windows (explorer /select) на Mac не
+    # компилируется — проверяем, что команда проходит без полосы ошибок
+    # (ревьюер #39). С 03.10.2026 кнопка — в окне итога выгрузки.
+    path = exported_path(driver, wait, "Excel", reveal=True)
     if path:
         for sheet, what in (("Рождения", "Мария"), ("Браки", "Михаил Дмитриев"), ("Смерти", "утонул в Волге")):
             rows = xlsx_rows(path, sheet)
@@ -625,13 +629,6 @@ def resumed(driver, wait):
         mk = xlsx_rows(path, "МК")
         check("Excel, лист «МК»: строки персон есть", len(mk) > 4, f"строк {len(mk)}")
         validate_xlsx(path, "Excel")
-        # «Показать в папке»: ветка для Windows (explorer /select) на Mac не
-        # компилируется и не выполнялась ни разу — проверяем, что команда
-        # проходит без полосы ошибок (ревьюер #39).
-        click(driver, "//div[contains(@class,'exportpanel')]//button[normalize-space()='Показать в папке']")
-        time.sleep(1.5)
-        errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
-        check("«Показать в папке» отработала без ошибки", not errorbar, " | ".join(errorbar))
 
     parishes(driver, wait)
 
@@ -731,6 +728,35 @@ def parishes(driver, wait):
     block = driver.find_element(By.CSS_SELECTOR, ".birth").text
     check("запись в новом приходе сохранена, список — за её год",
           "Набрано: 1 — за 1890 год" in block, error_details(driver) + " | " + hints[:120].replace("\n", " | "))
+    # Свободный порядок на экране «Дело» (Роман 03.10.2026): поправил дело,
+    # поставил новый год, сохранил — и набирает; прошлый год не тронут.
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    fill(driver, "Дело", "77")
+    fill(driver, "Год книги", "1891")
+    click(driver, "//button[normalize-space()='Сохранить дело']")
+    try:
+        wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "заведено своё дело"))
+    except TimeoutException:
+        pass
+    try:  # список годов приходит отдельным запросом, чуть позже текста
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, "h2.caseyear"), "1890"))
+    except TimeoutException:
+        pass
+    head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
+    check("новому году заведено своё дело: «Дело за 1891 год», в списке и 1890",
+          "Дело за 1891 год" in head and "1890" in head, head.replace("\n", " | ") + " | " + error_details(driver))
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    year = field(driver, "Год", b).get_attribute("value")
+    check("формы встали на новый год", year == "1891", f"«{year}»")
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    # Год без правки реквизитов и уход из поля — открывает дело этого года.
+    fill(driver, "Год книги", "1890")
+    field(driver, "Фонд").click()
+    time.sleep(0.8)
+    head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
+    delo = field(driver, "Дело").get_attribute("value")
+    check("у 1890 года реквизиты прежние — дело не «77»", "Дело за 1890 год" in head and delo != "77",
+          f"{head.splitlines()[0]} | дело «{delo}»")
     # Общие справочники: пункт, заведённый в первом приходе (шаг 9), здесь известен.
     open_parishes(driver, wait)
     listing = driver.find_element(By.XPATH, PARISH).text
@@ -779,6 +805,36 @@ def parishes(driver, wait):
           "Не перенесено строк: 1" in report and "Жданко" in report, report.replace("\n", " | ")[:400])
     click(driver, PARISH + "//button[normalize-space()='Перейти в приход']")
     reloaded(driver, wait, "Никольское (из Excel)")
+    # Список на сверку после импорта (Роман 03.10.2026).
+    rows = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".parishrow")]
+    check("на экране «Дело» — «На сверку после импорта»", any("На сверку после импорта" in r for r in rows), " || ".join(rows))
+    click(driver, "//div[contains(@class,'parishrow')][contains(.,'На сверку')]//button")
+    review = "//div[@data-modal='review']"
+    wait.until(EC.visibility_of_element_located((By.XPATH, review)))
+    listing = driver.find_element(By.XPATH, review).text
+    check("в списке — несверенное имя и пропущенная строка",
+          "Жданко" in listing and "не перенесена" in listing, listing.replace("\n", " | ")[:400])
+    click(driver, review + "//tr[contains(.,'Жданко')]//button[normalize-space()='Открыть запись']")
+    try:
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".birth .editbar")))
+    except TimeoutException:
+        pass
+    opened = driver.find_elements(By.CSS_SELECTOR, ".birth .editbar")
+    check("«Открыть запись» из списка — запись в форме рождений", bool(opened), error_details(driver))
+    if opened:
+        # Запись с именем вне словаря форма сразу предлагает сверить — окно
+        # закрывает всю форму (ревьюер 03.10.2026). Закрываем его клавишей.
+        time.sleep(1.0)
+        for _ in range(3):
+            modals = driver.find_elements(By.CSS_SELECTOR, ".modal")
+            if not modals:
+                break
+            modals[0].send_keys(Keys.ESCAPE)
+            time.sleep(0.5)
+        check("окно сверки имени закрыто", not driver.find_elements(By.CSS_SELECTOR, ".modal"))
+        click(driver, "//div[contains(@class,'birth')]//div[contains(@class,'editbar')]//button[normalize-space()='Отменить']")
+        time.sleep(0.5)
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
     head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
     check("дело — на год: открыт последний год, в списке оба",
           "Дело за 1890 год" in head and "1889" in head, head.replace("\n", " | "))
@@ -850,10 +906,15 @@ def validate_xlsx(path, kind, baseline=None):
           r.returncode == 0, tail[:600])
 
 
-def exported_path(driver, wait, kind):
-    """Путь выгруженного файла — из строки «Выгружено в …» под кнопками."""
+def exported_path(driver, wait, kind, reveal=False):
+    """Путь выгруженного файла — из окна итога выгрузки; окно закрывается.
+
+    С 03.10.2026 итог — отдельным окном (Роман: строку под кнопками «легко
+    пропустить»): в нём число записей, путь, «Показать в папке» и «ОК».
+    """
+    box = "//div[@data-modal='exported']"
     try:
-        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".exportpanel"), f"Выгружено в {kind}"))
+        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".exportdone"), f"Выгружено в {kind}"))
     except TimeoutException:
         pass
     done = driver.find_elements(By.CSS_SELECTOR, ".exportdone")
@@ -863,6 +924,15 @@ def exported_path(driver, wait, kind):
           " | ".join(errorbar))
     if path:
         check(f"файл {kind} лежит на диске", Path(path).is_file(), path)
+    if done:
+        if reveal:
+            click(driver, box + "//button[normalize-space()='Показать в папке']")
+            time.sleep(1.5)
+            bars = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
+            check("«Показать в папке» отработала без ошибки", not bars, " | ".join(bars))
+        click(driver, box + "//button[normalize-space()='ОК']")
+        time.sleep(0.4)
+        check("окно итога выгрузки закрылось", not driver.find_elements(By.XPATH, box))
     return path if path and Path(path).is_file() else None
 
 

@@ -721,7 +721,7 @@ def incident_20261002_odno_delo_na_vse_gody():
     check("формы не решают, к какому делу запись, и напоминают о новом годе",
           all("new_case_year" in t and "caseId: mkCase.id" not in t for t in forms))
     check("экран «Дело» показывает дело года и даёт выбрать другой",
-          "case_years" in read("src/CaseHeader.tsx") and "Дело за ${c.year} год" in read("src/CaseHeader.tsx"))
+          "case_years" in read("src/CaseHeader.tsx") and "Дело за ${loadedYear} год" in read("src/CaseHeader.tsx"))
     check("поведение проверено: test_entry, test_upgrade, test_export",
           "9г. Дело — на год книги" in read("db/test_entry.py")
           and "дело на год: у 1896 и 1897 годов" in read("db/test_upgrade.py")
@@ -739,7 +739,43 @@ def incident_20261002_odno_delo_na_vse_gody():
           ", ".join(missing) or f"{len(called)} команд")
 
 
+def incident_20261003_otvet_na_prihody():
+    """Ответ Романа 03.10.2026 на сборку с приходами. Три вещи дошли до него:
+    (1) порядок «сначала запись нового года, потом правка дела» — «запутался
+    уже на этапе чтения описания», а привычный ему порядок молча затирал бы
+    реквизиты прошлого года; (2) подсказка умершего-младенца выдала 19
+    «Евдокий» — после импорта в приходе рождения за 13 лет; (3) при выборе
+    младенца звание умершего оставалось пустым.
+
+    Защита: «Сохранить дело» с новым годом заводит дело этого года, а чужой год
+    переписывает только с согласия (records::save_case, тест крейта
+    case_free_order); подсказка — за 2 года, по деревне и по имени родителя
+    (db/test_entry.py); звание подставляется по полу ребёнка.
+    """
+    rec = strip_comments(read("src-tauri/core/src/records.rs"))
+    check("новый год на экране «Дело» — новое дело, а не правка прежнего",
+          "pub fn save_case" in rec and '"created"' in rec and '"exists"' in rec and "if !overwrite" in rec)
+    check("три ветки сохранения дела проверены тестом крейта", "fn case_free_order" in read("src-tauri/core/src/records.rs"))
+    ch = read("src/CaseHeader.tsx")
+    check("год книги — поле на экране «Дело», чужой год — с вопросом",
+          'label="Год книги"' in ch and 'r.status === "exists"' in ch and "save(true)" in ch)
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
+    inf = strip_comments(blocks.get("infant_suggest", ""))
+    check("подсказка младенца: окно 2 года, деревня, имя родителя",
+          ":year - 2 AND :year" in inf and ":place" in inf and ":parent" in inf and ":year - 7" not in inf)
+    check("отец по записи о рождении — в том же окне и деревне",
+          ":year - 2 AND :year" in strip_comments(blocks.get("birth_father", "")) and ":place" in blocks.get("birth_father", ""))
+    te = read("db/test_entry.py")
+    check("поведение проверено в test_entry", "НП набран — только дети этой деревни" in te
+          and "второе слово отбирает по началу имени родителя" in te)
+    df = strip_comments(read("src/DeathForm.tsx"))
+    check("звание младенца подставляется по полу", '"сын младенец"' in df and '"дочь младенец"' in df and "autoRank" in df)
+    check("поля вне обхода Tab: флажок и месяцы обряда",
+          "tabIndex={-1}" in read("src/DeathForm.tsx") and "noTab" in read("src/BirthForm.tsx") and "noTab" in df)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261003_otvet_na_prihody,
     incident_20261002_odno_delo_na_vse_gody,
     incident_20261001_pustye_mesta,
     incident_20261001_excel_vosstanovlenie,

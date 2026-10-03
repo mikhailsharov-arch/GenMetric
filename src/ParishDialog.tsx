@@ -225,7 +225,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                   </td>
                   <td>
                     {r.current ? "открыт" : (
-                      <button type="button" className="linkish" disabled={r.missing || busy !== null}
+                      <button type="button" className="toggle small" disabled={r.missing || busy !== null}
                               onClick={() => void open(r.id)}>
                         Открыть
                       </button>

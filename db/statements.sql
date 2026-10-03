@@ -67,6 +67,26 @@ SELECT archive, fond, opis, delo, church, village, uyezd, guberniya,
  ORDER BY (id = (SELECT e.case_id FROM entry e ORDER BY e.id DESC LIMIT 1)) DESC, updated_at DESC, id DESC
  LIMIT 1;
 
+-- @case_new_id
+SELECT coalesce(max(id), 0) + 1 FROM mk_case;
+
+-- @case_year_of
+SELECT year FROM mk_case WHERE id = :id;
+
+-- @case_brief
+-- Реквизиты дела одной строкой — для вопроса «заменить реквизиты дела N года?».
+SELECT trim(coalesce('Ф.' || nullif(trim(fond), ''), '') || coalesce(' Оп.' || nullif(trim(opis), ''), '')
+            || coalesce(' Д.' || nullif(trim(delo), ''), ''))
+  FROM mk_case WHERE id = :id;
+
+-- @case_delete_empty
+-- Убрать дело года без единой записи (опечатка года; год, из которого ушла
+-- последняя запись). Дело с записями и последнее дело прихода не убираются.
+DELETE FROM mk_case
+ WHERE year = :year
+   AND NOT EXISTS (SELECT 1 FROM entry e WHERE e.case_id = mk_case.id)
+   AND (SELECT count(*) FROM mk_case) > 1;
+
 -- @case_spread_parish
 -- Церковь, село, уезд, губерния и индексатор — свойства прихода, не года:
 -- правка на экране «Дело» расходится на дела всех лет. Архив — туда, где пуст.
@@ -491,10 +511,15 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
 -- Родитель — отец, а если его в записи нет (незаконнорождённые) — мать.
 -- Поиск по началу имени — через person_index (у него есть ключ iof_norm;
 -- некоррелированный IN, как в person_suggest_infant). Недавно родившиеся —
--- первыми: умирают чаще всего в первые месяцы. :year — год на форме смертей:
--- дети, родившиеся не позже него и не раньше чем за 7 лет; иначе после
--- импорта тринадцати лет нужная «Мария» не попадала бы в первые 30
--- (ревьюер 02.10.2026).
+-- первыми: умирают чаще всего в первые месяцы.
+--
+-- Роман 03.10.2026: на «Евдокия» 19 строк — искать дольше, чем набрать отца.
+-- По его файлу до двух лет умирают 93 % детей, но одно окно список не
+-- сокращает (медиана 6 строк), сокращает деревня (1 строка у 63 %, до трёх —
+-- у 97 %). Поэтому: :year — год формы смертей, дети за 2 года до него;
+-- :place — НП умершего, если уже набран: только дети этой деревни (по НП
+-- отца, нет отца — матери); :name и :parent — второе слово в поле отбирает по
+-- началу имени родителя («Евдокия Ив»).
 WITH kid AS (
     SELECT c.entry_id, c.gender, e.id AS eid, e.event_day, e.event_month, e.event_year,
            trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) AS iof
@@ -505,6 +530,7 @@ WITH kid AS (
 parent AS (
     SELECT p.entry_id, p.role_code, p.rank,
            (SELECT pl.name FROM place pl WHERE pl.id = p.place_id) AS place,
+           (SELECT pl.name_norm FROM place pl WHERE pl.id = p.place_id) AS place_norm,
            trim(coalesce(nullif(trim(p.first_name), ''), '') || coalesce(' ' || nullif(trim(p.patronymic), ''), '') || coalesce(' ' || nullif(trim(p.surname), ''), '')) AS iof
       FROM person_mention p WHERE p.role_code IN ('father', 'mother')
 )
@@ -518,17 +544,23 @@ SELECT k.iof, k.gender,
   LEFT JOIN parent f ON f.entry_id = k.entry_id AND f.role_code = 'father'
   LEFT JOIN parent m ON m.entry_id = k.entry_id AND m.role_code = 'mother'
  WHERE k.iof <> ''
-   AND k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :prefix ESCAPE '\')
+   AND (k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :prefix ESCAPE '\')
+        OR (:parent IS NOT NULL
+            AND k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :name ESCAPE '\')
+            AND CASE WHEN f.iof <> '' THEN f.iof ELSE m.iof END
+                IN (SELECT iof FROM person_index WHERE iof_norm LIKE :parent ESCAPE '\')))
    AND (:gender IS NULL OR k.gender IS NULL OR k.gender = :gender)
-   AND (:year IS NULL OR k.event_year IS NULL OR k.event_year BETWEEN :year - 7 AND :year)
+   AND (:year IS NULL OR k.event_year IS NULL OR k.event_year BETWEEN :year - 2 AND :year)
+   AND (:place IS NULL OR CASE WHEN f.iof <> '' THEN f.place_norm ELSE m.place_norm END = :place)
  ORDER BY k.event_year DESC, k.event_month DESC, k.event_day DESC, k.eid DESC
  LIMIT :limit;
 
 -- @birth_father
 -- Отец из записи о рождении ребёнка с этим ИОФ (Роман 28.09.2026: выбрали
 -- умершего младенца — родственник заполняется его отцом). Только отец с
--- именем и только рождения не позже года формы и не раньше чем за 7 лет до
--- него (:year; дело теперь на год, приход — на много лет). Вторая колонка —
+-- именем и только рождения не позже года формы и не раньше чем за 2 года до
+-- него (:year), а если НП умершего набран — только в этой деревне (:place):
+-- то же окно, что у infant_suggest. Вторая колонка —
 -- сколько таких записей: если их больше одной (десятки «Марий»), отец не
 -- угадывается (проверяющий #38).
 SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) AS iof,
@@ -541,9 +573,31 @@ SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || null
  WHERE c.role_code = 'child'
    AND trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) = :iof
    AND trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) <> ''
-   AND (:year IS NULL OR e.event_year IS NULL OR e.event_year BETWEEN :year - 7 AND :year)
+   AND (:year IS NULL OR e.event_year IS NULL OR e.event_year BETWEEN :year - 2 AND :year)
+   AND (:place IS NULL OR (SELECT p.name_norm FROM place p WHERE p.id = f.place_id) = :place)
  ORDER BY e.id DESC
  LIMIT 1;
+
+-- @review_add
+-- Список на сверку после импорта (схема 9).
+INSERT INTO review_item (kind, text, sheet, row, entry_id)
+VALUES (:kind, :text, :sheet, :row, :entry_id);
+
+-- @review_list
+-- :done = 0 — только несделанное; 1 — всё. Раздел, год и счёт записи — чтобы
+-- человек понял, о какой записи речь, не открывая её.
+SELECT r.id, r.kind, r.text, r.sheet, r.row, r.entry_id, r.done,
+       e.section, coalesce(e.rite_year, e.event_year) AS year, e.page,
+       coalesce(e.no_male, e.no_female) AS no
+  FROM review_item r LEFT JOIN entry e ON e.id = r.entry_id
+ WHERE (:done = 1 OR r.done = 0)
+ ORDER BY r.done, (r.kind = 'skipped') DESC, e.section, r.row, r.id;
+
+-- @review_count
+SELECT count(*) FROM review_item WHERE done = 0;
+
+-- @review_done
+UPDATE review_item SET done = :done WHERE id = :id;
 
 -- @clergy_remember
 -- Причт запоминается, чтобы его можно было выбирать, а не набирать. Заказчик

@@ -10,8 +10,9 @@ import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { dismissWarn, report, warn } from "./errors";
-import type { Case } from "./CaseHeader";
 import { setDirty } from "./dirty";
+import { titleCase } from "./names";
+import type { FormProps } from "./formprops";
 
 /**
  * Форма ввода записи о рождении.
@@ -84,7 +85,7 @@ type PersonPayload = {
   uncertain: string | null;
 };
 
-export default function BirthForm({ mkCase, onSaved }: { mkCase: Case; onSaved: (caseId: number) => void }) {
+export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormProps) {
   // Страница — текст: «938об-939» (заказчик 21.09.2026), в базе колонка TEXT.
   const [page, setPage] = useState<string | null>(null);
   // Год — на форме, а не только в деле: «он меняется в процессе индексации»
@@ -341,6 +342,10 @@ export default function BirthForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
    * с 21.09). Разбираем здесь, той же командой, что и поле.
    */
   async function withParsed(p: Person): Promise<Person> {
+    // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
+    // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
+    const iof = titleCase(p.iof);
+    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof }) };
     if (!p.iof.trim() || p.parsed) return p;
     const parsed = await invoke<Parsed>("parse_iof", { text: p.iof });
     return { ...p, parsed };
@@ -356,7 +361,9 @@ export default function BirthForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
         [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3].map(withParsed));
       // Ребёнок — тем же порядком: при открытии записи разбор обнуляется,
       // а сохранить можно раньше, чем поле ответит (ревьюер 22.09.2026).
-      if (child.trim() && !parsedChild) parsedChild = await invoke<Parsed>("parse_iof", { text: child });
+      const properChild = titleCase(child);
+      if (child.trim() && (!parsedChild || properChild !== child))
+        parsedChild = await invoke<Parsed>("parse_iof", { text: properChild });
     } catch (e) {
       report("Не удалось разобрать имена перед сохранением", e);
       return;
@@ -489,6 +496,15 @@ export default function BirthForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
   }
 
   /** В форме уже что-то набрано — открывать поверх нельзя, потеряется. */
+  // Экран «Дело» сохранён с годом — форма встаёт на него; запись, открытую
+  // на правку, это не трогает. «Открыть запись» из списка на сверку — сюда же.
+  useEffect(() => {
+    if (workYear && editingId === null) setYear(workYear.year);
+  }, [workYear?.n]);
+  useEffect(() => {
+    if (openReq && openReq.section === 1) void openEntry(openReq.id);
+  }, [openReq?.n]);
+
   // Несохранённое — для смены прихода: окно «Приходы» не даст потерять молча.
   useEffect(() => {
     setDirty("Рождения", formDirty() || editingId !== null);
@@ -672,7 +688,7 @@ export default function BirthForm({ mkCase, onSaved }: { mkCase: Case; onSaved: 
           <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} />
           <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12} />
           <NumberField label="Крещ., день" value={riteDay} onChange={setRiteDay} min={1} max={31} />
-          <NumberField label="месяц" value={riteMonth} onChange={setRiteMonth} min={1} max={12} />
+          <NumberField label="месяц" value={riteMonth} onChange={setRiteMonth} min={1} max={12} noTab />
         </div>
         <NextYear eventMonth={birthMonth} riteMonth={riteMonth} year={year} rite="крещение"
                   checked={riteNextYear} onChange={setRiteNextYear} />

@@ -18,7 +18,7 @@ use tauri::{Manager, State};
 mod export;
 
 use genmetric_core::parish;
-use genmetric_core::records::{parse_iof_in, remember, save_entry, Case, EntryInput, ParsedIof, Saved};
+use genmetric_core::records::{extend_lookup, parse_iof_in, save_case, save_entry, Case, CaseSaved, EntryInput, ParsedIof, Saved};
 use genmetric_core::statement;
 use genmetric_core::text::{normalize, normalize_name, normalize_words};
 
@@ -630,37 +630,17 @@ fn case_years(app: State<App>) -> Result<Vec<CaseYear>, String> {
 }
 
 #[tauri::command]
-fn case_save(app: State<App>, case: Case) -> Result<i64, String> {
-    with_conn_shared(&app, "Сохранение дела", |conn| {
-        let id = if case.id > 0 { case.id } else { 1 };
-        let sql = statement("case_upsert")?;
-        conn.execute(&sql, rusqlite::named_params! {
-            ":id": id, ":archive": case.archive, ":fond": case.fond, ":opis": case.opis,
-            ":delo": case.delo, ":church": case.church, ":village": case.village,
-            ":uyezd": case.uyezd, ":guberniya": case.guberniya, ":year": case.year,
-            ":parish_key": case.parish_key(), ":indexer": case.indexer,
-        })
-        .map_err(|e| e.to_string())?;
-        // Церковь, село, уезд, губерния, индексатор — свойства прихода: на
-        // дела всех лет. Фонд, опись и дело остаются у своего года.
-        conn.execute(&statement("case_spread_parish")?, rusqlite::named_params! {
-            ":id": id, ":archive": case.archive, ":church": case.church, ":village": case.village,
-            ":uyezd": case.uyezd, ":guberniya": case.guberniya,
-            ":parish_key": case.parish_key(), ":indexer": case.indexer,
-        })
-        .map_err(|e| e.to_string())?;
-        // Архив, церковь, уезд, губерния — в справочники, как звания при
-        // сохранении записи. Заказчик 21.09.2026: «должна сохраниться
-        // возможность добавить свой [архив], если его нет в списке, и чтобы
-        // он добавлялся в базу». Перечни помечены autoextend в lookup_kind.
-        let parish = case.parish_key();
-        for (kind, value) in [("archive", &case.archive), ("church", &case.church),
-                              ("uyezd", &case.uyezd), ("guberniya", &case.guberniya)] {
-            if let Some(v) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                remember(conn, kind, v, id, &parish)?;
-            }
-        }
-        Ok(id)
+fn case_save(app: State<App>, case: Case, overwrite: Option<bool>) -> Result<CaseSaved, String> {
+    with_conn_shared(&app, "Сохранение дела", |conn| save_case(conn, &case, overwrite.unwrap_or(false)))
+}
+
+/// Убрать дело года, в котором нет ни одной записи. Возвращает, убрано ли.
+#[tauri::command]
+fn case_delete(app: State<App>, year: i64) -> Result<bool, String> {
+    with_conn(&app, "Удаление пустого дела", |conn| {
+        conn.execute(&statement("case_delete_empty")?, rusqlite::named_params! { ":year": year })
+            .map(|n| n > 0)
+            .map_err(|e| e.to_string())
     })
 }
 
@@ -725,14 +705,24 @@ struct InfantHint {
 /// строкой с родителем (Роман 30.09.2026).
 #[tauri::command]
 fn suggest_infant(app: State<App>, prefix: String, limit: Option<i64>,
-                  gender: Option<String>, year: Option<i64>) -> Result<Vec<InfantHint>, String> {
+                  gender: Option<String>, year: Option<i64>, place: Option<String>)
+    -> Result<Vec<InfantHint>, String>
+{
     let pattern = like_prefix(&prefix);
+    // «Евдокия Ив»: первое слово — имя ребёнка, остальное — начало имени
+    // родителя (спека 2026-10-03, п. 2.3).
+    let (name, parent) = match prefix.trim().split_once(char::is_whitespace) {
+        Some((first, rest)) if !rest.trim().is_empty() => (Some(like_prefix(first)), Some(like_prefix(rest.trim()))),
+        _ => (None, None),
+    };
+    let place = place.as_deref().map(normalize).filter(|p| !p.is_empty());
     let limit = limit.unwrap_or(6).clamp(1, 50);
     with_conn(&app, &format!("Поиск младенца «{prefix}»"), |conn| {
         let mut stmt = conn.prepare(&statement("infant_suggest")?).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::named_params! {
                 ":prefix": pattern, ":gender": gender, ":limit": limit, ":year": year,
+                ":name": name, ":parent": parent, ":place": place,
             }, |r| {
                 let (d, mo, y): (Option<i64>, Option<i64>, Option<i64>) = (r.get(6)?, r.get(7)?, r.get(8)?);
                 let part = |v: Option<i64>| v.map(|n| format!("{n:02}")).unwrap_or_else(|| "??".into());
@@ -762,10 +752,13 @@ struct FatherHint {
 /// Отец ребёнка из записи о рождении — для «Смертей»: выбрали умершего
 /// младенца, родственник заполняется сам (Роман 28.09.2026).
 #[tauri::command]
-fn birth_father(app: State<App>, iof: String, year: Option<i64>) -> Result<Option<FatherHint>, String> {
+fn birth_father(app: State<App>, iof: String, year: Option<i64>, place: Option<String>)
+    -> Result<Option<FatherHint>, String>
+{
+    let place = place.as_deref().map(normalize).filter(|p| !p.is_empty());
     with_conn(&app, "Отец из записи о рождении", |conn| {
         conn.query_row(&statement("birth_father")?, rusqlite::named_params! {
-            ":iof": iof.trim(), ":year": year,
+            ":iof": iof.trim(), ":year": year, ":place": place,
         }, |r| Ok(FatherHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, births: r.get(3)? }))
             .optional()
             .map_err(|e| e.to_string())
@@ -1025,6 +1018,7 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
             }
         }
         let blank = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        card_lookups(conn, &card)?;
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute(&statement("place_update")?, rusqlite::named_params! {
             ":id": id, ":name": name, ":name_norm": norm,
@@ -1079,6 +1073,64 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
     })
 }
 
+/// Губерния, уезд и волость из карточки — в перечни: следующая карточка их
+/// подскажет (Роман 02.10.2026).
+fn card_lookups(conn: &Connection, card: &PlaceCard) -> Result<(), String> {
+    extend_lookup(conn, "guberniya", card.guberniya.as_deref())?;
+    extend_lookup(conn, "uyezd", card.uyezd.as_deref())?;
+    extend_lookup(conn, "volost", card.volost.as_deref())
+}
+
+// ----------------------------------------------------------------------------
+//  Список на сверку после импорта (спека 2026-10-03, п. 5)
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ReviewItem {
+    id: i64,
+    kind: String,
+    text: String,
+    sheet: Option<String>,
+    row: Option<i64>,
+    entry_id: Option<i64>,
+    done: bool,
+    section: Option<i64>,
+    year: Option<i64>,
+    page: Option<String>,
+    no: Option<i64>,
+}
+
+#[tauri::command]
+fn review_list(app: State<App>, done: bool) -> Result<Vec<ReviewItem>, String> {
+    with_conn(&app, "Список на сверку", |conn| {
+        let mut stmt = conn.prepare(&statement("review_list")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::named_params! { ":done": done as i64 }, |r| Ok(ReviewItem {
+                id: r.get(0)?, kind: r.get(1)?, text: r.get(2)?, sheet: r.get(3)?, row: r.get(4)?,
+                entry_id: r.get(5)?, done: r.get::<_, i64>(6)? != 0, section: r.get(7)?, year: r.get(8)?,
+                page: r.get(9)?, no: r.get(10)?,
+            }))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+fn review_count(app: State<App>) -> Result<i64, String> {
+    with_conn(&app, "Список на сверку", |conn| {
+        conn.query_row(&statement("review_count")?, [], |r| r.get(0)).map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+fn review_done(app: State<App>, id: i64, done: bool) -> Result<(), String> {
+    with_conn(&app, "Список на сверку", |conn| {
+        conn.execute(&statement("review_done")?, rusqlite::named_params! { ":id": id, ":done": done as i64 })
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
 /// Карточка населённого пункта при первом вводе. Уже известное название
 /// не задваивается — возвращается прежний id.
 #[tauri::command]
@@ -1098,6 +1150,7 @@ fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
             return Ok(id);
         }
         let blank = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        card_lookups(conn, &card)?;
         conn.execute(&statement("place_save")?, rusqlite::named_params! {
             ":name": name, ":name_norm": norm,
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
@@ -1351,7 +1404,7 @@ fn parish_create(app: State<App>, window: tauri::Window, name: String) -> Result
 /// Очередная часть файла. `first` — начало нового файла: прежний сбрасывается.
 #[tauri::command]
 fn import_chunk(app: State<App>, bytes: Vec<u8>, first: bool) -> Result<usize, String> {
-    let mut file = app.import_file.lock().map_err(|e| e.to_string())?;
+    let mut file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
     if first {
         file.clear();
     }
@@ -1377,7 +1430,9 @@ async fn import_inspect(app: State<'_, App>, file_name: String) -> Result<Import
         write_log(&app.log_path, &msg);
         msg
     };
-    let file = app.import_file.lock().map_err(|e| fail(e.to_string()))?;
+    // Замок, отравленный паникой прошлого разбора, берём всё равно: в нём
+    // просто байты файла.
+    let file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
     let seen = genmetric_core::import::inspect(&file).map_err(fail)?;
     let already = parish::imported_from(&app.data_dir, &file_name, file.len() as i64).map_err(fail)?;
     Ok(ImportSeen {
@@ -1409,7 +1464,7 @@ async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, fi
     let bundled = bundled_seed(&app).map_err(fail)?;
     // Файл остаётся в памяти до удачи: занятое название — не повод выбирать
     // его заново (проверяющий 02.10.2026).
-    let mut file = app.import_file.lock().map_err(|e| fail(e.to_string()))?;
+    let mut file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
     let bytes: &[u8] = &file;
     if bytes.is_empty() {
         return Err(fail("файл не прочитан — выберите его ещё раз".into()));
@@ -1552,6 +1607,10 @@ fn main() {
             case_load,
             case_years,
             case_save,
+            case_delete,
+            review_list,
+            review_count,
+            review_done,
             entry_save,
             entry_list,
             entry_load,

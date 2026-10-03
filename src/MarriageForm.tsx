@@ -8,8 +8,9 @@ import ClergyBlock from "./ClergyBlock";
 import { useFormClergy } from "./clergy";
 import Suggest from "./Suggest";
 import { dismissWarn, report, warn } from "./errors";
-import type { Case } from "./CaseHeader";
 import { setDirty } from "./dirty";
+import { titleCase } from "./names";
+import type { FormProps } from "./formprops";
 
 /**
  * Форма ввода записи о браке (25.09.2026) — по образцу рождений.
@@ -90,7 +91,7 @@ function kinGender(k: string): "М" | "Ж" | undefined {
   return undefined;
 }
 
-export default function MarriageForm({ mkCase, onSaved }: { mkCase: Case; onSaved: (caseId: number) => void }) {
+export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: FormProps) {
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
   const [count, setCount] = useState<number | null>(null);
@@ -179,6 +180,10 @@ export default function MarriageForm({ mkCase, onSaved }: { mkCase: Case; onSave
 
   /** Персона без разбора (поднята из базы, причт после перезапуска) — разобрать. */
   async function withParsed<T extends Person>(p: T): Promise<T> {
+    // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
+    // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
+    const iof = titleCase(p.iof);
+    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof }) };
     if (!p.iof.trim() || p.parsed) return p;
     return { ...p, parsed: await invoke<Parsed>("parse_iof", { text: p.iof }) };
   }
@@ -280,6 +285,15 @@ export default function MarriageForm({ mkCase, onSaved }: { mkCase: Case; onSave
       setBusy(false);
     }
   }
+
+  // Экран «Дело» сохранён с годом — форма встаёт на него; запись, открытую
+  // на правку, это не трогает. «Открыть запись» из списка на сверку — сюда же.
+  useEffect(() => {
+    if (workYear && editingId === null) setYear(workYear.year);
+  }, [workYear?.n]);
+  useEffect(() => {
+    if (openReq && openReq.section === 2) void openEntry(openReq.id);
+  }, [openReq?.n]);
 
   // Несохранённое — для смены прихода: окно «Приходы» не даст потерять молча.
   useEffect(() => {

@@ -214,7 +214,7 @@ def main() -> int:
         one = lambda q, *a: db.execute(q, a[0] if len(a) == 1 and isinstance(a[0], dict) else a).fetchone()
 
         print("\n5. Схема 5: name_alias")
-        check("версия схемы 8", one("SELECT max(version) FROM schema_version")[0] == 8)
+        check("версия схемы 9", one("SELECT max(version) FROM schema_version")[0] == 9)
         check("таблица name_alias есть и пуста", one("SELECT count(*) FROM name_alias")[0] == 0)
 
         print("\n1. Конечный «ъ»")
