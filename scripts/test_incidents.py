@@ -318,7 +318,8 @@ def incident_20260914_arhiv_ne_gruzitsya_na_windows():
     i = rs.find("fn import_archive(")
     check("import_archive принимает bytes: Vec<u8>",
           i >= 0 and "bytes: Vec<u8>" in rs[i:i + 200])
-    ts = strip_comments(read("src/CaseHeader.tsx"))
+    # С 05.10.2026 блок архива живёт в своём файле (экран «О программе»).
+    ts = strip_comments(read("src/ArchiveBlock.tsx"))
     check("интерфейс передаёт байты аргументом { bytes }",
           'invoke<ImportReport>("import_archive", { bytes })' in ts)
     wf = read(".github/workflows/build.yml")
@@ -797,7 +798,33 @@ def incident_20261005_enter_i_uezd():
           'hasAttribute("data-skip")' in read("src/focus.ts") and "data-skip" in read("src/NumberField.tsx"))
 
 
+def incident_20261005_imya_ne_ukazano():
+    """Роман 05.10.2026: имя, которого в книге нет, он ставил звёздочками
+    («***»), а программа считала это именем вне словаря — в списке на сверку,
+    а при наборе не дала бы сохранить запись («нельзя пропускать несуществующие
+    имена»). И задача 8: мы поняли её как смену правила «в записи — как в
+    книге» и подготовили опросник, а он просил лишь подсказывать уже связанные
+    со словарём написания.
+
+    Защита: «***» — системное слово (records.rs, тест no_name_and_surnames):
+    разбор считает имя известным, в память персон и частоты оно не идёт, в
+    Familio имя пустое; связанные написания — в запросах подсказки имён.
+    """
+    rec = read("src-tauri/core/src/records.rs")
+    check("«***» — системное слово, а не имя вне словаря",
+          'pub const NO_NAME: &str = "***"' in rec and "name_missing = true" in rec and "fn no_name_and_surnames" in rec)
+    sql = read("db/statements.sql")
+    check("в основных полях Familio у «***» имени нет", "'***') AS first_m" in sql)
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", sql, re.S))
+    check("связанные человеком написания — в подсказке имени и отчества",
+          "FROM name_alias" in blocks.get("suggest_first_name", "") and "FROM name_alias" in blocks.get("suggest_patronymic", ""))
+    check("…и это проверено в test_suggest", "связанное написание имени предлагается" in read("db/test_suggest.py"))
+    check("подсказки — по частоте в приходе, яруса «дело» нет",
+          "WHEN 'case' THEN 1" not in strip_comments(blocks.get("suggest_ranked", "WHEN 'case' THEN 1")))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261005_imya_ne_ukazano,
     incident_20261005_enter_i_uezd,
     incident_20261003_otvet_na_prihody,
     incident_20261002_odno_delo_na_vse_gody,

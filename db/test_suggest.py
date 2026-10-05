@@ -280,6 +280,36 @@ def main() -> int:
         check("«е» находит «ё»",
               any("Кнышёво" in v for v in suggest(db, sql, "rank_m", "бобыль дер. Кнышев")))
 
+        print("\nДоводка набора, часть Б (05.10.2026)")
+        ins = ("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)"
+               " VALUES (?,?,?,?,?,?,datetime('now'))")
+        # Порядок — по частоте в приходе; ярус «дело» выше прихода больше не стоит.
+        db.execute("DELETE FROM usage_stat WHERE kind = 'rank_m'")
+        db.execute(ins, ("rank_m", "parish", "п", "мещанин", "мещанин", 40))
+        db.execute(ins, ("rank_m", "case", "7", "мастеровой", "мастеровой", 3))
+        db.execute(ins, ("rank_m", "parish", "п", "мастеровой", "мастеровой", 3))
+        db.execute(ins, ("rank_m", "global", "", "мельник", "мельник", 90))
+        got = suggest(db, sql, "rank_m", "м", limit=4)
+        check("самое частое в приходе — первым, набранное в деле года его не обгоняет; вся база — после прихода",
+              got[:3] == ["мещанин", "мастеровой", "мельник"], str(got))
+        # Фамилии прихода — третьим словом ИОФ: только из частот, словаря у них нет.
+        db.execute(ins, ("surname", "parish", "п", "Томилин", "томилин", 12))
+        db.execute(ins, ("surname", "parish", "п", "Томский", "томский", 2))
+        check("фамилии прихода подсказываются, частая первой",
+              suggest(db, sql, "surname", "том") == ["Томилин", "Томский"], str(suggest(db, sql, "surname", "том")))
+        check("опечатка в начале фамилии ничего не находит — видно, что фамилия новая",
+              suggest(db, sql, "surname", "там") == [])
+        # Написания, связанные человеком со словарём, — в подсказке имени.
+        db.execute(sql["alias_save"], dict(kind="name", form="Пескарь", form_norm="пескарь", target="Кесарь", gender="М"))
+        db.execute(sql["alias_save"], dict(kind="patr", form="Пескарев", form_norm="пескарев", target="Кесаревич", gender=None))
+        db.execute(sql["alias_save"], dict(kind="patr", form="Пескунов", form_norm="пескунов", target=None, gender=None))
+        check("связанное написание имени предлагается («Пес» → «Пескарь»)",
+              "Пескарь" in suggest(db, sql, "first_name", "пес", gender="М"), str(suggest(db, sql, "first_name", "пес", gender="М")))
+        check("…и только своему полу", "Пескарь" not in suggest(db, sql, "first_name", "пес", gender="Ж"))
+        patr = suggest(db, sql, "patronymic", "песк")
+        check("связанное отчество предлагается, «это не отчество» — нет",
+              "Пескарев" in patr and "Пескунов" not in patr, str(patr))
+
         db.close()
 
     print(f"\nИтого: {ok_count} ок, {fail_count} ошибок")

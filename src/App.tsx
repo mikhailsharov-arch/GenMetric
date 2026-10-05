@@ -8,6 +8,7 @@ import MarriageForm from "./MarriageForm";
 import DeathForm from "./DeathForm";
 import { ClergyProvider } from "./clergy";
 import { report } from "./errors";
+import ArchiveBlock from "./ArchiveBlock";
 
 type Startup = {
   error: string | null;
@@ -300,6 +301,10 @@ export default function App() {
               из списка заново — имена восстановятся.
             </p>
           )}
+
+          {/* Архив подсказок — здесь, а не на «Деле»: при наборе не нужен
+              (Роман 05.10.2026). */}
+          <ArchiveBlock />
 
           {lookups.length > 0 && (
             <>

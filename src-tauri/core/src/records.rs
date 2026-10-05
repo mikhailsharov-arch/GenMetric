@@ -29,6 +29,18 @@ pub struct ParsedIof {
     /// Второе слово не опознано как отчество, но похоже на него по окончанию
     /// и за ним есть ещё слово — форма предложит сверить как отчество.
     pub patr_unknown: Option<String>,
+    /// Имя в книге не указано: первым словом стоит системное «***» (или
+    /// другие знаки без букв). Сверять не с чем — форма так и пишет.
+    pub name_missing: bool,
+}
+
+/// Системное слово «имя в книге не указано» (спека 2026-10-05, часть Б, п. 1).
+/// Роман ставил в Excel звёздочки; в записи всегда хранится именно так.
+pub const NO_NAME: &str = "***";
+
+/// Слово из одних знаков («***», «*», «—», «?») — имени в книге нет.
+pub fn is_no_name(word: &str) -> bool {
+    !word.is_empty() && !word.chars().any(|c| c.is_alphanumeric())
 }
 
 /// Похоже ли слово на отчество по окончанию — чтобы не сверять как отчество
@@ -53,10 +65,12 @@ pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> 
         name_alias: None,
         patr_alias: None,
         patr_unknown: None,
+        name_missing: false,
     };
     if tokens.is_empty() {
         return Ok(out);
     }
+    let missing = is_no_name(tokens[0]);
 
     let alias_find = statement("alias_find")?;
     let alias = |kind: &str, word: &str| -> Result<Option<(Option<String>, Option<String>)>, String> {
@@ -67,11 +81,16 @@ pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> 
             .map_err(|e| e.to_string())
     };
 
-    out.first_name = Some(tokens[0].to_string());
+    out.first_name = Some(if missing { NO_NAME.to_string() } else { tokens[0].to_string() });
+    if missing {
+        // Имени нет — сверять нечего; пол подскажет отчество, если оно есть.
+        out.known_name = true;
+        out.name_missing = true;
+    }
     // Сначала соответствие, заведённое человеком: оно сильнее словаря.
     // Целевое имя ищется в словаре как обычное — с полом и основой.
     let mut lookup_word = tokens[0].to_string();
-    match alias("name", tokens[0])? {
+    match if missing { None } else { alias("name", tokens[0])? } {
         Some((Some(target), _)) => {
             out.name_alias = Some(target.clone());
             lookup_word = target;
@@ -259,6 +278,41 @@ pub fn save_case(conn: &Connection, case: &Case, overwrite: bool) -> Result<Case
     Ok(CaseSaved { id, status: status.into(), existing: None })
 }
 
+/// Первое заполнение частот фамилий: записи, набранные или импортированные до
+/// появления подсказки фамилий, должны в неё попасть. Делается один раз — пока
+/// в частотах нет ни одной фамилии; дальше их наращивает сохранение записи.
+pub fn seed_surnames(conn: &Connection) -> Result<usize, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let has: bool = conn
+        .query_row(&statement("usage_has")?, rusqlite::named_params! { ":kind": "surname" }, |r| r.get(0))
+        .map_err(e)?;
+    if has {
+        return Ok(0);
+    }
+    let parish: String = conn
+        .query_row("SELECT parish_key FROM mk_case ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0))
+        .optional().map_err(e)?.flatten().unwrap_or_default();
+    let rows: Vec<(String, i64)> = {
+        let mut stmt = conn.prepare(&statement("surname_counts")?).map_err(e)?;
+        let found = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?;
+        found.collect::<Result<Vec<_>, _>>().map_err(e)?
+    };
+    let set = statement("usage_set")?;
+    // Одной транзакцией: оборвись заполнение посередине, «частоты уже есть»
+    // было бы правдой, и остаток фамилий не досчитался бы никогда (ревьюер).
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    for (surname, n) in &rows {
+        for (scope, key) in [("parish", parish.as_str()), ("global", "")] {
+            tx.execute(&set, rusqlite::named_params! {
+                ":kind": "surname", ":scope": scope, ":scope_key": key,
+                ":value": surname, ":value_norm": normalize(surname), ":count": n,
+            }).map_err(e)?;
+        }
+    }
+    tx.commit().map_err(e)?;
+    Ok(rows.len())
+}
+
 /// Набранное в карточке пункта — в перечни (губерния, уезд, волость), чтобы
 /// следующая карточка их подсказала (Роман 02.10.2026). Без частот: это не
 /// подсказка по привычке, а список.
@@ -399,7 +453,15 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 let (id, created) = case_for_year(conn, year)?;
                 (id, created.then_some(year))
             }
-            None => (entry.case_id, None),
+            // Записи без года дело назначает форма; если его уже убрали
+            // («Убрать дело этого года»), берём любое существующее — иначе
+            // сохранение упало бы на внешнем ключе.
+            None => {
+                let exists: Option<i64> = conn
+                    .query_row("SELECT id FROM mk_case ORDER BY (id = ?1) DESC, id LIMIT 1", [entry.case_id], |r| r.get(0))
+                    .optional().map_err(|e| e.to_string())?;
+                (exists.unwrap_or(entry.case_id), None)
+            }
         };
         let entry_id = match entry.id {
             Some(id) => {
@@ -476,8 +538,19 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             if let Some(place) = person.place.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 remember(conn, "place", place, case_id, parish)?;
             }
-            if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            // «***» (имя не указано) — не имя: в частоты и память персон не идёт.
+            let nameless = person.first_name.as_deref().map(str::trim) == Some(NO_NAME);
+            if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty() && !nameless) {
                 remember(conn, "first_name", name, case_id, parish)?;
+            }
+            // Фамилии прихода — для подсказки третьим словом ИОФ (Роман
+            // 05.10.2026: «чтобы не плодить дубли вроде „Томилин“ и „Тамилин“»).
+            // Причт не считаем: он повторяется в каждой записи, и фамилия
+            // священника стояла бы первой на свою букву (ревьюер).
+            if let Some(surname) = person.surname.as_deref().map(str::trim)
+                .filter(|v| !v.is_empty() && !person.role_code.starts_with("clergy"))
+            {
+                remember(conn, "surname", surname, case_id, parish)?;
             }
             if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 remember(conn, "patronymic", patr, case_id, parish)?;
@@ -487,7 +560,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             // а не набирать заново в каждом деле.
             if person.role_code.starts_with("clergy") {
                 let iof = person_iof(person);
-                if !iof.is_empty() {
+                if !iof.is_empty() && !nameless {
                     conn.execute(&statement("clergy_remember")?, rusqlite::named_params! {
                         ":iof": iof, ":iof_norm": normalize(&iof), ":rank": person.rank,
                     }).map_err(|e| e.to_string())?;
@@ -500,7 +573,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             // Умерший — нет: живым в следующих записях он не встретится, а в
             // подсказках отцов и восприемников мешал бы (ревьюер 27.09.2026).
             let iof = person_iof(person);
-            if !iof.is_empty() && person.role_code != "deceased" {
+            if !iof.is_empty() && person.role_code != "deceased" && !nameless {
                 conn.execute(&statement("person_remember")?, rusqlite::named_params! {
                     ":iof": iof, ":iof_norm": normalize(&iof),
                     ":place": person.place, ":rank": person.rank, ":gender": person.gender,
@@ -514,7 +587,9 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
         if let (Some(f), Some(m)) = (father, mother) {
             let husband = person_iof(f);
             let wife = person_iof(m);
-            if !husband.is_empty() && !wife.is_empty() {
+            // Супруг без имени («***») в память пар не идёт: иначе выбор мужа
+            // подставлял бы жену со звёздочками (ревьюер 05.10.2026).
+            if !husband.is_empty() && !wife.is_empty() && !no_first_name(f) && !no_first_name(m) {
                 conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
                     ":husband_norm": normalize(&husband), ":wife_iof": wife,
                     ":wife_place": m.place, ":wife_rank": m.rank,
@@ -529,7 +604,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
         if let (Some(g), Some(b)) = (groom, bride) {
             let husband = person_iof(g);
             let wife = person_iof(b);
-            if !husband.is_empty() && !wife.is_empty() {
+            if !husband.is_empty() && !wife.is_empty() && !no_first_name(g) && !no_first_name(b) {
                 conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
                     ":husband_norm": normalize(&husband), ":wife_iof": wife,
                     ":wife_place": g.place, ":wife_rank": Option::<String>::None,
@@ -538,6 +613,11 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
         }
         Ok(Saved { id: entry_id, case_id, new_case_year })
     }
+}
+
+/// Имя персоны — системное «***» (в книге не указано).
+fn no_first_name(p: &PersonInput) -> bool {
+    p.first_name.as_deref().map(str::trim) == Some(NO_NAME)
 }
 
 /// Собирает ИОФ из частей — в том порядке, в каком он записан в книге.
@@ -664,6 +744,70 @@ mod tests {
         drop(1897);
         assert_eq!((count(), drop(1898)), (1, 0), "последнее дело прихода не убирается");
 
+        std::mem::drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+    /// «Имя не указано» и фамилии прихода (спека 2026-10-05, часть Б).
+    #[test]
+    fn no_name_and_surnames() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
+        if !seed.exists() {
+            eprintln!("нет resources/seed.sqlite — тест пропущен");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("genmetric-noname-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(&seed, &path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        for stub in ["*** Иванова Петрова", "* Иванова Петрова", "— Иванова Петрова"] {
+            let p = parse_iof_in(&conn, stub).unwrap();
+            assert!(p.known_name && p.name_missing, "{stub}");
+            assert_eq!((p.first_name.as_deref(), p.first_name_modern.as_deref()), (Some("***"), None), "{stub}");
+            assert_eq!((p.patronymic.as_deref(), p.surname.as_deref(), p.gender.as_deref()),
+                       (Some("Иванова"), Some("Петрова"), Some("Ж")), "{stub}");
+        }
+        let plain = parse_iof_in(&conn, "Мария Иванова").unwrap();
+        assert!(plain.known_name && !plain.name_missing);
+        assert!(!is_no_name("Иван") && !is_no_name("2") && !is_no_name("") && is_no_name("?"));
+
+        let case = Case { id: 0, archive: None, fond: None, opis: None, delo: None, church: Some("Ц".into()),
+                          village: Some("Тестово".into()), uyezd: None, guberniya: None, year: Some(1897), indexer: None };
+        save_case(&conn, &case, false).unwrap();
+        let person = |role: &str, first: &str, surname: &str| PersonInput {
+            role_code: role.into(), sort_order: 10, surname: Some(surname.into()), first_name: Some(first.into()),
+            patronymic: Some("Иванова".into()), surname_modern: None, first_name_modern: None,
+            patronymic_modern: Some("Ивановна".into()), maiden_surname: None, gender: Some("Ж".into()),
+            rank: None, confession: None, place: None, note: None, uncertain: None, age_years: None,
+            marriage_order: None, kinship: None, age_months: None, age_weeks: None, age_days: None,
+            age_text: None, death_cause: None,
+        };
+        let entry = EntryInput {
+            id: None, case_id: 1, section: 1, page: None, no_male: None, no_female: Some(1),
+            event_day: None, event_month: None, event_year: Some(1897), rite_day: None, rite_month: None,
+            rite_year: Some(1897), note: None, uncertain: None,
+            persons: vec![person("mother", "***", "Томилина"), person("godparent1", "Анна", "Томилина")],
+        };
+        save_entry(&conn, &entry).unwrap();
+        let num = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(num("SELECT count(*) FROM person_index WHERE iof LIKE '***%'"), 0, "«***» в память персон не идёт");
+        assert_eq!(num("SELECT count(*) FROM spouse_index WHERE wife_iof LIKE '***%'"), 0, "…и в память пар");
+        assert_eq!(num("SELECT count(*) FROM usage_stat WHERE kind = 'first_name' AND value = '***'"), 0);
+        assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'surname' AND scope = 'parish' AND value = 'Томилина'"), 2);
+        assert_eq!(seed_surnames(&conn).unwrap(), 0, "частоты фамилий уже есть — второй раз не заполняются");
+        // Приход, набранный до подсказки фамилий: частоты считаются по записям.
+        conn.execute("DELETE FROM usage_stat WHERE kind = 'surname'", []).unwrap();
+        assert_eq!(seed_surnames(&conn).unwrap(), 1);
+        assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'surname' AND scope = 'parish' AND value_norm = 'томилина'"), 2);
+        // В выгрузке Familio имени у «***» нет.
+        crate::export::familio_rows(&conn).unwrap();
+        assert_eq!(num("SELECT count(*) FROM x_person WHERE role_code = 'mother' AND first_m IS NULL"), 1);
+        assert_eq!(num("SELECT count(*) FROM x_person WHERE role_code = 'godparent1' AND first_m = 'Анна'"), 1);
+        // Запись без года с убранным делом не падает.
+        let mut loose = EntryInput { id: None, case_id: 999, section: 2, page: None, no_male: None, no_female: None,
+            event_day: None, event_month: None, event_year: None, rite_day: None, rite_month: None, rite_year: None,
+            note: None, uncertain: None, persons: vec![] };
+        assert_eq!(save_entry(&conn, &loose).unwrap().case_id, 1);
+        loose.case_id = 1;
         std::mem::drop(conn);
         let _ = std::fs::remove_file(path);
     }

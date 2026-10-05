@@ -319,6 +319,24 @@ VALUES (:kind, :scope, :scope_key, :value, :value_norm, 1, datetime('now'))
 ON CONFLICT(kind, scope, scope_key, value) DO UPDATE SET
     count = count + 1, last_used_at = datetime('now');
 
+-- @surname_counts
+-- Фамилии записей прихода с числом упоминаний — чтобы подсказка фамилий
+-- (третье слово ИОФ) знала и то, что набрано или импортировано до неё.
+SELECT trim(surname) AS surname, count(*) AS n
+  FROM person_mention
+ WHERE trim(coalesce(surname, '')) <> ''
+   AND role_code NOT LIKE 'clergy%'   -- причт повторяется в каждой записи
+ GROUP BY trim(surname);
+
+-- @usage_set
+-- Частота, посчитанная разом (первое заполнение), а не наращиваемая.
+INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)
+VALUES (:kind, :scope, :scope_key, :value, :value_norm, :count, datetime('now'))
+ON CONFLICT(kind, scope, scope_key, value) DO UPDATE SET count = excluded.count;
+
+-- @usage_has
+SELECT EXISTS (SELECT 1 FROM usage_stat WHERE kind = :kind);
+
 -- @entry_list
 -- Список набранных записей дела: номер, дата, имя ребёнка — чтобы вернуться
 -- и поправить.
@@ -410,11 +428,15 @@ SELECT m.role_code,
 -- приложением и db/test_suggest.py. Писать это место здесь, в комментарии,
 -- нельзя: подстановка заменит и его, и запрос развалится.
 --
--- Порядок выдачи по требованию А-1: текущее дело, затем приход, затем вся
--- база, затем словарь; внутри группы — по убыванию частоты.
+-- Порядок выдачи: самое частое в приходе, затем во всей базе, затем словарь;
+-- внутри группы — по убыванию частоты. Роман 05.10.2026: «на самом верху
+-- списка должно предлагаться самое часто встречающееся в базе значение».
+-- Яруса «текущее дело» больше нет (требование А-1 его вводило): дело теперь
+-- на год книги, и каждый новый год этот ярус начинался бы с нуля. Строки
+-- охвата «дело» считаются приходскими — у них счёт не больше приходского.
 WITH ranked AS (
     SELECT value,
-           CASE scope WHEN 'case' THEN 1 WHEN 'parish' THEN 2 ELSE 3 END AS tier,
+           CASE scope WHEN 'global' THEN 2 ELSE 1 END AS tier,
            count
       FROM usage_stat
      WHERE kind = :kind AND value_norm LIKE :prefix ESCAPE '\'
@@ -443,6 +465,14 @@ AND (:gender IS NULL
 SELECT form, 4, 0 FROM name_form
  WHERE kind IN ('name','variant') AND form_norm LIKE :prefix ESCAPE '\'
    AND (:gender IS NULL OR gender = :gender)
+-- Написания, которые человек связал со словарём в окне сверки («Пескарь» →
+-- «Кесарь»): Роман 05.10.2026 — «пополнять локальный список автокомплита …
+-- теми оригинальными написаниями, которые пользователь уже вводил и
+-- связывал». И «новые имена» (без цели) — тоже.
+UNION ALL
+SELECT form, 3, 0 FROM name_alias
+ WHERE kind = 'name' AND form_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR gender IS NULL OR gender = :gender)
 
 -- @suggest_patronymic
 -- Отчество мужчины и отчество женщины — разные формы одного имени. Пол берётся
@@ -451,6 +481,10 @@ SELECT form, 4, 0 FROM name_form
 SELECT form, 4, 0 FROM name_form
  WHERE kind LIKE 'patr%' AND form_norm LIKE :prefix ESCAPE '\'
    AND (:gender IS NULL OR gender = :gender)
+-- Связанные человеком отчества; «это не отчество» (цель пуста) не предлагаем.
+UNION ALL
+SELECT form, 3, 0 FROM name_alias
+ WHERE kind = 'patr' AND target IS NOT NULL AND form_norm LIKE :prefix ESCAPE '\'
 
 -- @suggest_place
 -- Населённые пункты живут в своей таблице, а не в плоских перечнях: у них
@@ -702,7 +736,9 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order, m.gender,
        nullif(trim(m.first_name), '') AS first_b,
        nullif(trim(m.patronymic), '') AS patr_b,
        nullif(trim(m.surname), '') AS surname_b,
-       coalesce(nullif(trim(m.first_name_modern), ''), nullif(trim(m.first_name), '')) AS first_m,
+       -- «***» — имя в книге не указано (системное слово, 05.10.2026): в
+       -- основных полях Familio имени нет.
+       nullif(coalesce(nullif(trim(m.first_name_modern), ''), nullif(trim(m.first_name), '')), '***') AS first_m,
        coalesce(nullif(trim(m.patronymic_modern), ''), nullif(trim(m.patronymic), '')) AS patr_m,
        (SELECT nullif(trim(substr(x.part, length('Имя в документе:') + 1)), '') FROM x_part x
          WHERE x.mention_id = m.id AND x.part LIKE 'Имя в документе:%' LIMIT 1) AS doc_first,

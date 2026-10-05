@@ -163,6 +163,9 @@ def run(driver, wait, archive):
     check("дело сохранено", True)
 
     print("\n3. Архив через настоящий IPC")
+    # С 05.10.2026 блок архива — на экране «ⓘ О программе», не на «Деле».
+    click(driver, "//button[@aria-label='О программе']")
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".archive input[type=file]")))
     file_input = driver.find_element(By.CSS_SELECTOR, ".archive input[type=file]")
     # Поле спрятано (кнопка вместо него); WebDriver кормит файл только видимому.
     driver.execute_script("arguments[0].hidden = false;", file_input)

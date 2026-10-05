@@ -242,10 +242,17 @@ pub fn open(dir: &Path, bundled: &Path, id: i64) -> Result<Opened, String> {
         .map_err(s)?;
     drop(common);
 
-    let warning = attach_common(&conn, dir)
+    // Фамилии уже набранных записей — в подсказку фамилий (один раз).
+    let seeded = crate::records::seed_surnames(&conn).err()
+        .map(|e| format!("Подсказка фамилий не подготовлена: {e}"));
+    let synced = attach_common(&conn, dir)
         .and_then(|()| sync(&conn))
         .err()
         .map(|e| format!("Справочники не сверены с общими: {e}"));
+    let warning = match (synced, seeded) {
+        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        (a, b) => a.or(b),
+    };
     let name = display_name(name, Some(&conn));
     Ok(Opened { conn, id, name, path, warning })
 }

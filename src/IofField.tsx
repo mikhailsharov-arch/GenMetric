@@ -21,6 +21,8 @@ export type Parsed = {
   patr_alias: string | null;
   /** Второе слово похоже на отчество, но словарю неизвестно. */
   patr_unknown: string | null;
+  /** Имя в книге не указано — первым словом стоит «***». */
+  name_missing?: boolean;
 };
 
 /** Пометка в примечание после сверки: как было написано в документе. */
@@ -567,6 +569,7 @@ export default function IofField({
           data-field
           value={value}
           placeholder={placeholder ?? "имя, отчество, фамилия"}
+          title="Имени в книге нет — поставьте *** вместо него"
           autoComplete="off"
           spellCheck={false}
           onChange={(e) => {
@@ -576,6 +579,12 @@ export default function IofField({
             // Правим само поле сразу и ставим курсор на место — до того, как
             // React применит состояние: отложенный возврат курсора при быстром
             // наборе вставлял бы следующую букву не туда.
+            // Системный метод ввода (композиция) ещё не закончил слово —
+            // править поле под ним нельзя, ввод сорвётся (ревьюер 05.10.2026).
+            if ((e.nativeEvent as InputEvent).isComposing) {
+              onChange(e.target.value, parsed);
+              return;
+            }
             const el = e.target, at = el.selectionStart;
             // Не при стирании: стёрли первую букву «иван», чтобы поправить, —
             // «ван» не должно тут же стать «Ван» (вышло бы «ИВан»; проверяющий
@@ -616,8 +625,9 @@ export default function IofField({
         )}
         {/* Что программа поняла: современное написание и пол. Строка появляется
             только когда есть что сказать, чтобы не занимать высоту зря. */}
-        {(modern || parsed?.gender) && (
+        {(modern || parsed?.gender || parsed?.name_missing) && (
           <div className="parsedline">
+            {parsed?.name_missing && <span className="tag">имя в книге не указано</span>}
             {modern && <span className="modern">{modern}</span>}
             {parsed?.gender && <span className="tag">{parsed.gender}</span>}
             {parsed?.father_name && <span className="tag">отец: {parsed.father_name}</span>}
