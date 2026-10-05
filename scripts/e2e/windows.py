@@ -658,6 +658,12 @@ def open_parishes(driver, wait):
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
     click(driver, "//div[contains(@class,'parishrow')]//button")
     wait.until(EC.visibility_of_element_located((By.XPATH, PARISH)))
+    # Перечень приходит отдельным запросом чуть позже окна: сборка 05.10
+    # упала на том, что список прочитали раньше, чем он появился.
+    try:
+        wait.until(EC.presence_of_element_located((By.XPATH, PARISH + "//table[contains(@class,'parishes')]//tr")))
+    except TimeoutException:
+        pass
 
 
 def reloaded(driver, wait, name):
