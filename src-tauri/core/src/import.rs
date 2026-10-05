@@ -715,12 +715,13 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                 }
             }
             let entry_note = if section == 1 && !orphans.is_empty() { Some(orphans.join("; ")) } else { None };
-            if !orphans.is_empty() {
-                report.notes.push(if section == 1 {
-                    format!("лист «{name}», строка {r}: «{}» — без имени; перенесено в примечание записи", orphans.join("; "))
-                } else {
-                    format!("лист «{name}», строка {r}: «{}» — без имени; не перенесено", orphans.join("; "))
-                });
+            // В рождениях это норма, а не оговорка: у незаконнорождённых отца в
+            // книге нет, и его звание или примечание без имени просто уходит в
+            // примечание записи (Роман 05.10.2026: «историческая норма, а не
+            // ошибка ввода»). В браках и смертях переносить некуда — говорим.
+            if !orphans.is_empty() && section != 1 {
+                report.notes.push(
+                    format!("лист «{name}», строка {r}: «{}» — без имени; не перенесено", orphans.join("; ")));
             }
             let entry = EntryInput {
                 id: None,

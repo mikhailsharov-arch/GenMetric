@@ -315,6 +315,8 @@ def main() -> int:
         check("список на сверку после импорта доехал: таблица и индекс (схема 9)",
               one("SELECT count(*) FROM sqlite_master WHERE name IN ('review_item', 'ix_review_open')") == 2
               and one("SELECT count(*) FROM review_item") == 0)
+        check("уезды справочника пунктов доехали: «Юрьевецкий» в перечне (Роман 05.10.2026)",
+              one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Юрьевецкий'") == 1)
         check("перечень волостей доехал — карточка пункта их подскажет",
               one("SELECT count(*) FROM lookup_kind WHERE kind = 'volost'") == 1
               and one("SELECT count(*) FROM lookup WHERE kind = 'volost'") > 10)

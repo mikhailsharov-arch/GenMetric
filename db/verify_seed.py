@@ -84,7 +84,12 @@ def main() -> int:
         # к перечням — волости из справочника пунктов (перечень volost, 03.10.2026)
         expected = n_csv + 1 if table == "setting" else n_csv
         if table == "lookup":
-            expected += len({r["volost"].strip() for r in read_csv("place.csv") if r["volost"].strip()})
+            places = read_csv("place.csv")
+            expected += len({r["volost"].strip() for r in places if r["volost"].strip()})
+            # …и уезды с губерниями пунктов, которых нет в lookup.csv (05.10.2026)
+            for kind in ("uyezd", "guberniya"):
+                have = {norm(r["value"]) for r in read_csv("lookup.csv") if r["kind"] == kind}
+                expected += len({norm(r[kind]) for r in places if r[kind].strip()} - have)
         n_db = one(f"SELECT count(*) FROM {table}")
         check(f"{table} перенесена полностью", expected == n_db, f"ожидалось {expected}, в базе {n_db}")
 
@@ -141,6 +146,10 @@ def main() -> int:
                     GROUP BY k.kind, k.title
                     ORDER BY count(l.id) DESC, k.title""")
     check("состав справочников считается", len(summary) == 15, f"{len(summary)} перечней")
+    check("уезды справочника пунктов — в перечне: «Юрьевецкий» подсказывается в карточке",
+          one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Юрьевецкий'") == 1
+          and one("SELECT count(*) FROM place p WHERE trim(coalesce(p.uyezd, '')) <> '' AND NOT EXISTS "
+                  "(SELECT 1 FROM lookup l WHERE l.kind = 'uyezd' AND l.value = p.uyezd)") == 0)
     check("волости справочника пунктов — в перечне volost",
           one("SELECT count(*) FROM lookup WHERE kind = 'volost'") > 10)
     check("в сводке нет перечней без названия", all(r[1] for r in summary))

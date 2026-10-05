@@ -643,3 +643,19 @@ button.toggle.small { width: auto; padding: 0.15em 0.7em; font-size: 0.82rem; }
 .facts.review td:last-child button + button { margin-left: 0.4em; }
 .facts.review tr.done td { opacity: 0.55; }
 .modal[data-modal="review"] { max-width: 44em; }
+
+/* «Доводка набора», часть А (05.10.2026). */
+/* Кнопка не переносит слово: «Откр / ыть» в перечне приходов (снимок Романа). */
+button.toggle { white-space: nowrap; }
+.facts.parishes td:last-child { white-space: nowrap; padding-left: 0.6em; }
+/* Смена прихода — важное действие: строка крупнее и выделена. */
+.parishrow.main {
+  font-size: 1rem; padding: 0.45em 0.7em; margin-bottom: 0.5em;
+  background: var(--field); border: 0.0625em solid var(--line); border-radius: 0.5em;
+  justify-content: space-between; align-items: center;
+}
+.parishrow.main button.toggle { width: auto; flex: 0 0 auto; padding: 0.35em 1.1em; font-size: 0.95rem; }
+/* Фонд, опись, дело: подпись короткая — место отдаём значению. */
+.row.fod .field { grid-template-columns: auto 1fr; gap: 0.35em; }
+/* «Стр.»: «1038об-1039» целиком. */
+.row.tight .field.wide { flex: 1 1 13em; min-width: 12.5em; }

@@ -54,7 +54,11 @@ def seed_stamp() -> str:
     не доезжают: база копируется только при первой установке.
     """
     h = hashlib.sha256()
-    for path in sorted(SEED_DIR.glob("*.csv")) + [DB_DIR / "schema.sql", DB_DIR / "migrate.sql"]:
+    # Сам сборщик — тоже часть поставки: он выводит перечни из справочника
+    # пунктов (волости, уезды, губернии). 05.10.2026 такая правка без него в
+    # отпечатке не доехала бы до установленной программы (ревьюер).
+    for path in sorted(SEED_DIR.glob("*.csv")) + [DB_DIR / "schema.sql", DB_DIR / "migrate.sql",
+                                                  Path(__file__).resolve()]:
         if path.exists():
             h.update(path.read_bytes())
     return h.hexdigest()[:12]
@@ -152,6 +156,17 @@ def build(db_path: Path) -> dict:
     db.executemany(
         "INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin) VALUES ('volost',?,?,?,'seed')",
         [(v, norm(v), (i + 1) * 10) for i, v in enumerate(volosts)])
+    # То же с уездами и губерниями: в lookup.csv четыре уезда, а в пунктах их
+    # одиннадцать — «Юрьевецкий» в карточке не подсказывался (Роман
+    # 05.10.2026). Те, что уже есть в перечне, не дублируются.
+    for kind, column in (("uyezd", "uyezd"), ("guberniya", "guberniya")):
+        have = {r[0] for r in db.execute("SELECT value_norm FROM lookup WHERE kind = ?", (kind,))}
+        last = db.execute("SELECT coalesce(max(sort_order), 0) FROM lookup WHERE kind = ?", (kind,)).fetchone()[0]
+        extra = sorted({r[column].strip() for r in rows if nz(r[column])})
+        extra = [v for v in extra if norm(v) not in have]
+        db.executemany(
+            "INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin) VALUES (?,?,?,?,'seed')",
+            [(kind, v, norm(v), last + (i + 1) * 10) for i, v in enumerate(extra)])
 
     rows = read_csv("setting.csv")
     db.executemany("INSERT INTO setting (key, value) VALUES (?,?)",

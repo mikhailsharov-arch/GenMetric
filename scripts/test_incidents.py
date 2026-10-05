@@ -774,7 +774,31 @@ def incident_20261003_otvet_na_prihody():
           "tabIndex={-1}" in read("src/DeathForm.tsx") and "noTab" in read("src/BirthForm.tsx") and "noTab" in df)
 
 
+def incident_20261005_enter_i_uezd():
+    """Ответ Романа 05.10.2026, две ошибки. (1) «Набрал „Ник“, выбрал „Николай“,
+    Enter — фокус перепрыгивает в следующее поле»: после импорта в памяти
+    персон лежат дети — «персоны» из одного имени, и строка «Николай»
+    оказывалась персоной, выбор которой уводит фокус. (2) Уезд в карточке
+    пункта не подсказывался: в перечне уездов было 4 значения, в справочнике
+    пунктов — 11 («Юрьевецкий» отсутствовал).
+
+    Защита: персона из одного слова без места и звания в подсказке не
+    показывается и выбирается как слово; уезды и губернии пунктов попадают в
+    перечни при сборке поставки (проверка — в verify_seed.py).
+    """
+    iof = strip_comments(read("src/IofField.tsx"))
+    check("персона из одного имени не уводит фокус и не показывается строкой-двойником",
+          "!hint.infant && !/\\s/.test(hint.iof.trim()) && !hint.place && !hint.rank" in iof
+          and "knownPersons.filter((p) => /\\s/.test(p.iof.trim()) || p.place || p.rank)" in iof)
+    check("уезды и губернии пунктов — в перечнях поставки",
+          '("uyezd", "uyezd"), ("guberniya", "guberniya")' in read("db/build_seed.py"))
+    check("…и это проверяет verify_seed", "«Юрьевецкий» подсказывается в карточке" in read("db/verify_seed.py"))
+    check("поля, которые подставляются сами, пропускают все клавиши перехода",
+          'hasAttribute("data-skip")' in read("src/focus.ts") and "data-skip" in read("src/NumberField.tsx"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261005_enter_i_uezd,
     incident_20261003_otvet_na_prihody,
     incident_20261002_odno_delo_na_vse_gody,
     incident_20261001_pustye_mesta,

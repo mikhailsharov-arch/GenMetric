@@ -276,11 +276,11 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
   return (
     <section>
       {/* Приход — файл; открыт один (спека 2026-10-02, п. 1.4). */}
-      <div className="parishrow">
+      <div className="parishrow main">
         <span>Приход: <b>{parishName || c.village || "без названия"}</b></span>
         {/* Кнопкой, не ссылкой: Роман 03.10.2026 — «не всегда интуитивно
             понятно, что это кликабельные элементы». */}
-        <button type="button" className="toggle small" onClick={() => setParishes(true)}>Сменить…</button>
+        <button type="button" className="toggle" onClick={() => setParishes(true)}>Сменить…</button>
       </div>
       {parishes && <ParishDialog onClose={() => setParishes(false)} />}
       {toReview > 0 && (
@@ -329,7 +329,7 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
       </p>
 
       <Suggest label="Архив" kind="archive" browse value={c.archive ?? ""} onChange={set("archive")} />
-      <div className="row">
+      <div className="row fod">
         {text("Фонд", "fond")}
         {text("Опись", "opis")}
         {text("Дело", "delo")}

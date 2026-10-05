@@ -26,8 +26,16 @@ function fieldsAround(current: HTMLElement): HTMLInputElement[] {
   ).filter((el) => !el.disabled && el.offsetParent !== null);
 }
 
+/** Поля, которые клавиши перехода перепрыгивают (data-skip): месяц крещения
+ *  и месяц погребения подставляются сами. Роман 05.10.2026: «логика перехода
+ *  должна быть абсолютно одинаковой для всех клавиш навигации». Мышью в такое
+ *  поле попасть можно, и из него клавиши ведут дальше как из обычного. */
+function stops(fields: HTMLInputElement[], current: HTMLElement): HTMLInputElement[] {
+  return fields.filter((el) => el === current || !el.hasAttribute("data-skip"));
+}
+
 export function focusNextField(current: HTMLElement, step: 1 | -1 = 1): void {
-  const fields = fieldsAround(current);
+  const fields = stops(fieldsAround(current), current);
 
   const index = fields.indexOf(current as HTMLInputElement);
   if (index === -1) return;
@@ -56,7 +64,7 @@ export function focusNextField(current: HTMLElement, step: 1 | -1 = 1): void {
  * пустота проверяется по DOM.
  */
 export function focusNextEmptyField(current: HTMLElement): void {
-  const fields = fieldsAround(current);
+  const fields = stops(fieldsAround(current), current);
   const index = fields.indexOf(current as HTMLInputElement);
   if (index === -1) return;
   const next = fields.slice(index + 1).find((el) => el.value.trim() === "") ?? fields[index + 1];

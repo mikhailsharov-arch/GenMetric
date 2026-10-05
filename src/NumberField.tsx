@@ -19,14 +19,16 @@ type Props = {
   max?: number;
   width?: string;
   inputRef?: React.RefObject<HTMLInputElement>;
-  /** Вне обхода клавишей Tab: поле подставляется само (месяц крещения,
-   *  месяц погребения), править его — мышью (Роман 03.10.2026). */
+  /** Вне обхода клавишами перехода — Tab, Enter, стрелки: поле подставляется
+   *  само (месяц крещения, месяц погребения), править его — мышью (Роман
+   *  03.10 и 05.10.2026). */
   noTab?: boolean;
 };
 
 export default function NumberField({
-  label, value, onChange, min = 0, max = 9999, width, inputRef, noTab,
+  label, value, onChange, min = 0, max: limit, width, inputRef, noTab,
 }: Props) {
+  const max = limit ?? 9999;
   const own = useRef<HTMLInputElement>(null);
   const field = inputRef ?? own;
 
@@ -73,10 +75,15 @@ export default function NumberField({
           ref={field}
           data-field
           tabIndex={noTab ? -1 : undefined}
+          data-skip={noTab ? "" : undefined}
           inputMode="numeric"
           value={value ?? ""}
           onChange={(e) => {
             const raw = e.target.value.replace(/[^0-9]/g, "");
+            // Больше предела не набирается: месяц 13 или день 32 — опечатка
+            // (Роман 05.10.2026). Поле остаётся с прежним значением.
+            // Только где предел задан явно (день, месяц, год): счёт не ограничен.
+            if (raw !== "" && limit !== undefined && Number(raw) > limit) return;
             onChange(raw === "" ? null : Number(raw));
           }}
           onKeyDown={onKeyDown}

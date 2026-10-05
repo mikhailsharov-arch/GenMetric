@@ -110,6 +110,7 @@ export default function IofField({
   const [active, setActive] = useState(0);
   /** Сколько в списке детей-тёзок первой строки (0 — тёзок нет). */
   const [namesakes, setNamesakes] = useState(0);
+  const [namesFirstShown, setNamesFirstShown] = useState(false);
   const seq = useRef(0);
   const justPicked = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -244,7 +245,11 @@ export default function IofField({
           iof: k.iof, place: null, rank: null, gender: k.gender, uses: 0,
           infant: { kin: k.kin, parent: k.parent, place: k.place, rank: k.rank, born: k.born },
         }));
-        const foundPersons = [...kids, ...knownPersons.filter((p) => !kids.some((k) => k.iof === p.iof))];
+        // «Персона» из одного имени без места и звания — ребёнок из записей о
+        // рождении в памяти персон: рядом со словарным «Николай» это лишняя
+        // строка-двойник (после импорта их тысячи). Не показываем.
+        const whole = knownPersons.filter((p) => /\s/.test(p.iof.trim()) || p.place || p.rank);
+        const foundPersons = [...kids, ...whole.filter((p) => !kids.some((k) => k.iof === p.iof))];
         setPersons(foundPersons);
         setWords(foundWords);
         // Тёзки: первая строка — ребёнок, у которого в деле есть полный тёзка.
@@ -253,7 +258,11 @@ export default function IofField({
         // 01.10.2026; та же осторожность, что у birth_father с #38).
         const twins = kids.length > 1 && kids.filter((k) => k.iof === kids[0].iof).length > 1;
         setNamesakes(twins ? kids.filter((k) => k.iof === kids[0].iof).length : 0);
-        setActive(twins ? -1 : 0);
+        // Словарные имена идут первыми — первая строка не ребёнок, выбирать её
+        // заранее безопасно; дети ниже, к ним — стрелкой.
+        const namesFirst = !!infantRows && !/\s/.test(value.trimStart()) && foundWords.length > 0;
+        setNamesFirstShown(!!infantRows && !/\s/.test(value.trimStart()));
+        setActive(twins && !namesFirst ? -1 : 0);
         setOpen(foundPersons.length + foundWords.length > 0);
       })
       .catch((e) => {
@@ -270,6 +279,14 @@ export default function IofField({
   }, [value, kind, currentWord, wantPersons, gender]);
 
   const total = persons.length + words.length;
+  // Умерший, первое слово: сначала имена словаря, под ними дети и персоны
+  // (Роман 05.10.2026: «точно так же, как … при наборе родившегося»).
+  // Порядок — из состояния, выставленного вместе со списком: считать его в
+  // рендере по текущему тексту нельзя — после пробела строки перевернулись бы
+  // под прежним выбором, и Enter подставил бы ребёнка-тёзку (ревьюер 05.10.2026).
+  const wordsFirst = namesFirstShown;
+  const pOff = wordsFirst ? words.length : 0;
+  const wOff = wordsFirst ? 0 : persons.length;
 
   const inputEl = useRef<HTMLInputElement | null>(null);
 
@@ -425,6 +442,14 @@ export default function IofField({
   function pickPerson(hint: PersonHint) {
     justPicked.current = true;
     closeSuggestions();
+    // «Персона» из одного имени без места и звания — это ребёнок из записей о
+    // рождении, попавший в память персон; после импорта их тысячи. Выбор такой
+    // строки — выбор имени: пробел, фокус остаётся, дописываются отчество и
+    // фамилия (Роман 05.10.2026: «фокус автоматически перепрыгивает»).
+    if (!hint.infant && !/\s/.test(hint.iof.trim()) && !hint.place && !hint.rank) {
+      onChange(hint.iof.trim() + " ", parsed);
+      return;
+    }
     onChange(hint.iof, parsed);
     onPickPersonRef.current?.(hint);
     // Поля заполнятся после того, как React применит состояние, — поэтому
@@ -442,8 +467,8 @@ export default function IofField({
   }
 
   function pickActive() {
-    if (active < persons.length) pickPerson(persons[active]);
-    else pickWord(words[active - persons.length]);
+    if (active >= pOff && active < pOff + persons.length) pickPerson(persons[active - pOff]);
+    else pickWord(words[active - wOff]);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -487,6 +512,49 @@ export default function IofField({
        parsed.surname].filter(Boolean).join(" ")
     : "";
 
+  const personRows = persons.map((p, i) => (
+              <li
+                key={`p${i}`}
+                // Список идёт за стрелками (Роман 28.09.2026: «выбирает
+                // элементы вслепую») — как у Suggest и окна сверки.
+                ref={pOff + i === active ? scrollInList : undefined}
+                className={pOff + i === active ? "active person" : "person"}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickPerson(p);
+                }}
+              >
+                <span className="val">
+                  {p.iof}
+                  {p.infant ? (
+                    <span className="sub wrap">
+                      {[p.infant.parent && `${p.infant.kin ?? "родитель"} ${p.infant.parent}`,
+                        p.infant.place, p.infant.born && `род. ${p.infant.born}`].filter(Boolean).join(" · ")}
+                    </span>
+                  ) : (p.place || p.rank) && (
+                    <span className="sub">
+                      {[p.rank, p.place].filter(Boolean).join(", ")}
+                    </span>
+                  )}
+                </span>
+                <span className="tier t1">{p.infant ? "младенец" : "персона"}</span>
+              </li>
+            ));
+  const wordRows = words.map((w, i) => (
+              <li
+                key={`w${i}`}
+                ref={wOff + i === active ? scrollInList : undefined}
+                className={wOff + i === active ? "active" : ""}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickWord(w);
+                }}
+              >
+                <span className="val">{w.value}</span>
+                <span className={`tier t${w.tier}`}>{KIND_TITLE}</span>
+              </li>
+            ));
+
   return (
     <div className="field">
       <label>{label}</label>
@@ -503,7 +571,22 @@ export default function IofField({
           spellCheck={false}
           onChange={(e) => {
             typed.current = true;
-            onChange(e.target.value, parsed);
+            // Заглавные буквы — сразу, при наборе (Роман 05.10.2026). Длина
+            // текста не меняется, курсор возвращаем на место.
+            // Правим само поле сразу и ставим курсор на место — до того, как
+            // React применит состояние: отложенный возврат курсора при быстром
+            // наборе вставлял бы следующую букву не туда.
+            const el = e.target, at = el.selectionStart;
+            // Не при стирании: стёрли первую букву «иван», чтобы поправить, —
+            // «ван» не должно тут же стать «Ван» (вышло бы «ИВан»; проверяющий
+            // 05.10.2026). Заглавная встанет со следующей набранной буквой.
+            const erasing = ((e.nativeEvent as InputEvent).inputType ?? "").startsWith("delete");
+            const proper = erasing ? el.value : titleCase(el.value);
+            if (proper !== el.value) {
+              el.value = proper;
+              if (at !== null) el.setSelectionRange(at, at);
+            }
+            onChange(proper, parsed);
           }}
           onKeyDown={onKeyDown}
           onBlur={(e) => {
@@ -550,48 +633,7 @@ export default function IofField({
                 в деле {namesakes} детей с этим именем — выберите стрелкой ↓
               </li>
             )}
-            {persons.map((p, i) => (
-              <li
-                key={`p${i}`}
-                // Список идёт за стрелками (Роман 28.09.2026: «выбирает
-                // элементы вслепую») — как у Suggest и окна сверки.
-                ref={i === active ? scrollInList : undefined}
-                className={i === active ? "active person" : "person"}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pickPerson(p);
-                }}
-              >
-                <span className="val">
-                  {p.iof}
-                  {p.infant ? (
-                    <span className="sub wrap">
-                      {[p.infant.parent && `${p.infant.kin ?? "родитель"} ${p.infant.parent}`,
-                        p.infant.place, p.infant.born && `род. ${p.infant.born}`].filter(Boolean).join(" · ")}
-                    </span>
-                  ) : (p.place || p.rank) && (
-                    <span className="sub">
-                      {[p.rank, p.place].filter(Boolean).join(", ")}
-                    </span>
-                  )}
-                </span>
-                <span className="tier t1">{p.infant ? "младенец" : "персона"}</span>
-              </li>
-            ))}
-            {words.map((w, i) => (
-              <li
-                key={`w${i}`}
-                ref={persons.length + i === active ? scrollInList : undefined}
-                className={persons.length + i === active ? "active" : ""}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pickWord(w);
-                }}
-              >
-                <span className="val">{w.value}</span>
-                <span className={`tier t${w.tier}`}>{KIND_TITLE}</span>
-              </li>
-            ))}
+            {wordsFirst ? <>{wordRows}{personRows}</> : <>{personRows}{wordRows}</>}
           </ul>
         )}
       </div>
