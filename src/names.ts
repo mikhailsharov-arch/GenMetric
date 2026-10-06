@@ -21,7 +21,27 @@ export const NO_NAME = "***";
  */
 export function noNameWord(word: string): boolean {
   const w = word.trim();
-  return w !== "" && (!/[\p{L}\p{N}]/u.test(w) || w.toLowerCase() === "имя");
+  if (w === "") return false;
+  if (!/[\p{L}\p{N}]/u.test(w)) return true;
+  return NO_NAME_WORDS.includes(w.toLowerCase().replace(/\.+$/, ""));
+}
+
+/** Слова-заглушки вместо имени — как `records::NO_NAME_WORDS` (Роман
+ *  06.10.2026: «общепринятые текстовые сокращения»). */
+export const NO_NAME_WORDS = ["имя", "нрзб", "н/д", "неизвестно", "неизв", "нет", "б/и"];
+
+/**
+ * Фамилия отца — матери (Роман 06.10.2026): «Сидоров» → «Сидорова»,
+ * «Томский» → «Томская». Фамилия без родового окончания («Шевченко»,
+ * «Черных», «Сова») остаётся как есть; прилагательные не на «-ский»
+ * («Палий») не трогаем — там не угадать. Дореформенный «ъ» отбрасывается.
+ */
+export function feminineSurname(surname: string): string {
+  const s = surname.trim().replace(/ъ$/, "");
+  if (/(ов|ев|ёв|ин|ын)$/i.test(s)) return s + "а";
+  if (/(ск|цк)(ий|ой)$/i.test(s)) return s.slice(0, -2) + "ая";
+  if (/(ый|ой)$/i.test(s)) return s.slice(0, -2) + "ая";
+  return s;
 }
 
 /**

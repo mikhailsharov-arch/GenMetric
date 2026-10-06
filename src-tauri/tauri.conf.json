@@ -44,7 +44,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/seed.sqlite"
+      "resources/seed.sqlite",
+      "resources/Inter-OFL.txt"
     ],
     "copyright": "GenMetric, лицензия GPL-3.0-or-later",
     "category": "Productivity",

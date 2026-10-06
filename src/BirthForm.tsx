@@ -11,7 +11,7 @@ import { useFormClergy } from "./clergy";
 import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
-import { titleCase } from "./names";
+import { feminineSurname, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 
 /**
@@ -311,6 +311,66 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       .catch((e) => report("Не удалось найти жену по отцу", e));
   }
 
+  // --- Фамилия отца — матери (Роман 06.10.2026) ---
+  // При уходе из ИОФ матери: у неё имя и отчество без фамилии, у отца фамилия
+  // есть — дописываем с женским окончанием. У отца без фамилии — ничего.
+  // Стёрли дописанное — второй раз не дописываем. Только в новой записи.
+  const latestMother = useRef(motherRaw);
+  latestMother.current = motherRaw;
+  const latestFather = useRef(fatherRaw);
+  latestFather.current = fatherRaw;
+  const surnameDoneFor = useRef<string | null>(null);
+  /** Идущее дописывание: Ctrl+Enter из поля матери и уводит из него фокус, и
+   *  сохраняет — сохранение дожидается, чтобы не записать мать без фамилии. */
+  const motherLeaving = useRef<Promise<void> | null>(null);
+  function motherLeft() {
+    const run = appendFathersSurname();
+    motherLeaving.current = run;
+    void run.finally(() => { if (motherLeaving.current === run) motherLeaving.current = null; });
+  }
+  async function appendFathersSurname() {
+    if (editingId !== null) return;
+    const text = latestMother.current.iof.trim();
+    const fathers = latestFather.current.parsed?.surname?.trim();
+    if (!text || !fathers || surnameDoneFor.current === text) return;
+    let p: Parsed;
+    try {
+      p = await invoke<Parsed>("parse_iof", { text });
+    } catch (e) {
+      report("Не удалось разобрать имя, отчество и фамилию", e);
+      return;
+    }
+    if (latestMother.current.iof.trim() !== text || document.querySelector(".modal")) return;
+    if (!needsFathersSurname(p)) return;
+    surnameDoneFor.current = text;
+    const full = `${text} ${feminineSurname(fathers)}`;
+    setMother((m) => (m.iof.trim() === text ? { ...m, iof: full, parsed: null } : m));
+  }
+  /** Только «имя отчество»: без отчества фамилия встала бы на его место. */
+  const needsFathersSurname = (p: Parsed | null) =>
+    !!p && p.known_name && !!p.patronymic && !p.surname && !p.patr_unknown;
+
+  // --- «Незаконнорожденный» (Роман 06.10.2026) ---
+  // Флажок у ребёнка пишет пометку в примечание записи (у ребёнка своего
+  // «Прим.» нет); состояние флажка читается из примечания — открытая на
+  // правку запись с такой пометкой показывает его отмеченным.
+  const ILLEGIT = /^незаконнорожденн(ый|ая)$/i;
+  const noteParts = entryNote.split(";").map((s) => s.trim()).filter(Boolean);
+  const illegitimate = noteParts.some((s) => ILLEGIT.test(s));
+  function setIllegitimate(on: boolean) {
+    const girl = ((childParsed?.gender as Sex | null | undefined) ?? childSexManual) === "Ж";
+    const rest = noteParts.filter((s) => !ILLEGIT.test(s));
+    setEntryNote((on ? [...rest, girl ? "незаконнорожденная" : "незаконнорожденный"] : rest).join("; "));
+  }
+
+  // Пометка следует за полом ребёнка: флажок поставили до имени, потом
+  // набрали «Мария» — в примечании должно стать «незаконнорожденная»
+  // (проверяющий 06.10.2026). Запись на правке не трогаем.
+  const childSex = (childParsed?.gender as Sex | null | undefined) ?? childSexManual;
+  useEffect(() => {
+    if (editingId === null && illegitimate && childSex) setIllegitimate(true);
+  }, [childSex]);
+
   /** Для остальных персон выбор из базы заполняет населённый пункт и звание. */
   function pickInto(set: (fn: (p: Person) => Person) => void) {
     return (hint: PersonHint) =>
@@ -359,11 +419,28 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
         clergy3 = clergy3Raw;
     let parsedChild = childParsed;
+    if (motherLeaving.current) {
+      // Фамилия матери дописывается прямо сейчас — берём то, что получилось.
+      await motherLeaving.current;
+      await new Promise((r) => setTimeout(r, 0));
+      mother = latestMother.current;
+    }
     try {
       [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3] = await Promise.all(
         [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3].map(withParsed));
       // Ребёнок — тем же порядком: при открытии записи разбор обнуляется,
       // а сохранить можно раньше, чем поле ответит (ревьюер 22.09.2026).
+      // Ctrl+Enter прямо из ИОФ матери: ухода из поля не было, и фамилию отца
+      // ей ещё не дописали — делаем это здесь, тем же правилом (проверяющий
+      // 06.10.2026: итог не должен зависеть от того, какой клавишей сохранили).
+      const fathers = father.parsed?.surname?.trim();
+      if (editingId === null && fathers && needsFathersSurname(mother.parsed)
+          && surnameDoneFor.current !== mother.iof.trim()) {
+        const full = `${mother.iof.trim()} ${feminineSurname(fathers)}`;
+        surnameDoneFor.current = mother.iof.trim();
+        mother = { ...mother, iof: full, parsed: await invoke<Parsed>("parse_iof", { text: full }) };
+        setMother(mother);
+      }
       const properChild = titleCase(child);
       if (child.trim() && (!parsedChild || properChild !== child))
         parsedChild = await invoke<Parsed>("parse_iof", { text: properChild });
@@ -642,6 +719,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   function next() {
     setRiteNextYear(false);
     copiedPlace.current = null;
+    surnameDoneFor.current = null;
     childDocFor.current = {};
     setChild("");
     setChildParsed(null);
@@ -706,8 +784,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         </div>
         <NextYear eventMonth={birthMonth} riteMonth={riteMonth} year={year} rite="крещение"
                   checked={riteNextYear} onChange={setRiteNextYear} />
+        <div className="childline">
         <IofField
           label="Ребёнок"
+          singleWord
           value={child}
           onChange={(text, parsed) => {
             setChild(text);
@@ -722,6 +802,19 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
             setEntryNote((n) => appendNote(n, note));
           }}
         />
+        <label className="unknownbox" title="Ставит пометку «незаконнорожденный» в примечание записи">
+          {/* Вне обхода клавишами, как «личность не установлена» у умершего. */}
+          <input type="checkbox" checked={illegitimate} tabIndex={-1} data-illegitimate
+                 onChange={(e) => setIllegitimate(e.target.checked)}
+                 onKeyDown={(e) => {
+                   if (e.key !== "Enter") return;
+                   e.preventDefault();
+                   const first = root.current?.querySelector<HTMLInputElement>(".childline input[data-field]");
+                   if (first) focusNextField(first);
+                 }} />
+          незаконнорожд.
+        </label>
+        </div>
         {entryNote && (
           <div className="field">
             <label>Прим.</label>
@@ -772,6 +865,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         withConfession
         confessionLabel="Вероисп."
         gender="М"
+        defaultRank={editingId === null ? "father" : undefined}
         onPickPerson={pickFather}
       />
       <PersonBlock
@@ -785,6 +879,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         withConfession
         confessionLabel="Вероисп."
         gender="Ж"
+        enterToEmpty
+        onIofLeave={motherLeft}
         onPickPerson={pickInto(setMother)}
       />
       </div>
@@ -798,6 +894,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
         onPickPerson={pickInto(setGod1)}
+          defaultRank={editingId === null ? "godparent" : undefined}
       />
       <PersonBlock
         title="Восприемник 2"
@@ -807,6 +904,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
         onPickPerson={pickInto(setGod2)}
+          defaultRank={editingId === null ? "godparent" : undefined}
       />
       {godCount >= 3 && (
         <PersonBlock
@@ -817,6 +915,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
           onPickPerson={pickInto(setGod3)}
+          defaultRank={editingId === null ? "godparent" : undefined}
         />
       )}
       {godCount >= 4 && (
@@ -828,6 +927,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
           onPickPerson={pickInto(setGod4)}
+          defaultRank={editingId === null ? "godparent" : undefined}
         />
       )}
       </div>

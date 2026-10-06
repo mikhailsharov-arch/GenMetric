@@ -738,14 +738,16 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                     "лист «{name}», строка {r}: нет ни года, ни дат — запись перенесена без года; \
                      в списках по годам её не видно, в выгрузке она идёт только со всем приходом"));
             }
-            if let Some(y) = year.filter(|y| odd.contains(y)) {
+            let odd_year = year.filter(|y| odd.contains(y));
+            if let Some(y) = odd_year {
                 report.notes.push(format!(
                     "лист «{name}», строка {r}: год книги {y} стоит далеко от остальных ({usual}) — не опечатка ли в \
                      колонке «Год»? Запись отнесена к делу {} года",
                     if section == 2 { ey.unwrap_or(y) } else { y }));
             }
             let in_date = if section == 2 { ey } else { ry };
-            if let (Some(y), Some(d)) = (year, in_date) {
+            // Про год-опечатку уже сказано выше, с тем же итогом — не дважды.
+            if let (Some(y), Some(d), None) = (year, in_date, odd_year) {
                 if y != d {
                     report.notes.push(format!(
                         "лист «{name}», строка {r}: год в дате {d}, а год книги {y} — запись отнесена к {}",
@@ -994,6 +996,8 @@ mod tests {
         conn.execute_batch("COMMIT").unwrap();
         let said: Vec<&String> = rep.notes.iter().filter(|n| n.contains("стоит далеко от остальных")).collect();
         assert_eq!(said.len(), 1, "{:?}", rep.notes);
+        assert_eq!(rep.notes.iter().filter(|n| n.contains("лист «1», строка 6")).count(), 1,
+                   "у строки с годом-опечаткой — одна оговорка, не две: {:?}", rep.notes);
         assert!(said[0].contains("лист «1», строка 6") && said[0].contains("1990") && said[0].contains("(1889–1890)"), "{said:?}");
         let n: i64 = conn.query_row(
             "SELECT count(*) FROM review_item r JOIN entry e ON e.id = r.entry_id

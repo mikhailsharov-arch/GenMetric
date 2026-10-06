@@ -284,7 +284,7 @@ export default function App() {
           <p className="path mono">{info.db_path}</p>
           <p className="hint">
             Шрифт интерфейса — Inter, © The Inter Project Authors, лицензия SIL Open Font
-            License 1.1 (текст лицензии — в исходном коде программы, src/fonts/OFL.txt).
+            License 1.1 (текст лицензии — файл Inter-OFL.txt в папке программы).
           </p>
           {info.repaired_entries > 0 && (
             <p className="hint">

@@ -342,6 +342,12 @@ def main() -> int:
         db.execute(sql["alias_save"], dict(kind="name", form="Пескарь", form_norm="пескарь", target="Кесарь", gender="М"))
         db.execute(sql["alias_save"], dict(kind="patr", form="Пескарев", form_norm="пескарев", target="Кесаревич", gender=None))
         db.execute(sql["alias_save"], dict(kind="patr", form="Пескунов", form_norm="пескунов", target=None, gender=None))
+        db.execute(sql["alias_save"], dict(kind="patr", form="Пескарева", form_norm="пескарева", target="Кесаревна", gender=None))
+        check("связанное отчество — по полу: невесте женское, жениху мужское (Роман 06.10.2026)",
+              suggest(db, sql, "patronymic", "пескар", gender="Ж") == ["Пескарева"]
+              and suggest(db, sql, "patronymic", "пескар", gender="М") == ["Пескарев"]
+              and len(suggest(db, sql, "patronymic", "пескар")) == 2,
+              str(suggest(db, sql, "patronymic", "пескар", gender="Ж")))
         check("связанное написание имени предлагается («Пес» → «Пескарь»)",
               "Пескарь" in suggest(db, sql, "first_name", "пес", gender="М"), str(suggest(db, sql, "first_name", "пес", gender="М")))
         check("…и только своему полу", "Пескарь" not in suggest(db, sql, "first_name", "пес", gender="Ж"))

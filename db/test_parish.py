@@ -265,6 +265,23 @@ def main() -> int:
         check("отпечаток поставки — у прихода свой",
               a.execute("SELECT count(*) FROM common.setting WHERE key = 'seed_stamp'").fetchone()[0] == 0
               and a.execute("SELECT count(*) FROM main.setting WHERE key = 'seed_stamp'").fetchone()[0] == 1)
+
+        print("\n9. Тестовые пункты шаблона не возвращаются из общего файла (Роман 06.10.2026)")
+        a.execute("INSERT INTO common.place (name, name_norm, np_type, guberniya, uyezd, origin) "
+                  "VALUES ('Лодзь', 'лодзь', 'г.', 'Петровская', 'Лодзинский', 'seed')")
+        a.execute("INSERT INTO common.place (name, name_norm, np_type, guberniya, uyezd, volost, origin) "
+                  "VALUES ('Котело', 'котело', 'с.', 'Костромская', 'Галический', 'Котельская', 'seed')")
+        # «Котело» в этом приходе осталось (стоит в записи) — оно настоящее.
+        a.execute("INSERT INTO main.place (name, name_norm, np_type, guberniya, uyezd, volost, origin) "
+                  "VALUES ('Котело', 'котело', 'с.', 'Костромская', 'Галический', 'Котельская', 'seed')")
+        a.commit()
+        sync(a)
+        check("«Лодзь» ушла из общего файла и в приход не вернулась",
+              a.execute("SELECT (SELECT count(*) FROM common.place WHERE name_norm = 'лодзь') + "
+                        "(SELECT count(*) FROM main.place WHERE name_norm = 'лодзь')").fetchone()[0] == 0)
+        check("«Котело», оставшееся в приходе, — на месте и в общем файле",
+              a.execute("SELECT (SELECT count(*) FROM common.place WHERE name_norm = 'котело') + "
+                        "(SELECT count(*) FROM main.place WHERE name_norm = 'котело')").fetchone()[0] == 2)
         a.close()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")

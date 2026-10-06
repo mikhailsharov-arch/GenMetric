@@ -32,19 +32,22 @@ type Props = {
   defaults: { guberniya: string; uyezd: string };
   /** Есть — правка известного пункта: поля из базы, похожих нет, place_update. */
   existing?: PlaceInfo;
+  /** Волость последнего заведённого пункта — по умолчанию у нового (Роман
+   *  06.10.2026): пункты одной волости заводят подряд. */
+  lastVolost?: string;
   onPick: (name: string) => void;
   onSaved: (name: string) => void;
   onCancel: () => void;
 };
 
-export default function PlaceCard({ name, similar, defaults, existing, onPick, onSaved, onCancel }: Props) {
+export default function PlaceCard({ name, similar, defaults, existing, lastVolost, onPick, onSaved, onCancel }: Props) {
   // Название правится только у известного пункта (Роман 25.09.2026: «вдруг
   // пользователь допустил ошибку в названии»); у нового оно уже в заголовке.
   const [title, setTitle] = useState(existing?.name ?? name);
   const [npType, setNpType] = useState(existing ? existing.np_type ?? "" : "д.");
   const [guberniya, setGuberniya] = useState(existing ? existing.guberniya ?? "" : defaults.guberniya);
   const [uyezd, setUyezd] = useState(existing ? existing.uyezd ?? "" : defaults.uyezd);
-  const [volost, setVolost] = useState(existing?.volost ?? "");
+  const [volost, setVolost] = useState(existing ? existing.volost ?? "" : lastVolost ?? "");
   const [url, setUrl] = useState(existing?.familio_url ?? "");
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
@@ -108,7 +111,7 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
       {!existing && (
         <p className="hint">
           {similar.length ? "Или заполните карточку нового:" : "Такого названия в справочнике нет — заполните карточку:"}
-          {" "}губерния и уезд подставлены из дела, волость и ссылку можно оставить пустыми.
+          {" "}губерния и уезд подставлены из дела, волость — от последнего заведённого пункта; ссылку можно оставить пустой.
         </p>
       )}
       {existing && (

@@ -175,6 +175,23 @@ def build_old_database(path: Path) -> None:
     for order, (who, pid) in enumerate((("Пустой", 9010), ("Ничей", 9020), ("Заречный", 9030))):
         db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id) "
                    "VALUES (1, 'clergy1', ?, ?, ?)", (150 + order, who, pid))
+    # Тестовые строки шаблона Excel из прежней поставки (Роман 06.10.2026):
+    # «Лодзь» никем не занята и уйдёт; «Котело» стоит в записи — останется, и
+    # его уезд с волостью в перечнях тоже; губерния «Петровская» — уйдёт.
+    db.execute("INSERT INTO place (id, name, name_norm, np_type, guberniya, uyezd, origin) "
+               "VALUES (9040, 'Лодзь', 'лодзь', 'г.', 'Петровская', 'Лодзинский', 'seed')")
+    db.execute("INSERT INTO place (id, name, name_norm, np_type, guberniya, uyezd, volost, origin) "
+               "VALUES (9041, 'Котело', 'котело', 'с.', 'Костромская', 'Галический', 'Котельская', 'seed')")
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id) "
+               "VALUES (1, 'clergy1', 160, 'Котельский', 9041)")
+    db.execute("INSERT OR IGNORE INTO lookup_kind (kind, title, editable, autoextend) VALUES ('guberniya','Губернии',1,1)")
+    db.execute("INSERT OR IGNORE INTO lookup_kind (kind, title, editable, autoextend) VALUES ('uyezd','Уезды',1,1)")
+    db.executemany("INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin) VALUES (?,?,?,?,?)",
+                   [("guberniya", "Петровская", "петровская", 900, "seed"),
+                    ("uyezd", "Лодзинский", "лодзинский", 900, "seed"),
+                    ("uyezd", "Галический", "галический", 910, "seed"),
+                    # То же слово, но заведённое человеком, — не трогается.
+                    ("uyezd", "Петровский", "петровский", 920, "user")])
     # Память персон с дублями (техдолг В6, 27.09.2026): без места персона
     # задваивалась при каждом сохранении — NULL в UNIQUE не равен NULL.
     db.executemany(
@@ -337,6 +354,19 @@ def main() -> int:
         check("пустая строка с набранным руками полным местом осталась",
               one("SELECT count(*) FROM place WHERE name_norm = 'займище тестовое'") == 2
               and one("SELECT place_id FROM person_mention WHERE first_name = 'Заречный'") == 9030)
+        check("тестовый пункт шаблона «Лодзь» убран вместе с губернией и уездом (Роман 06.10.2026)",
+              one("SELECT count(*) FROM place WHERE name_norm = 'лодзь'") == 0
+              and one("SELECT count(*) FROM lookup WHERE value IN ('Петровская', 'Лодзинский')") == 0)
+        check("«Котело» стоит в записи — остался, его уезд в перечне тоже; своё «Петровский» не тронуто",
+              one("SELECT place_id FROM person_mention WHERE first_name = 'Котельский'") == 9041
+              and one("SELECT count(*) FROM place WHERE id = 9041") == 1
+              and one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Галический'") == 1
+              and one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Петровский'") == 1)
+        check("в самой поставке тестовых строк больше нет",
+              sqlite3.connect(seed).execute(
+                  "SELECT (SELECT count(*) FROM place WHERE name IN ('Лодзь', 'Котело')) + "
+                  "(SELECT count(*) FROM lookup WHERE value IN ('Петровская', 'Лодзинский', 'Галический', 'Котельская'))"
+              ).fetchone()[0] == 0)
         check("упоминаний без пункта после слияния нет",
               one("SELECT count(*) FROM person_mention m WHERE m.place_id IS NOT NULL "
                   "AND NOT EXISTS (SELECT 1 FROM place p WHERE p.id = m.place_id)") == 0)

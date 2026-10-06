@@ -182,6 +182,20 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const autoRank = useRef<string | null>(null);
   /** НП умершего, набранный человеком (не подставленный программой). */
   const placeTyped = autoPlace.current !== null && dead.place === autoPlace.current ? null : dead.place;
+  // Умерший — младенец: живёт у родителей, его НП — в НП родственника (Роман
+  // 06.10.2026). В пустое поле или поверх подставленного раньше; только при
+  // наборе новой записи.
+  const relPlaceManual = useRef(false);
+  const prevDeadPlace = useRef("");
+  useEffect(() => {
+    const prev = prevDeadPlace.current;
+    prevDeadPlace.current = dead.place;
+    if (editingId !== null || relPlaceManual.current || !/младен/i.test(dead.rank)) return;
+    // Только в пустое поле или вслед за собой же: НП родителя, пришедший из
+    // записи о рождении (выбор младенца из подсказки), не подменяется.
+    setRel((r) => (r.place !== dead.place && (r.place === "" || r.place === prev) ? { ...r, place: dead.place } : r));
+  }, [dead.place, dead.rank, editingId]);
+
   function pickDeceased(hint: PersonHint) {
     pickInto(setDead)(hint);
     const mine = ++pickSeq.current;
@@ -476,6 +490,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     autoRel.current = null;
     autoPlace.current = null;
     autoRank.current = null;
+    relPlaceManual.current = false;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -610,7 +625,11 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
                      {...common} extra={deadExtra}
                      noIof={nameless} titleAfter={namelessBox} />
         <PersonBlock title="Родственник" person={rel}
-                     onChange={(p) => setRel((s) => ({ ...s, ...p }))}
+                     onChange={(p) => {
+                       // НП родственника, набранный руками, от умершего больше не подменяется.
+                       if (p.place !== rel.place) relPlaceManual.current = p.place !== "";
+                       setRel((s) => ({ ...s, ...p }));
+                     }}
                      gender={kinGender(rel.kinship)} onPickPerson={pickInto(setRel)} {...common}
                      before={
                        <Suggest label="Родство" kind="kinship" value={rel.kinship} browse

@@ -293,6 +293,41 @@ UPDATE main.person
 DELETE FROM main.place WHERE id IN (SELECT id FROM temp.m_dup);
 DROP TABLE IF EXISTS temp.m_dup;
 
+-- ---------------------------------------------------------------------------
+-- Тестовые строки шаблона Excel-индексатора (Роман 06.10.2026: «Петровская
+-- губерния, Галический и Лодзинский уезды — тестовые примеры… Их необходимо
+-- удалить из базы»). Из поставки убраны город «Лодзь» и село «Котело»; у
+-- установленных они уходят, только если пункт всё ещё такой, каким пришёл из
+-- поставки, и на него не ссылается ни одна запись и персона. Значения
+-- перечней — только из поставки и только если ими не пользуется ни один
+-- оставшийся пункт и ни одно дело. Набранное человеком не трогается.
+-- ---------------------------------------------------------------------------
+DELETE FROM main.place
+ WHERE origin = 'seed' AND updated_at IS NULL
+   AND ((name_norm = 'лодзь' AND guberniya = 'Петровская' AND uyezd = 'Лодзинский')
+     OR (name_norm = 'котело' AND uyezd = 'Галический' AND volost = 'Котельская'))
+   AND NOT EXISTS (SELECT 1 FROM main.person_mention m WHERE m.place_id = main.place.id)
+   AND NOT EXISTS (SELECT 1 FROM main.person p WHERE p.place_id = main.place.id);
+DELETE FROM main.lookup
+ WHERE origin = 'seed'
+   AND ((kind = 'guberniya' AND value = 'Петровская')
+     OR (kind = 'uyezd' AND value IN ('Лодзинский', 'Галический'))
+     OR (kind = 'volost' AND value = 'Котельская'))
+   AND NOT EXISTS (SELECT 1 FROM main.place p
+                    WHERE (main.lookup.kind = 'guberniya' AND p.guberniya = main.lookup.value)
+                       OR (main.lookup.kind = 'uyezd' AND p.uyezd = main.lookup.value)
+                       OR (main.lookup.kind = 'volost' AND p.volost = main.lookup.value))
+   AND NOT EXISTS (SELECT 1 FROM main.mk_case c
+                    WHERE (main.lookup.kind = 'guberniya' AND c.guberniya = main.lookup.value)
+                       OR (main.lookup.kind = 'uyezd' AND c.uyezd = main.lookup.value));
+-- Частоты — только этих четырёх значений и только если значение ушло из
+-- перечня: чужие частоты не трогаются (ревьюер 06.10.2026).
+DELETE FROM main.usage_stat
+ WHERE ((kind = 'guberniya' AND value = 'Петровская')
+     OR (kind = 'uyezd' AND value IN ('Лодзинский', 'Галический'))
+     OR (kind = 'volost' AND value = 'Котельская'))
+   AND NOT EXISTS (SELECT 1 FROM main.lookup l WHERE l.kind = main.usage_stat.kind AND l.value = main.usage_stat.value);
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting

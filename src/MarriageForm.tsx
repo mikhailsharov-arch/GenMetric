@@ -122,6 +122,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
+  const dayField = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
 
@@ -167,12 +168,38 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
 
   usePlaceRenamed(renamePlace);
 
+  // НП поручителя — НП жениха или невесты по его стороне (Роман 06.10.2026:
+  // «с сохранением возможности ручного исправления»). Подставляется в пустое
+  // поле или поверх подставленного раньше; набранное руками не трогается.
+  // Только при наборе новой записи: в открытой на правку НП поручителей —
+  // как сохранены.
+  const witnessPlaceManual = useRef<boolean[]>([false, false, false, false, false, false]);
+  useEffect(() => {
+    if (editingId !== null) return;
+    witnesses.forEach((w, i) => {
+      if (witnessPlaceManual.current[i]) return;
+      const source = w.side === SIDES[0] ? groom.place : w.side === SIDES[1] ? bride.place : "";
+      witnessSetters[i]((s) => (s.place === source ? s : { ...s, place: source }));
+    });
+  }, [groom.place, bride.place, w1.side, w2.side, w3.side, w4.side, w5.side, w6.side, editingId]);
+  /** Правка блока поручителя: НП, набранный руками, дальше не подменяется;
+   *  стёртый — снова подставится, когда изменится НП жениха или невесты
+   *  либо сторона поручителя. */
+  function changeWitness(i: number, p: Person) {
+    if (p.place !== witnesses[i].place) witnessPlaceManual.current[i] = p.place !== "";
+    witnessSetters[i]((s) => ({ ...s, ...p }));
+  }
+
   /** Убрать пятого или шестого поручителя; шестой встаёт на место пятого
    *  (проверяющий 27.09.2026: убрать можно было только стерев имя). */
   function removeWitness(i: number) {
     const n = witnessCount;
     for (let j = i; j < n - 1; j++) witnessSetters[j]({ ...witnesses[j + 1] });
     witnessSetters[n - 1](newWitness(n - 1));
+    // Поручители сдвинулись — признак «набрано руками» сдвигается вместе с ними.
+    const manual = witnessPlaceManual.current.slice();
+    manual.splice(i, 1);
+    witnessPlaceManual.current = [...manual, false];
     setWitnessCount(n - 1);
   }
 
@@ -332,6 +359,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       const e = await invoke<EntryFull>("entry_load", { id });
       if (editingId === null)
         beforeEdit.current = { page, count, year, month };
+      witnessPlaceManual.current = [false, false, false, false, false, false];
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
         m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
@@ -387,10 +415,13 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     setGroomRel({ ...NEW_RELATIVE });
     setBrideRel({ ...NEW_RELATIVE });
     witnessSetters.forEach((set, i) => set(newWitness(i)));
+    witnessPlaceManual.current = [false, false, false, false, false, false];
     setWitnessCount(4);
     setDay(null);
-    countField.current?.focus();
-    countField.current?.select();
+    // «Счёт» в браках идёт подряд и растёт сам — курсор сразу в день
+    // венчания (Роман 06.10.2026).
+    dayField.current?.focus();
+    dayField.current?.select();
   }
 
   function hotkeys(e: React.KeyboardEvent<HTMLDivElement>) {
@@ -416,6 +447,11 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   );
 
   const common = { placeDefaults, onPlaceRenamed: renamePlace, rankKind: "rank" as const };
+  // Автоподстановки — только при наборе новой записи.
+  const fresh = editingId === null;
+  /** Родственник выбран из подсказки: НП у него нет, заполняется звание. */
+  const pickRelative = (set: (fn: (r: Relative) => Relative) => void) => (hint: PersonHint) =>
+    set((r) => ({ ...r, rank: hint.rank ?? r.rank }));
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="marriage formroot">
@@ -430,8 +466,10 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
         <div className="row tight">
           <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
           <PageField label="Стр." value={page} onChange={setPage} />
-          <NumberField label="Счёт" value={count} onChange={setCount} min={1} inputRef={countField} />
-          <NumberField label="Венч., день" value={day} onChange={setDay} min={1} max={31} />
+          {/* Вне обхода клавишами: «нумерация идет строго по порядку» (Роман
+              06.10.2026). Мышью и кнопками «+/−» поправить можно. */}
+          <NumberField label="Счёт" value={count} onChange={setCount} min={1} inputRef={countField} noTab />
+          <NumberField label="Венч., день" value={day} onChange={setDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="мес." value={month} onChange={setMonth} min={1} max={12} />
         </div>
       </section>
@@ -444,11 +482,13 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
         <div className="col">
           <PersonBlock title="Жених" person={groom} onChange={(p) => setGroom((s) => ({ ...s, ...p }))}
                        gender="М" withConfession confessionLabel="Вероисп."
+                       defaultRank={fresh ? "groom" : undefined}
                        onPickPerson={pickInto(setGroom)} {...common}
                        extra={spouseExtra(groom, setGroom)} />
           <PersonBlock title="Родственник жениха" person={groomRel} noPlace
                        onChange={(p) => setGroomRel((s) => ({ ...s, ...p }))}
                        gender={kinGender(groomRel.kinship)} {...common}
+                       onPickPerson={pickRelative(setGroomRel)}
                        before={relativeBefore(groomRel, setGroomRel)} />
         </div>
         <div className="col">
@@ -459,6 +499,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
           <PersonBlock title="Родственник невесты" person={brideRel} noPlace
                        onChange={(p) => setBrideRel((s) => ({ ...s, ...p }))}
                        gender={kinGender(brideRel.kinship)} {...common}
+                       onPickPerson={pickRelative(setBrideRel)}
                        before={relativeBefore(brideRel, setBrideRel)} />
         </div>
       </div>
@@ -466,8 +507,17 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       <div className="cols">
         {witnesses.slice(0, witnessCount).map((w, i) => (
           <PersonBlock key={w.uid} title={`Поручитель ${i + 1}`} person={w}
-                       onChange={(p) => witnessSetters[i]((s) => ({ ...s, ...p }))}
-                       onPickPerson={pickInto(witnessSetters[i])} {...common}
+                       onChange={(p) => changeWitness(i, p)}
+                       onPickPerson={(hint) => {
+                         // Поручитель выбран из памяти персон со своим НП — он
+                         // «набран руками»: НП жениха или невесты его не
+                         // подменит (ревьюер 06.10.2026).
+                         if (hint.place) witnessPlaceManual.current[i] = true;
+                         pickInto(witnessSetters[i])(hint);
+                       }} {...common}
+                       // Поручителями были только мужчины (Роман 06.10.2026) —
+                       // женских имён, отчеств и фамилий не предлагаем.
+                       gender="М" defaultRank={fresh ? "witness" : undefined}
                        titleExtra={
                          <button type="button" className="linkish side" tabIndex={-1}
                                  title="Сменить сторону поручителя"

@@ -108,8 +108,9 @@ input:focus {
   z-index: 20;
   left: 0;
   right: 0;
-  /* Весь перечень губерний — 115 строк; без предела список уходит за экран. */
-  max-height: 18em;
+  /* Весь перечень губерний — 115 строк; без предела список уходит за экран.
+     22em — «чтобы на экране сразу помещалось больше вариантов» (Роман 06.10.2026). */
+  max-height: 22em;
   overflow-y: auto;
   margin: 0.25em 0 0;
   padding: 0.25em;
@@ -717,3 +718,24 @@ button.toggle { white-space: nowrap; }
 
 /* «Найти на Familio» в карточке пункта — под полем ссылки, не в обходе Tab. */
 .familiofind { display: flex; justify-content: flex-end; margin: 0.1em 0 0.3em; }
+
+/* ============================================================================
+   Спринт «Ошибки и скорость набора» (06.10.2026, ответ Романа на сборку 05.10).
+   ============================================================================ */
+/* Список подсказок вверх от поля — у нижней персоны, когда ниже места нет
+   (focus.ts, scrollInList). */
+.suggest.up { top: auto; bottom: 100%; }
+/* НП шире звания: в поле НП ещё и ссылка «карточка», и название обрезалось
+   («ячейка ввода НП оказывается слишком узкой»). */
+@container person (min-width: 28em) {
+  .pair.npair { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+}
+/* Ребёнок и флажок «незаконнорожд.» — одной строкой: высоту не занимает. */
+.childline { display: flex; align-items: flex-start; gap: 0.5em; }
+.childline > .field { flex: 1; min-width: 0; }
+.childline > .unknownbox { padding-top: 0.25em; }
+/* Блок размера шрифта уже: при окне 380 px верхняя строка уходила за край. */
+.scale { gap: 0.15em; }
+.scale-value { min-width: 2.2em; }
+.topbar { gap: 0.4em; }
+.tabs { gap: 0.3em; }

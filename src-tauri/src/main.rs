@@ -437,6 +437,22 @@ fn suggest(
     })
 }
 
+/// Звание по умолчанию: самое частое в приходе у этой роли и пола.
+/// `role` — группа ролей формы: отец, жених, восприемник, поручитель.
+#[tauri::command]
+fn rank_default(app: State<App>, role: String, gender: Option<String>) -> Result<Option<String>, String> {
+    let pattern = match role.as_str() {
+        "father" => "father",
+        "groom" => "groom",
+        "godparent" => "godparent%",
+        "witness" => "witness%",
+        other => return Err(format!("Неизвестная роль для звания по умолчанию: {other}")),
+    };
+    with_conn(&app, "Звание по умолчанию", |conn| {
+        genmetric_core::records::default_rank(conn, pattern, gender.as_deref())
+    })
+}
+
 /// Разбор строки ИОФ на имя, отчество и фамилию.
 ///
 /// Порядок в метрических книгах: имя, отчество, фамилия. Отчество опознаётся
@@ -906,6 +922,8 @@ fn suggest_spouse(app: State<App>, husband: String) -> Result<Option<SpouseHint>
 struct PlaceCheck {
     known: bool,
     similar: Vec<Similar>,
+    /// Волость последнего пункта, заведённого человеком, — в карточку нового.
+    last_volost: String,
 }
 
 /// Известен ли населённый пункт, и на что он похож, если нет. Форма
@@ -916,7 +934,7 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
     with_conn(&app, &format!("Проверка НП «{name}»"), |conn| {
         let norm = normalize(&name);
         if norm.is_empty() {
-            return Ok(PlaceCheck { known: true, similar: vec![] });
+            return Ok(PlaceCheck { known: true, similar: vec![], last_volost: String::new() });
         }
         let known = conn
             .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
@@ -925,8 +943,13 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
             .map_err(|e| e.to_string())?
             .is_some();
         if known {
-            return Ok(PlaceCheck { known: true, similar: vec![] });
+            return Ok(PlaceCheck { known: true, similar: vec![], last_volost: String::new() });
         }
+        let last_volost: String = conn
+            .query_row(&statement("place_last_volost")?, [], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
         let mut stmt = conn.prepare(&statement("place_names")?).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?, None)))
@@ -936,7 +959,7 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
             items.push(row.map_err(|e| e.to_string())?);
         }
         let max_dist = (norm.chars().count() / 4).max(2);
-        Ok(PlaceCheck { known: false, similar: rank_similar(&norm, items, 8, max_dist) })
+        Ok(PlaceCheck { known: false, similar: rank_similar(&norm, items, 8, max_dist), last_volost })
     })
 }
 
@@ -1142,14 +1165,22 @@ fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
             return Ok(id);
         }
         let blank = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-        card_lookups(conn, &card)?;
+        // Новый пункт: поля карточки — в перечни и в частоты, чтобы следующая
+        // карточка предлагала самое частое первым (Роман 06.10.2026).
         conn.execute(&statement("place_save")?, rusqlite::named_params! {
             ":name": name, ":name_norm": norm,
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
             ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
             ":familio_url": blank(&card.familio_url),
         }).map_err(|e| e.to_string())?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        // Пункт заведён — тогда и частоты: не раньше, чтобы сбой вставки не
+        // оставил частоту у пункта, которого нет.
+        for (kind, value) in [("np_type", &card.np_type), ("guberniya", &card.guberniya),
+                              ("uyezd", &card.uyezd), ("volost", &card.volost)] {
+            genmetric_core::records::remember_card(conn, kind, value.as_deref())?;
+        }
+        Ok(id)
     })
 }
 
@@ -1619,6 +1650,7 @@ fn main() {
             get_setting,
             set_setting,
             suggest,
+            rank_default,
             parse_iof,
             similar_names,
             dict_search,

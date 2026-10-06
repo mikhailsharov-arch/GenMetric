@@ -94,15 +94,35 @@ export function scrollInList(el: HTMLElement | null): void {
   // верх), а если места всё равно мало — список укорачивается. В окне, где
   // список помещается, страница не двигается вовсе (проверяющий, 01.10.2026:
   // без этого активная строка уходила за экран).
-  const bar = Array.from(document.querySelectorAll<HTMLElement>(".savebar"))
-    .find((b) => b.offsetParent !== null);
-  const floor = bar ? Math.min(window.innerHeight, bar.getBoundingClientRect().top) : window.innerHeight;
+  // «Пол» — верх кнопки «Сохранить». Пересчитывается после каждой прокрутки:
+  // у конца формы кнопка перестаёт липнуть к низу окна и уезжает вверх вместе
+  // со страницей — список, посчитанный по прежнему полу, ложился под неё.
+  const floorNow = () => {
+    const bar = Array.from(document.querySelectorAll<HTMLElement>(".savebar"))
+      .find((b) => b.offsetParent !== null);
+    return bar ? Math.min(window.innerHeight, bar.getBoundingClientRect().top) : window.innerHeight;
+  };
+  let floor = floorNow();
   let box = list.getBoundingClientRect();
-  if (box.bottom > floor) {
-    window.scrollBy(0, Math.min(box.bottom - floor + 4, Math.max(0, box.top - 48)));
-    box = list.getBoundingClientRect();
+  if (!list.classList.contains("up")) {
+    for (let i = 0; i < 2 && box.bottom > floor; i++) {
+      window.scrollBy(0, Math.min(box.bottom - floor + 4, Math.max(0, box.top - 48)));
+      box = list.getBoundingClientRect();
+      floor = floorNow();
+    }
     if (box.bottom > floor) {
-      list.style.maxHeight = `${Math.max(64, floor - box.top - 4)}px`;
+      // Докрутить некуда — у нижней персоны формы. Раньше список просто
+      // укорачивался, порой до двух строк: «обрезается нижней границей окна»
+      // (Роман 06.10.2026). Теперь, если над полем места больше, он
+      // открывается вверх от поля.
+      const body = list.parentElement?.getBoundingClientRect();
+      const above = body ? body.top - 4 : 0, below = floor - box.top - 4;
+      if (above > below) {
+        list.classList.add("up");
+        list.style.maxHeight = `${Math.max(64, Math.min(above, box.height))}px`;
+      } else {
+        list.style.maxHeight = `${Math.max(64, below)}px`;
+      }
       box = list.getBoundingClientRect();
     }
   }

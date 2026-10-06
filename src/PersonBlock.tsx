@@ -97,7 +97,31 @@ type Props = {
   infantPlace?: string | null;
   /** Без поля ИОФ — умерший, чья личность не установлена (Роман 30.09.2026). */
   noIof?: boolean;
+  /** Звание по умолчанию — самое частое в приходе у этой роли и пола (Роман
+   *  06.10.2026, вариант А). Не задано — не подставлять: мать, невеста,
+   *  родственники, умерший и любая запись, открытая на правку. */
+  defaultRank?: "father" | "groom" | "godparent" | "witness";
+  /** Enter в ИОФ ведёт к первому пустому полю (мать в рождениях). */
+  enterToEmpty?: boolean;
+  /** Уход из поля ИОФ. */
+  onIofLeave?: () => void;
 };
+
+/** Самое частое звание роли и пола; ответ держится минуту — частоты меняются
+ *  медленно, а спрашивают его на каждой записи у нескольких персон. */
+const rankCache = new Map<string, { at: number; value: Promise<string | null> }>();
+function rankDefault(role: string, gender: string): Promise<string | null> {
+  const key = `${role}|${gender}`;
+  const hit = rankCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  const value = invoke<string | null>("rank_default", { role, gender });
+  rankCache.set(key, { at: Date.now(), value });
+  // Ошибку и «ещё нет таких записей» не держим: первая же сохранённая запись
+  // должна дать звание следующей.
+  // Саму ошибку покажет тот, кто спрашивал (report в эффекте блока).
+  value.then((v) => { if (v === null) rankCache.delete(key); }, () => { rankCache.delete(key); });
+  return value;
+}
 
 /** Событие окна: пункт переименован в карточке; слушают обе формы. */
 export const PLACE_RENAMED = "genmetric:place-renamed";
@@ -176,8 +200,21 @@ export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
+  defaultRank, enterToEmpty, onIofLeave,
 }: Props) {
-  const set = (patch: Partial<Person>) => onChange({ ...person, ...patch });
+  const latest = useRef(person);
+  latest.current = person;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  /** Отдать форме новое состояние блока. Оно же сразу становится «последним
+   *  известным»: две правки подряд до перерисовки (ответ разбора имени и
+   *  подстановка звания) иначе брали бы за основу одно и то же старое
+   *  состояние, и вторая затирала первую (стенд 06.10.2026). */
+  function push(next: Person) {
+    latest.current = next;
+    onChangeRef.current(next);
+  }
+  const set = (patch: Partial<Person>) => push({ ...latest.current, ...patch });
   // Слова поля, к которым относятся пометки сверки в примечании.
   const docFor = useRef<DocFor>({});
   const Frame = compact ? "div" : "section";
@@ -185,7 +222,8 @@ export default function PersonBlock({
   // Карточка населённого пункта при первом вводе — по уходу из поля НП.
   // После «Исправить название» (Esc) не открывается снова, пока название
   // не изменится.
-  const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[]; existing?: PlaceInfo } | null>(null);
+  const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[]; existing?: PlaceInfo;
+                                                lastVolost?: string } | null>(null);
   const placeSkip = useRef(false);
   useEffect(() => { placeSkip.current = false; }, [person.place]);
   const placeRef = useRef<HTMLInputElement | null>(null);
@@ -198,12 +236,12 @@ export default function PersonBlock({
     if ((related === null && !document.hasFocus()) || document.querySelector(".modal")) return;
     if (!text || placeSkip.current || placeCard) return;
     try {
-      const r = await invoke<{ known: boolean; similar: Similar[] }>("place_check", { name: text });
+      const r = await invoke<{ known: boolean; similar: Similar[]; last_volost: string }>("place_check", { name: text });
       // Пока ждали ответ, поле могло измениться — карточка на прежнее не нужна.
       if (r.known || placeNow.current.trim() !== text || document.querySelector(".modal")) return;
       // Форма уже скрыта (ушли на другую вкладку) — карточку не показывать.
       if (placeRef.current?.offsetParent == null) return;
-      setPlaceCard({ name: text, similar: r.similar });
+      setPlaceCard({ name: text, similar: r.similar, lastVolost: r.last_volost });
     } catch (e) {
       report(`Не удалось проверить населённый пункт «${text}»`, e);
     }
@@ -219,8 +257,8 @@ export default function PersonBlock({
         setPlaceCard({ name: existing.name, similar: [], existing });
         return;
       }
-      const r = await invoke<{ known: boolean; similar: Similar[] }>("place_check", { name: text });
-      setPlaceCard({ name: text, similar: r.similar });
+      const r = await invoke<{ known: boolean; similar: Similar[]; last_volost: string }>("place_check", { name: text });
+      setPlaceCard({ name: text, similar: r.similar, lastVolost: r.last_volost });
     } catch (e) {
       report(`Не удалось открыть карточку «${text}»`, e);
     }
@@ -259,6 +297,49 @@ export default function PersonBlock({
   const ranks = rankKind === "rank_clergy"
     ? "rank_clergy"
     : sex === "Ж" ? "rank_f" : "rank_m";
+
+  // --- Звание по умолчанию ---
+  // Появилось имя, а звание пусто — вписываем самое частое у этой роли и
+  // пола. Стёрли или набрали своё — больше не трогаем, пока блок не очистят.
+  // Сменился пол (восприемник «Иван» → «Мария») — подставленное меняется.
+  const autoRank = useRef<{ rank: string; sex: string } | null>(null);
+  const rankTouched = useRef(false);
+  const hasIof = person.iof.trim() !== "";
+  useEffect(() => {
+    if (!defaultRank) {
+      autoRank.current = null;
+      return;
+    }
+    const now = latest.current;
+    if (!hasIof) {
+      rankTouched.current = false;
+      const was = autoRank.current;
+      autoRank.current = null;
+      if (was && now.rank === was.rank) push({ ...now, rank: "" });
+      return;
+    }
+    const ours = autoRank.current;
+    const replaceable = !now.rank || (ours !== null && now.rank === ours.rank && ours.sex !== sex);
+    if (!sex || rankTouched.current || !replaceable) return;
+    let alive = true;
+    rankDefault(defaultRank, sex)
+      .then((rank) => {
+        const p = latest.current;
+        const mine = autoRank.current;
+        if (!alive || !p.iof.trim() || rankTouched.current) return;
+        if (p.rank && !(mine && p.rank === mine.rank)) return;
+        if (!rank) {
+          // Для этого пола частого звания ещё нет — чужое не оставляем.
+          if (mine && p.rank === mine.rank) push({ ...p, rank: "" });
+          autoRank.current = null;
+          return;
+        }
+        autoRank.current = { rank, sex };
+        if (p.rank !== rank) push({ ...p, rank });
+      })
+      .catch((e) => report("Не удалось узнать самое частое звание", e));
+    return () => { alive = false; };
+  }, [defaultRank, hasIof, sex]);
 
   /** Простое поле без подсказок: Enter и стрелки ведут по форме дальше.
    *  Без этого блок персоны заканчивался тупиком — «Прим.» никуда не вело,
@@ -300,6 +381,9 @@ export default function PersonBlock({
         inputRef={inputRef}
         gender={sex}
         preferInfant={preferInfant}
+        enterToEmpty={enterToEmpty}
+        onLeave={onIofLeave}
+        noSurnameMark={compact}
         infantRows={infantRows}
         infantYear={infantYear}
         infantPlace={infantPlace === undefined ? person.place : infantPlace}
@@ -325,7 +409,7 @@ export default function PersonBlock({
       {/* НП и звание — парой в одну строку, когда блок шире 28em (styles.css,
           @container person). У причта (compact) пара — ИОФ | Звание: раскрытый
           причт был высоким (проверяющий 27.09.2026). */}
-      <div className="pair">
+      <div className={!compact && !noPlace ? "pair npair" : "pair"}>
       {compact && iofField}
       {!compact && !noPlace && (
         <Suggest
@@ -343,6 +427,7 @@ export default function PersonBlock({
           name={placeCard.name}
           similar={placeCard.similar}
           existing={placeCard.existing}
+          lastVolost={placeCard.lastVolost}
           defaults={placeDefaults ?? { guberniya: "", uyezd: "" }}
           onPick={placeDone}
           onSaved={(saved) => {
@@ -363,7 +448,11 @@ export default function PersonBlock({
         label="Звание"
         kind={ranks}
         value={person.rank}
-        onChange={(rank) => set({ rank })}
+        onChange={(rank) => {
+          // Звание тронуто руками — подстановка по умолчанию больше не вмешивается.
+          if (rank !== latest.current.rank) rankTouched.current = true;
+          set({ rank });
+        }}
       />
       </div>
       {(withConfession || extra) && (

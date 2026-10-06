@@ -244,8 +244,10 @@ pub fn open(dir: &Path, bundled: &Path, id: i64) -> Result<Opened, String> {
     drop(common);
 
     // Фамилии уже набранных записей — в подсказку фамилий (один раз).
-    let seeded = crate::records::seed_surnames(&conn).err()
-        .map(|e| format!("Подсказка фамилий не подготовлена: {e}"));
+    let seeded = crate::records::seed_surnames(&conn).map(|_| ())
+        .and_then(|()| crate::records::seed_usage(&conn))
+        .err()
+        .map(|e| format!("Подсказки по частоте не подготовлены: {e}"));
     let synced = attach_common(&conn, dir)
         .and_then(|()| sync(&conn))
         .err()

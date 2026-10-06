@@ -23,6 +23,8 @@ export type Parsed = {
   patr_unknown: string | null;
   /** Имя в книге не указано — первым словом стоит «***». */
   name_missing?: boolean;
+  /** Фамилии (и её формы другого рода) в приходе ещё не набирали. */
+  surname_new?: boolean;
 };
 
 /** Пометка в примечание после сверки: как было написано в документе. */
@@ -96,6 +98,17 @@ type Props = {
    * у ребёнка). Без обработчика поле просто меняет текст.
    */
   onResolved?: (iof: string, note: string) => void;
+  /** Поле из одного слова (имя ребёнка): выбор из списка сразу ведёт в
+   *  следующее поле, без пробела и второго Enter (Роман 06.10.2026). */
+  singleWord?: boolean;
+  /** Enter ведёт к первому ПУСТОМУ полю — у матери НП, звание и
+   *  вероисповедание уже подставлены (Роман 06.10.2026). */
+  enterToEmpty?: boolean;
+  /** Настоящий уход из поля (не потеря фокуса окном). */
+  onLeave?: () => void;
+  /** Без отметки «такой фамилии ещё не было» — причт: его фамилии в память
+   *  фамилий прихода не идут. */
+  noSurnameMark?: boolean;
 };
 
 export default function IofField({
@@ -103,7 +116,13 @@ export default function IofField({
   infantRows,
   infantYear,
   infantPlace,
+  singleWord, enterToEmpty, onLeave, noSurnameMark,
 }: Props) {
+  const onLeaveRef = useRef(onLeave);
+  onLeaveRef.current = onLeave;
+  // Ушли из поля — можно показать отметку о новой фамилии; пока набирают,
+  // недописанная фамилия всегда «новая».
+  const [left, setLeft] = useState(false);
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const parsedRef = useRef<Parsed | null>(null);
   const [words, setWords] = useState<Item[]>([]);
@@ -267,8 +286,12 @@ export default function IofField({
         setNamesakes(twins ? kids.filter((k) => k.iof === kids[0].iof).length : 0);
         // Словарные имена идут первыми — первая строка не ребёнок, выбирать её
         // заранее безопасно; дети ниже, к ним — стрелкой.
-        const namesFirst = !!infantRows && !/\s/.test(value.trimStart()) && foundWords.length > 0;
-        setNamesFirstShown(!!infantRows && !/\s/.test(value.trimStart()));
+        // Единый порядок во всех полях ИОФ (Роман 06.10.2026): на первом и
+        // втором слове сверху слова словаря, ниже персоны — как у умершего.
+        // С третьего слова (фамилия) персоны сверху: их к этому месту одна-две.
+        const early = value.trimStart().split(/\s+/).length <= 2;
+        const namesFirst = early && foundWords.length > 0;
+        setNamesFirstShown(early);
         setActive(twins && !namesFirst ? -1 : 0);
         setOpen(foundPersons.length + foundWords.length > 0);
         setElsewhere(0);
@@ -487,8 +510,21 @@ export default function IofField({
     justPicked.current = true;
     closeSuggestions();
     const head = tokens.slice(0, wordIndex);
+    if (singleWord) {
+      // Имя ребёнка — одно слово: выбрали — и дальше, в ИОФ отца.
+      onChange([...head, item.value].join(" "), parsed);
+      const el = inputEl.current;
+      if (el) setTimeout(() => focusNextField(el), 0);
+      return;
+    }
     // Пробел сразу после подстановки: следующее слово набирается без пауз.
     onChange([...head, item.value].join(" ") + " ", parsed);
+  }
+
+  /** Enter без списка: дальше по форме; у матери — к первому пустому полю. */
+  function enterOn(el: HTMLInputElement, back: boolean) {
+    if (!back && enterToEmpty) focusNextEmptyField(el);
+    else focusNextField(el, back ? -1 : 1);
   }
 
   function pickActive() {
@@ -518,8 +554,8 @@ export default function IofField({
         // не сохраняет — список ещё открыт (то же правило, что выше).
         if (e.ctrlKey || e.metaKey) { e.stopPropagation(); return; }
         closeSuggestions();
-        focusNextField(e.currentTarget, e.shiftKey ? -1 : 1);
-      } else focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); // Shift+Enter — назад
+        enterOn(e.currentTarget, e.shiftKey);
+      } else enterOn(e.currentTarget, e.shiftKey); // Shift+Enter — назад
     } else if (e.key === "Escape") {
       closeSuggestions();
     }
@@ -531,11 +567,19 @@ export default function IofField({
   const differs = parsed && (
     (parsed.first_name_modern && parsed.first_name_modern !== parsed.first_name) ||
     (parsed.patronymic_modern && parsed.patronymic_modern !== parsed.patronymic));
+  // У «***» (имени в книге нет) звёздочки в современное написание не идут.
   const modern = differs
-    ? [parsed.first_name_modern ?? parsed.first_name,
+    ? [parsed.name_missing ? null : parsed.first_name_modern ?? parsed.first_name,
        parsed.patronymic_modern ?? parsed.patronymic,
        parsed.surname].filter(Boolean).join(" ")
     : "";
+
+  // Второе слово принято за фамилию (отчества нет): раньше программа об этом
+  // молчала — «Никанор Орнатский» у поручителя (Роман 06.10.2026). Окна тут
+  // не нужно, но понять, как она поняла слово, человек должен.
+  const surnameOnly = !!parsed?.surname && !parsed.patronymic && !parsed.patr_unknown
+    && value.trim().split(/\s+/).length >= 2;
+  const surnameNew = left && !noSurnameMark && !!parsed?.surname && !!parsed.surname_new;
 
   const personRows = persons.map((p, i) => (
               <li
@@ -597,6 +641,7 @@ export default function IofField({
           spellCheck={false}
           onChange={(e) => {
             typed.current = true;
+            setLeft(false);
             // Заглавные буквы — сразу, при наборе (Роман 05.10.2026). Длина
             // текста не меняется, курсор возвращаем на место.
             // Правим само поле сразу и ставим курсор на место — до того, как
@@ -635,6 +680,10 @@ export default function IofField({
               onChange(proper, null);
             }
             void checkOnLeave(e.relatedTarget);
+            if (e.relatedTarget !== null || document.hasFocus()) {
+              setLeft(true);
+              onLeaveRef.current?.();
+            }
           }}
         />
         {resolve && (
@@ -649,12 +698,14 @@ export default function IofField({
         )}
         {/* Что программа поняла: современное написание и пол. Строка появляется
             только когда есть что сказать, чтобы не занимать высоту зря. */}
-        {(modern || parsed?.gender || parsed?.name_missing) && (
+        {(modern || parsed?.gender || parsed?.name_missing || surnameOnly || surnameNew) && (
           <div className="parsedline">
             {parsed?.name_missing && <span className="tag">имя в книге не указано</span>}
             {modern && <span className="modern">{modern}</span>}
             {parsed?.gender && <span className="tag">{parsed.gender}</span>}
             {parsed?.father_name && <span className="tag">отец: {parsed.father_name}</span>}
+            {surnameOnly && <span className="tag" data-surname-only>без отчества, фамилия: {parsed?.surname}</span>}
+            {surnameNew && <span className="tag warn" data-surname-new>такой фамилии в приходе ещё не было</span>}
             {value.trim() && !parsed?.known_name && (
               <span className="tag warn">имени нет в словаре</span>
             )}

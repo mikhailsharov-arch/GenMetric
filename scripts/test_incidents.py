@@ -916,7 +916,85 @@ def incident_20261006_molcha_i_padenie():
           '"ui_one_column"' in parish and ":root.onecol .formroot" in css)
 
 
+def incident_20261006_otvet_na_sborku_05_10():
+    """Роман 06.10.2026, ответ на сборку 05.10 — он уже ведёт в программе
+    чистовую индексацию. У «Поручителя 4» «Никанор Орнатский» программа «никак
+    не отреагировала на неизвестное второе слово»; невесте предлагались мужские
+    отчества, поручителям — женские имена; у родственников в браках не было
+    подсказки персон; у нижней персоны список подсказок «обрезается нижней
+    границей окна»; у новой матери Enter останавливался на подставленном НП.
+    И в справочниках подсказывались тестовые строки шаблона Excel
+    («Петровская», «Галический», «Лодзинский»).
+
+    Защита: под полем ИОФ всегда видно, как понято второе слово; пол задан у
+    поручителей и учтён в связанных отчествах; список открывается вверх;
+    тестовые строки убраны из поставки и уходят при обновлении, только если
+    никем не заняты. Заодно — правила автоподстановок: они работают только в
+    новой записи, запись на правке не трогают.
+    """
+    iof = read("src/IofField.tsx")
+    check("под полем видно, что второе слово понято как фамилия", "data-surname-only" in iof and "без отчества, фамилия" in iof)
+    marriage = read("src/MarriageForm.tsx")
+    check("поручителям задан мужской пол — женских имён и отчеств не предлагают",
+          re.search(r'title=\{`Поручитель \$\{i \+ 1\}`\}.*?gender="М"', marriage, re.S) is not None)
+    check("у родственников в браках есть подсказка персон",
+          marriage.count("onPickPerson={pickRelative(") == 2)
+    sql = read("db/statements.sql")
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", sql, re.S))
+    check("связанные человеком отчества предлагаются по полу",
+          ":gender = 'Ж'" in blocks.get("suggest_patronymic", "") and "связанное отчество — по полу" in read("db/test_suggest.py"))
+    focus = read("src/focus.ts")
+    check("список подсказок у нижнего края открывается вверх, пол пересчитывается после прокрутки",
+          'classList.add("up")' in focus and "floorNow()" in focus and ".suggest.up" in read("src/styles.css"))
+    birth = read("src/BirthForm.tsx")
+    check("Enter в ИОФ матери ведёт к первому пустому полю", "enterToEmpty" in birth and "focusNextEmptyField(el)" in iof)
+    place_csv = read("db/seed/place.csv")
+    check("тестовых строк шаблона в поставке нет",
+          not any(w in place_csv for w in ("Лодзь", "Петровская", "Галический", "Котело")))
+    migrate = read("db/migrate.sql")
+    check("у установленных тестовые строки уходят, только если пункт не занят и не правлен",
+          "name_norm = 'лодзь'" in migrate and "NOT EXISTS (SELECT 1 FROM main.person_mention m WHERE m.place_id = main.place.id)" in migrate
+          and "updated_at IS NULL" in migrate and "«Котело» стоит в записи — остался" in read("db/test_upgrade.py"))
+    check("…и не возвращаются из общего файла приходов", "name_norm = 'лодзь'" in read("db/parish_sync.sql"))
+
+    # Автоподстановки — только в новой записи: «открыл, посмотрел, сохранил»
+    # не должно менять старую запись.
+    death = read("src/DeathForm.tsx")
+    check("звание по умолчанию выключено для записи на правке",
+          birth.count('defaultRank={editingId === null ?') == 5 and marriage.count("defaultRank={fresh ?") == 2
+          and "const fresh = editingId === null;" in marriage)
+    check("НП поручителя, НП родственника младенца и фамилия матери — не в записи на правке",
+          "if (editingId !== null) return;" in marriage.split("witnessPlaceManual = useRef", 1)[-1][:400]
+          and "editingId !== null || relPlaceManual.current" in death
+          and "if (editingId !== null) return;" in birth.split("async function appendFathersSurname()", 1)[-1][:120])
+    check("сохранение дожидается дописывания фамилии матери (Ctrl+Enter из её поля)",
+          "await motherLeaving.current;" in birth and "mother = latestMother.current;" in birth)
+    check("поручитель из подсказки со своим НП — «набран руками»",
+          "if (hint.place) witnessPlaceManual.current[i] = true;" in marriage)
+    check("строки шаблона не идут в частоты; чистка частот в миграции — только этих значений",
+          "NOT (kind = 'guberniya' AND value = 'Петровская')" in blocks.get("place_field_counts", "")
+          and "WHERE kind IN ('guberniya', 'uyezd', 'volost')" not in migrate)
+    block = read("src/PersonBlock.tsx")
+    check("звание по роли и полу, а не по общим частотам перечня",
+          "role_code LIKE :role" in blocks.get("rank_default", "") and 'invoke<string | null>("rank_default"' in block)
+    check("правки блока персоны идут от последнего состояния — подстановки не затирают друг друга",
+          "latest.current = next;" in block and "push({ ...latest.current, ...patch })" in block)
+    rec = read("src-tauri/core/src/records.rs")
+    names = read("src/names.ts")
+    check("слова-заглушки одни и те же в крейте и в окне",
+          all(f'"{w}"' in rec.split("NO_NAME_WORDS: &[&str]", 1)[-1][:160] and f'"{w}"' in names.split("NO_NAME_WORDS = [", 1)[-1][:160]
+              for w in ("имя", "нрзб", "н/д", "неизвестно", "неизв", "нет", "б/и")))
+    check("вероисповедание и поля карточки пункта идут в частоты",
+          'remember(conn, "confession"' in rec and "pub fn remember_card" in rec and "pub fn seed_usage" in rec
+          and "seed_usage(&conn)" in read("src-tauri/core/src/parish.rs"))
+    conf = read("src-tauri/tauri.conf.json")
+    check("текст лицензии шрифта едет в установщике и совпадает с исходным",
+          '"resources/Inter-OFL.txt"' in conf and read("src-tauri/resources/Inter-OFL.txt") == read("src/fonts/OFL.txt")
+          and read("src/fonts/OFL.txt") != "")
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261006_otvet_na_sborku_05_10,
     incident_20261006_molcha_i_padenie,
     incident_20261005_imya_ne_ukazano,
     incident_20261005_enter_i_uezd,

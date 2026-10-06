@@ -344,6 +344,79 @@ INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_u
 VALUES (:kind, :scope, :scope_key, :value, :value_norm, :count, datetime('now'))
 ON CONFLICT(kind, scope, scope_key, value) DO UPDATE SET count = excluded.count;
 
+-- @confession_counts
+-- Вероисповедания записей прихода с числом упоминаний: частоты по ним до
+-- 06.10.2026 не велись, и подсказка шла по алфавиту, а не «самое частое —
+-- первым» (Роман 06.10.2026: «абсолютно во всех полях»).
+SELECT trim(confession) AS value, count(*) AS n
+  FROM person_mention
+ WHERE trim(coalesce(confession, '')) <> ''
+ GROUP BY trim(confession);
+
+-- @place_field_counts
+-- То же для полей карточки пункта: тип, губерния, уезд, волость — по пунктам,
+-- на которые ссылаются записи, и по пунктам, заведённым человеком.
+-- Без четырёх значений из строк шаблона Excel («Петровская», «Лодзинский»,
+-- «Галический», «Котельская»): Роман просил их убрать (06.10.2026), а у него
+-- самого они заняты записями и остаются — подсчёт частот поднял бы их в
+-- верхний ярус подсказки (ревьюер 06.10.2026).
+WITH used AS (
+    SELECT np_type, guberniya, uyezd, volost FROM place
+     WHERE origin = 'user' OR EXISTS (SELECT 1 FROM person_mention m WHERE m.place_id = place.id)
+), flat AS (
+    SELECT 'np_type' AS kind, trim(np_type) AS value FROM used
+    UNION ALL SELECT 'guberniya', trim(guberniya) FROM used
+    UNION ALL SELECT 'uyezd', trim(uyezd) FROM used
+    UNION ALL SELECT 'volost', trim(volost) FROM used
+)
+SELECT kind, value, count(*) AS n FROM flat
+ WHERE coalesce(value, '') <> ''
+   AND NOT (kind = 'guberniya' AND value = 'Петровская')
+   AND NOT (kind = 'uyezd' AND value IN ('Лодзинский', 'Галический'))
+   AND NOT (kind = 'volost' AND value = 'Котельская')
+ GROUP BY kind, value;
+
+-- @usage_raise
+-- Первое заполнение частот поверх уже имеющихся: у уезда и губернии частоты
+-- есть от «Сохранить дело», и подсчёт по пунктам их не должен ни пропустить,
+-- ни занизить — берётся большее.
+INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)
+VALUES (:kind, :scope, :scope_key, :value, :value_norm, :count, datetime('now'))
+ON CONFLICT(kind, scope, scope_key, value) DO UPDATE SET count = max(count, excluded.count);
+
+-- @setting_get
+SELECT value FROM setting WHERE key = :key;
+
+-- @setting_put
+INSERT INTO setting (key, value) VALUES (:key, :value)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+
+-- @place_last_volost
+-- Волость последнего пункта, заведённого человеком, — в карточку следующего
+-- (Роман 06.10.2026: «предзаполнялось значением от последнего заведенного НП»).
+SELECT coalesce(volost, '') FROM place WHERE origin = 'user' ORDER BY id DESC LIMIT 1;
+
+-- @rank_default
+-- Самое частое звание роли и пола в приходе — в пустое поле звания (Роман
+-- 06.10.2026, вариант А). По упоминаниям роли, а не по общим частотам
+-- перечня: иначе восприемнице досталось бы «законная жена его» — матерей в
+-- приходе больше всех. :role — шаблон LIKE («godparent%», «father»).
+SELECT trim(rank) FROM person_mention
+ WHERE role_code LIKE :role AND trim(coalesce(rank, '')) <> ''
+   AND (:gender IS NULL OR gender = :gender)
+ GROUP BY trim(rank)
+ ORDER BY count(*) DESC, max(id) DESC
+ LIMIT 1;
+
+-- @surname_known
+-- Была ли такая фамилия в приходе — для отметки «такой фамилии ещё не было»
+-- (Роман 06.10.2026). Спрашивают сразу обе формы, мужскую и женскую: :a, :b.
+-- И с дореформенным «ъ» на конце: в частотах фамилия лежит как набрана.
+-- :c — вторая возможная мужская форма («Толстая» — «Толстый» или «Толстой»).
+SELECT EXISTS (SELECT 1 FROM lookup WHERE kind = 'surname' AND value_norm IN (:a, :b, :c, :a || 'ъ'))
+    OR EXISTS (SELECT 1 FROM usage_stat WHERE kind = 'surname' AND scope = 'global' AND scope_key = ''
+                                          AND value_norm IN (:a, :b, :c, :a || 'ъ'));
+
 -- @usage_has
 SELECT EXISTS (SELECT 1 FROM usage_stat WHERE kind = :kind);
 
@@ -533,9 +606,14 @@ SELECT form, 4, 0 FROM name_form
  WHERE kind LIKE 'patr%' AND form_norm LIKE :prefix ESCAPE '\'
    AND (:gender IS NULL OR gender = :gender)
 -- Связанные человеком отчества; «это не отчество» (цель пуста) не предлагаем.
+-- По полу — как словарные: у невесты предлагались и мужские (Роман
+-- 06.10.2026). Пола у соответствия отчества нет — он виден по окончанию
+-- написания: женское отчество кончается на «а» («Иванова», «Ивановна»).
 UNION ALL
 SELECT form, 3, 0 FROM name_alias
  WHERE kind = 'patr' AND target IS NOT NULL AND form_norm LIKE :prefix ESCAPE '\'
+   AND (:gender IS NULL OR :gender NOT IN ('М', 'Ж')
+        OR (:gender = 'Ж') = (rtrim(form_norm, 'ъ') LIKE '%а'))
 
 -- @suggest_place
 -- Населённые пункты живут в своей таблице, а не в плоских перечнях: у них

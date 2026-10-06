@@ -266,6 +266,34 @@ def run(driver, wait, archive):
     check("у девочки «№ ж. 7»", "№ ж. 7" in body)
     check("в мужской колонке ничего", "№ м." not in body)
 
+    print("\n5б. Новые команды спринта 06.10 — через настоящий Rust")
+    # Привязку параметров запросов в Rust Python-тесты не видят (грабли
+    # 26.09.2026). Команды зовём напрямую, как их зовёт окно: звание по
+    # умолчанию, отметка новой фамилии, волость последнего пункта.
+    driver.set_script_timeout(20)
+    called = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;"
+        "if (!call) { done({error: 'нет window.__TAURI_INTERNALS__.invoke'}); return; }"
+        "Promise.all(["
+        "  call('rank_default', {role: 'father', gender: 'М'}),"
+        "  call('rank_default', {role: 'godparent', gender: 'Ж'}),"
+        "  call('parse_iof', {text: 'Иван Петров Небывалов'}),"
+        "  call('place_check', {name: 'Несуществующее Тестовое'}),"
+        "]).then((r) => done({rank: r[0], rank_f: r[1], parsed: r[2], place: r[3]}),"
+        "        (e) => done({error: String(e)}));")
+    check("звание по умолчанию, разбор ИОФ и проверка пункта отвечают без ошибки",
+          "error" not in called, str(called)[:300])
+    if "error" not in called:
+        check("отметка новой фамилии приходит из Rust",
+              called["parsed"].get("surname") == "Небывалов" and called["parsed"].get("surname_new") is True,
+              str(called["parsed"])[:200])
+        check("у проверки пункта есть волость последнего заведённого",
+              called["place"].get("known") is False and isinstance(called["place"].get("last_volost"), str),
+              str(called["place"])[:200])
+        check("звание по умолчанию — строка или пусто", called["rank"] is None or isinstance(called["rank"], str),
+              str(called["rank"]))
+
     print("\n5а. «Всегда в столбик» — общая настройка, переживает перезапуск")
     click(driver, "//button[@aria-label='О программе']")
     click(driver, "//button[@data-onecol]")

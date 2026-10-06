@@ -32,6 +32,10 @@ pub struct ParsedIof {
     /// Имя в книге не указано: первым словом стоит системное «***» (или
     /// другие знаки без букв). Сверять не с чем — форма так и пишет.
     pub name_missing: bool,
+    /// Фамилия есть, и ни её, ни её формы другого рода в приходе ещё не
+    /// набирали: форма покажет «такой фамилии в приходе ещё не было» — так
+    /// видна опечатка («Тамилин» при «Томилин»).
+    pub surname_new: bool,
 }
 
 /// Системное слово «имя в книге не указано» (спека 2026-10-05, часть Б, п. 1).
@@ -46,9 +50,57 @@ pub const NO_NAME: &str = "***";
 /// увидеть человек — в форме окном сверки, при импорте строкой в списке на
 /// сверку. Копия для окна — `noNameWord` в src/names.ts: правишь одно — правь
 /// другое (scripts/test_names.mjs сверяет те же примеры).
+///
+/// 06.10.2026 Роман расширил список: «общепринятые текстовые сокращения,
+/// означающие отсутствие данных или нечитаемый текст» — `NO_NAME_WORDS`,
+/// без учёта регистра, с точкой на конце или без.
 pub fn is_no_name(word: &str) -> bool {
     let word = word.trim();
-    !word.is_empty() && (!word.chars().any(|c| c.is_alphanumeric()) || word.to_lowercase() == "имя")
+    if word.is_empty() {
+        return false;
+    }
+    if !word.chars().any(|c| c.is_alphanumeric()) {
+        return true;
+    }
+    let lower = word.to_lowercase();
+    NO_NAME_WORDS.contains(&lower.trim_end_matches('.'))
+}
+
+/// Слова-заглушки вместо имени. Тот же список — в `src/names.ts`.
+pub const NO_NAME_WORDS: &[&str] = &["имя", "нрзб", "н/д", "неизвестно", "неизв", "нет", "б/и"];
+
+/// Мужская и женская формы одной фамилии — ключи поиска обеих: «томилин» и
+/// «томилина», «томский» и «томская». У фамилии без родового окончания
+/// («шевченко») обе одинаковы. Копия для окна — `feminineSurname` в
+/// src/names.ts (там нужна только женская форма).
+pub fn surname_pair(surname: &str) -> (String, String) {
+    let n = normalize(surname);
+    let n = n.strip_suffix('ъ').map(str::to_string).unwrap_or(n);
+    let cut = |s: &str, k: usize| -> String { s.chars().take(s.chars().count().saturating_sub(k)).collect() };
+    let ends = |tails: &[&str]| tails.iter().any(|t| n.ends_with(t));
+    if ends(&["ова", "ева", "ина", "ына"]) {
+        (cut(&n, 1), n)
+    } else if ends(&["ов", "ев", "ин", "ын"]) {
+        (n.clone(), format!("{n}а"))
+    } else if ends(&["ская", "цкая"]) {
+        (format!("{}ий", cut(&n, 2)), n)
+    } else if ends(&["ский", "цкий", "ской", "цкой", "ый", "ой"]) {
+        (n.clone(), format!("{}ая", cut(&n, 2)))
+    } else if ends(&["ая"]) {
+        // «Белая» — «Белый» или «Толстая» — «Толстой»: мужскую форму не
+        // угадать, пара ищется по обеим (вторая — в запросе, через ключ ниже).
+        (format!("{}ый", cut(&n, 2)), n)
+    } else {
+        (n.clone(), n)
+    }
+}
+
+/// Самое частое звание роли и пола в приходе; None — таких записей ещё нет.
+pub fn default_rank(conn: &Connection, role: &str, gender: Option<&str>) -> Result<Option<String>, String> {
+    conn.query_row(&statement("rank_default")?,
+                   rusqlite::named_params! { ":role": role, ":gender": gender }, |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 /// Похоже ли слово на отчество по окончанию — чтобы не сверять как отчество
@@ -74,6 +126,7 @@ pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> 
         patr_alias: None,
         patr_unknown: None,
         name_missing: false,
+        surname_new: false,
     };
     if tokens.is_empty() {
         return Ok(out);
@@ -179,7 +232,18 @@ pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> 
         }
     }
     if !rest.is_empty() {
-        out.surname = Some(rest.join(" "));
+        let surname = rest.join(" ");
+        let (a, b) = surname_pair(&surname);
+        // «Толстая»: мужская форма — «Толстый» или «Толстой».
+        let c = match a.strip_suffix("ый") {
+            Some(stem) if b.ends_with("ая") => format!("{stem}ой"),
+            _ => a.clone(),
+        };
+        let known: bool = conn
+            .query_row(&statement("surname_known")?, rusqlite::named_params! { ":a": a, ":b": b, ":c": c }, |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        out.surname_new = !known;
+        out.surname = Some(surname);
     }
     Ok(out)
 }
@@ -320,6 +384,68 @@ pub fn seed_surnames(conn: &Connection) -> Result<usize, String> {
     }
     tx.commit().map_err(e)?;
     Ok(rows.len())
+}
+
+/// Первое заполнение частот там, где они до 06.10.2026 не велись:
+/// вероисповедание (по записям) и поля карточки пункта (по пунктам). Один раз
+/// на приход — отметка `usage_seeded` в его настройках; дальше частоты
+/// наращивает сохранение. Уже имеющиеся частоты (уезд и губерния дела) не
+/// занижаются: берётся большее. Записи и пункты не меняются.
+pub fn seed_usage(conn: &Connection) -> Result<(), String> {
+    const MARK: &str = "usage_seeded";
+    const VERSION: &str = "1";
+    let e = |e: rusqlite::Error| e.to_string();
+    let done: Option<String> = conn
+        .query_row(&statement("setting_get")?, rusqlite::named_params! { ":key": MARK }, |r| r.get(0))
+        .optional().map_err(e)?;
+    if done.as_deref() == Some(VERSION) {
+        return Ok(());
+    }
+    let mut rows: Vec<(String, String, i64)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&statement("confession_counts")?).map_err(e)?;
+        let found = stmt.query_map([], |r| Ok(("confession".to_string(), r.get(0)?, r.get(1)?))).map_err(e)?;
+        rows.extend(found.collect::<Result<Vec<_>, _>>().map_err(e)?);
+        let mut stmt = conn.prepare(&statement("place_field_counts")?).map_err(e)?;
+        let found = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
+        rows.extend(found.collect::<Result<Vec<_>, _>>().map_err(e)?);
+    }
+    let parish: String = conn
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": 0 },
+                   |r| r.get::<_, Option<String>>(0))
+        .optional().map_err(e)?.flatten().unwrap_or_default();
+    let raise = statement("usage_raise")?;
+    // Одной транзакцией вместе с отметкой: оборвись подсчёт посередине —
+    // отметки нет, и при следующем открытии он пройдёт заново целиком.
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    for (kind, value, n) in &rows {
+        for (scope, key) in [("parish", parish.as_str()), ("global", "")] {
+            tx.execute(&raise, rusqlite::named_params! {
+                ":kind": kind, ":scope": scope, ":scope_key": key,
+                ":value": value, ":value_norm": normalize(value), ":count": n,
+            }).map_err(e)?;
+        }
+    }
+    tx.execute(&statement("setting_put")?, rusqlite::named_params! { ":key": MARK, ":value": VERSION }).map_err(e)?;
+    tx.commit().map_err(e)
+}
+
+/// Поля карточки нового пункта — в перечни и в частоты: следующая карточка
+/// предложит самое частое первым.
+pub fn remember_card(conn: &Connection, kind: &str, value: Option<&str>) -> Result<(), String> {
+    let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) else { return Ok(()) };
+    let parish: String = conn
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": 0 },
+                   |r| r.get::<_, Option<String>>(0))
+        .optional().map_err(|e| e.to_string())?.flatten().unwrap_or_default();
+    extend_lookup(conn, kind, Some(v))?;
+    let bump = statement("usage_bump")?;
+    for (scope, key) in [("parish", parish.as_str()), ("global", "")] {
+        conn.execute(&bump, rusqlite::named_params! {
+            ":kind": kind, ":scope": scope, ":scope_key": key, ":value": v, ":value_norm": normalize(v),
+        }).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Набранное в карточке пункта — в перечни (губерния, уезд, волость), чтобы
@@ -561,6 +687,12 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             if let Some(place) = person.place.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 remember(conn, "place", place, case_id, parish)?;
             }
+            // Вероисповедание — тоже в частоты: без них подсказка шла по
+            // алфавиту (Роман 06.10.2026: самое частое первым «абсолютно во
+            // всех полях»).
+            if let Some(v) = person.confession.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                remember(conn, "confession", v, case_id, parish)?;
+            }
             // «***» (имя не указано) — не имя: в частоты и память персон не идёт.
             let nameless = person.first_name.as_deref().map(str::trim) == Some(NO_NAME);
             if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty() && !nameless) {
@@ -793,10 +925,11 @@ mod tests {
         let plain = parse_iof_in(&conn, "Мария Иванова").unwrap();
         assert!(plain.known_name && !plain.name_missing);
         // Те же примеры — в scripts/test_names.mjs для копии правила в окне.
-        for word in ["***", "*", "—", "?", "-", "Имя", "имя", "ИМЯ"] {
+        for word in ["***", "*", "—", "?", "-", "Имя", "имя", "ИМЯ", "_", "...", "нрзб", "Нрзб.", "н/д", "Н/Д",
+                     "неизвестно", "Неизв", "неизв.", "нет", "Нет", "б/и", "Б/и"] {
             assert!(is_no_name(word), "{word}");
         }
-        for word in ["Иван", "2", "", "Имярек", "Им", "N", "*а"] {
+        for word in ["Иван", "2", "", "Имярек", "Им", "N", "*а", "Нета", "Неизвестнов", "нд"] {
             assert!(!is_no_name(word), "{word}");
         }
 
@@ -823,11 +956,79 @@ mod tests {
         assert_eq!(num("SELECT count(*) FROM spouse_index WHERE wife_iof LIKE '***%'"), 0, "…и в память пар");
         assert_eq!(num("SELECT count(*) FROM usage_stat WHERE kind = 'first_name' AND value = '***'"), 0);
         assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'surname' AND scope = 'parish' AND value = 'Томилина'"), 2);
+        let surnames_then = num("SELECT count(*) FROM person_mention WHERE surname = 'Томилина'");
+        assert_eq!(surnames_then, 2);
         assert_eq!(seed_surnames(&conn).unwrap(), 0, "частоты фамилий уже есть — второй раз не заполняются");
         // Приход, набранный до подсказки фамилий: частоты считаются по записям.
         conn.execute("DELETE FROM usage_stat WHERE kind = 'surname'", []).unwrap();
         assert_eq!(seed_surnames(&conn).unwrap(), 1);
         assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'surname' AND scope = 'parish' AND value_norm = 'томилина'"), 2);
+        // Отметка «такой фамилии ещё не было»: набранная фамилия известна в
+        // обеих формах, опечатка — нет.
+        assert!(!parse_iof_in(&conn, "Иван Петров Томилин").unwrap().surname_new, "мужская форма набранной «Томилина»");
+        assert!(!parse_iof_in(&conn, "Анна Иванова Томилина").unwrap().surname_new);
+        assert!(parse_iof_in(&conn, "Иван Петров Тамилин").unwrap().surname_new, "опечатка видна");
+        assert!(!parse_iof_in(&conn, "Иван Петров").unwrap().surname_new, "нет фамилии — нет отметки");
+        for known in ["Толстой", "Белый", "Ивановъ"] {
+            conn.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) VALUES ('surname', 'global', '', ?1, ?2, 1)",
+                         rusqlite::params![known, normalize(known)]).unwrap();
+        }
+        for typed in ["Анна Иванова Толстая", "Анна Иванова Белая", "Иван Петров Иванов", "Анна Иванова Иванова"] {
+            assert!(!parse_iof_in(&conn, typed).unwrap().surname_new, "{typed}");
+        }
+        conn.execute("DELETE FROM usage_stat WHERE kind = 'surname' AND value IN ('Толстой', 'Белый', 'Ивановъ')", []).unwrap();
+        assert_eq!(surname_pair("Томский"), ("томский".into(), "томская".into()));
+        assert_eq!(surname_pair("Томская"), ("томский".into(), "томская".into()));
+        assert_eq!(surname_pair("Ивановъ"), ("иванов".into(), "иванова".into()));
+        assert_eq!(surname_pair("Шевченко"), ("шевченко".into(), "шевченко".into()));
+        assert_eq!(surname_pair("Толстой"), ("толстой".into(), "толстая".into()));
+        assert_eq!(surname_pair("Белая"), ("белый".into(), "белая".into()));
+        // Звание по умолчанию — по роли и полу, не по общим частотам перечня.
+        let ranked = |role: &str, first: &str, gender: &str, rank: &str| PersonInput {
+            rank: Some(rank.into()), gender: Some(gender.into()), confession: Some("православного".into()),
+            ..person(role, first, "Томилина")
+        };
+        for (i, people) in [
+            vec![ranked("mother", "Анна", "Ж", "законная жена его"), ranked("godparent1", "Мария", "Ж", "крестьянская девица")],
+            vec![ranked("mother", "Дарья", "Ж", "законная жена его"), ranked("godparent1", "Иван", "М", "крестьянин")],
+            vec![ranked("mother", "Анна", "Ж", "законная жена его"), ranked("godparent2", "Мария", "Ж", "крестьянская девица")],
+        ].into_iter().enumerate() {
+            save_entry(&conn, &EntryInput { id: None, case_id: 1, section: 1, page: None, no_male: None,
+                no_female: Some(i as i64 + 2), event_day: None, event_month: None, event_year: Some(1897),
+                rite_day: None, rite_month: None, rite_year: Some(1897), note: None, uncertain: None, persons: people }).unwrap();
+        }
+        assert_eq!(default_rank(&conn, "godparent%", Some("Ж")).unwrap().as_deref(), Some("крестьянская девица"));
+        assert_eq!(default_rank(&conn, "godparent%", Some("М")).unwrap().as_deref(), Some("крестьянин"));
+        assert_eq!(default_rank(&conn, "witness%", Some("М")).unwrap(), None, "поручителей ещё нет — подставлять нечего");
+        // Вероисповедание идёт в частоты; у набранного раньше — считается один
+        // раз на приход, имеющиеся частоты не занижаются, строки шаблона Excel
+        // в частоты не идут.
+        assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'confession' AND scope = 'parish' AND value = 'православного'"), 6);
+        conn.execute("DELETE FROM usage_stat WHERE kind = 'confession'", []).unwrap();
+        conn.execute_batch(
+            "INSERT INTO place (id, name, name_norm, np_type, guberniya, uyezd, volost, origin)
+             VALUES (7001, 'Лодзь', 'лодзь', 'г.', 'Петровская', 'Лодзинский', NULL, 'seed'),
+                    (7002, 'Выселки Тестовые', 'выселки тестовые', 'д.', 'Костромская', 'Макарьевский', 'Завражная', 'user');
+             UPDATE person_mention SET place_id = 7001 WHERE id = (SELECT min(id) FROM person_mention);
+             INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count)
+             VALUES ('uyezd', 'global', '', 'Макарьевский', 'макарьевский', 5);").unwrap();
+        seed_usage(&conn).unwrap();
+        assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'confession' AND scope = 'global' AND value = 'православного'"), 6);
+        assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'uyezd' AND scope = 'global' AND value = 'Макарьевский'"), 5,
+                   "частота от «Сохранить дело» не занижена подсчётом по пунктам");
+        assert_eq!(num("SELECT count(*) FROM usage_stat WHERE kind = 'volost' AND value = 'Завражная'"), 2, "уезд был — волость всё равно посчитана");
+        assert_eq!(num("SELECT count(*) FROM usage_stat WHERE value IN ('Петровская', 'Лодзинский')"), 0, "строки шаблона в частоты не идут");
+        assert_eq!(num("SELECT count(*) FROM usage_stat WHERE kind = 'np_type' AND value = 'г.'"), 2, "а тип занятого пункта — идёт");
+        conn.execute("DELETE FROM usage_stat WHERE kind = 'confession'", []).unwrap();
+        seed_usage(&conn).unwrap();
+        assert_eq!(num("SELECT count(*) FROM usage_stat WHERE kind = 'confession'"), 0, "второй раз не заполняется");
+        conn.execute("UPDATE person_mention SET place_id = NULL WHERE place_id = 7001", []).unwrap();
+        // Поля карточки пункта: частота растёт, самое частое — первым.
+        for _ in 0..2 {
+            remember_card(&conn, "volost", Some("Завражная")).unwrap();
+        }
+        remember_card(&conn, "volost", Some("Абрамовская")).unwrap();
+        assert_eq!(num("SELECT count FROM usage_stat WHERE kind = 'volost' AND scope = 'global' AND value = 'Завражная'"), 3);
         // В выгрузке Familio имени у «***» нет.
         crate::export::familio_rows(&conn).unwrap();
         assert_eq!(num("SELECT count(*) FROM x_person WHERE role_code = 'mother' AND first_m IS NULL"), 1);
