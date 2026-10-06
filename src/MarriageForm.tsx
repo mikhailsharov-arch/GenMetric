@@ -114,6 +114,9 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   const [clergy1, clergy2, clergy3] = clergyState.people;
 
   const [editingId, setEditingId] = useState<number | null>(null);
+  /** Год, сохранённый на «Деле», пока запись была открыта на правку: после
+   *  правки форма встаёт на него, а не на год до правки. */
+  const yearWhileEditing = useRef<number | null>(null);
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
                                month: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
@@ -256,7 +259,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
 
     setBusy(true);
     try {
-      const done = await invoke<{ id: number; case_id: number; new_case_year: number | null }>("entry_save", {
+      const done = await invoke<{ id: number; case_id: number; new_case_year: number | null;
+                                  fallback_case: boolean; fallback_year: number | null }>("entry_save", {
         entry: {
           id: editingId, case_id: mkCase.id, section: 2, page,
           no_male: count, no_female: null,
@@ -272,6 +276,11 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       if (done.new_case_year !== null)
         warn(`Новый год книги ${done.new_case_year}`,
              "ему заведено своё дело копией прошлого — проверьте фонд, опись и дело на экране «Дело»");
+      // Запись без года, а её дело убрано: легла в первое дело прихода — не молча.
+      if (done.fallback_case)
+        warn("Запись без года привязана к другому делу",
+             `дела, с которым работала форма, больше нет — запись легла в дело ${
+               done.fallback_year !== null ? `${done.fallback_year} года` : "без года"}; поставьте ей год, и она перейдёт в своё`);
       onSaved(done.case_id);
       if (editingId !== null) restoreAfterEdit();
       else {
@@ -289,7 +298,11 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   // Экран «Дело» сохранён с годом — форма встаёт на него; запись, открытую
   // на правку, это не трогает. «Открыть запись» из списка на сверку — сюда же.
   useEffect(() => {
-    if (workYear && editingId === null) setYear(workYear.year);
+    if (!workYear) return;
+    // Запись открыта на правку — год у неё свой; новый год дела форма
+    // подхватит, когда правка закончится (restoreAfterEdit).
+    if (editingId === null) setYear(workYear.year);
+    else yearWhileEditing.current = workYear.year;
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 2) void openEntry(openReq.id);
@@ -361,8 +374,9 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     setEditingId(null);
     next();
     if (b) {
-      setPage(b.page); setCount(b.count); setYear(b.year); setMonth(b.month);
+      setPage(b.page); setCount(b.count); setYear(yearWhileEditing.current ?? b.year); setMonth(b.month);
     }
+    yearWhileEditing.current = null;
     clergyState.close();
   }
 

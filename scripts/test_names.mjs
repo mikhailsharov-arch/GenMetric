@@ -1,6 +1,6 @@
-// Заглавные буквы в ИОФ — src/names.ts. Запуск:
+// Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { titleCase } from "../src/names.ts";
+import { noNameWord, showNoName, titleCase } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -19,5 +19,21 @@ check("иоаннъ", "Иоаннъ");
 check("МакАртур", "МакАртур");
 check("***", "***");
 check("", "");
+
+// «Имени нет»: копия records::is_no_name из крейта — те же примеры, что в его
+// тесте no_name_and_surnames (src-tauri/core/src/records.rs).
+function same(title, got, expected) {
+  if (got === expected) { ok++; console.log(`  [ок]     ${title}`); }
+  else { fail++; console.log(`  [ОШИБКА] ${title}: получили ${JSON.stringify(got)}, ждали ${JSON.stringify(expected)}`); }
+}
+for (const word of ["***", "*", "—", "?", "-", "Имя", "имя", "ИМЯ"]) same(`«${word}» — имени нет`, noNameWord(word), true);
+for (const word of ["Иван", "2", "", "Имярек", "Им", "N", "*а"]) same(`«${word}» — не заглушка`, noNameWord(word), false);
+same("«— Иванова Петрова» → «*** Иванова Петрова»", showNoName("— Иванова Петрова"), "*** Иванова Петрова");
+same("«Имя Иванова» → «*** Иванова»", showNoName("Имя Иванова"), "*** Иванова");
+same("«***» не меняется", showNoName("*** Иванова"), "*** Иванова");
+same("обычное имя не меняется", showNoName("Иван Петров"), "Иван Петров");
+same("цифра не меняется — её увидит окно сверки", showNoName("2 Иванова"), "2 Иванова");
+same("пробел в начале сохраняется", showNoName(" ? Иванова"), " *** Иванова");
+same("пустое поле не меняется", showNoName(""), "");
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

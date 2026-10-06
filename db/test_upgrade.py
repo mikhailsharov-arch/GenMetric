@@ -157,6 +157,24 @@ def build_old_database(path: Path) -> None:
                "VALUES (1, 'clergy1', 130, 'Двойник', 9001)")
     db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id) "
                "VALUES (1, 'clergy1', 140, 'Тёзка', 9002)")
+    # 06.10.2026: пустая строка с МЕНЬШИМ номером рядом с подробной — раньше
+    # она оставалась «лучшей», и двойники не сливались. И тёзки: при двух
+    # разных подробных строках пустая не сливается ни в одну.
+    db.execute("INSERT INTO place (id, name, name_norm, origin) VALUES (9010, 'Пустошка Тестовая', 'пустошка тестовая', 'user')")
+    db.execute("INSERT INTO place (id, name, name_norm, np_type, uyezd, origin) "
+               "VALUES (9011, 'Пустошка Тестовая', 'пустошка тестовая', 'д.', 'Макарьевский', 'user')")
+    db.execute("INSERT INTO place (id, name, name_norm, origin) VALUES (9020, 'Хмельничное Тестовое', 'хмельничное тестовое', 'user')")
+    for pid, uyezd in ((9021, "Макарьевский"), (9022, "Кологривский")):
+        db.execute("INSERT INTO place (id, name, name_norm, np_type, uyezd, origin) "
+                   "VALUES (?, 'Хмельничное Тестовое', 'хмельничное тестовое', 'д.', ?, 'user')", (pid, uyezd))
+    # Пустая строка с набранным руками полным местом — не сливается: набранное не стирается.
+    db.execute("INSERT INTO place (id, name, name_norm, full_location, origin) "
+               "VALUES (9030, 'Займище Тестовое', 'займище тестовое', 'за рекой, мой текст', 'user')")
+    db.execute("INSERT INTO place (id, name, name_norm, np_type, uyezd, origin) "
+               "VALUES (9031, 'Займище Тестовое', 'займище тестовое', 'д.', 'Макарьевский', 'user')")
+    for order, (who, pid) in enumerate((("Пустой", 9010), ("Ничей", 9020), ("Заречный", 9030))):
+        db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id) "
+                   "VALUES (1, 'clergy1', ?, ?, ?)", (150 + order, who, pid))
     # Память персон с дублями (техдолг В6, 27.09.2026): без места персона
     # задваивалась при каждом сохранении — NULL в UNIQUE не равен NULL.
     db.executemany(
@@ -309,6 +327,16 @@ def main() -> int:
         check("тёзка с другими подробностями остался, упоминание — при нём",
               one("SELECT count(*) FROM place WHERE name_norm = 'малово'") == 2
               and one("SELECT place_id FROM person_mention WHERE first_name = 'Тёзка'") == 9002)
+        check("пустая строка с меньшим номером слита в подробную, упоминание переведено (06.10.2026)",
+              one("SELECT count(*) FROM place WHERE id = 9010") == 0
+              and db.execute("SELECT p.id, p.uyezd FROM person_mention m JOIN place p ON p.id = m.place_id "
+                             "WHERE m.first_name = 'Пустой'").fetchone() == (9011, "Макарьевский"))
+        check("при тёзках пустая строка не слита ни в одну — неясно, чья она",
+              one("SELECT count(*) FROM place WHERE name_norm = 'хмельничное тестовое'") == 3
+              and one("SELECT place_id FROM person_mention WHERE first_name = 'Ничей'") == 9020)
+        check("пустая строка с набранным руками полным местом осталась",
+              one("SELECT count(*) FROM place WHERE name_norm = 'займище тестовое'") == 2
+              and one("SELECT place_id FROM person_mention WHERE first_name = 'Заречный'") == 9030)
         check("упоминаний без пункта после слияния нет",
               one("SELECT count(*) FROM person_mention m WHERE m.place_id IS NOT NULL "
                   "AND NOT EXISTS (SELECT 1 FROM place p WHERE p.id = m.place_id)") == 0)
@@ -380,6 +408,11 @@ def main() -> int:
               db.execute("SELECT value FROM setting WHERE key='repair_count_column'").fetchone()[0] == "1")
         # Соответствия имён — пользовательские, обновление их не трогает
         # (в отличие от name_form, которая перезаливается целиком).
+        check("повторное слияние двойников ничего не изменило",
+              db.execute("SELECT count(*) FROM place WHERE id IN (9011, 9020, 9021, 9022, 9030, 9031)").fetchone()[0] == 6
+              and db.execute("SELECT group_concat(place_id, ',') FROM (SELECT place_id FROM person_mention "
+                             "WHERE first_name IN ('Пустой', 'Ничей', 'Заречный') ORDER BY sort_order)").fetchone()[0]
+              == "9011,9020,9030")
         check("поправленный в карточке пункт поставки не задвоен",
               db.execute("SELECT count(*) FROM place WHERE name_norm='бухарино'").fetchone()[0] == 1)
         check("переименованный пункт поставки не вернулся под старым названием",

@@ -823,7 +823,101 @@ def incident_20261005_imya_ne_ukazano():
           "WHEN 'case' THEN 1" not in strip_comments(blocks.get("suggest_ranked", "WHEN 'case' THEN 1")))
 
 
+def incident_20261006_molcha_i_padenie():
+    """Спринт «Надёжность и хвосты», 06.10.2026. До человека эти поломки не
+    дошли — их нашли проверяющий и ревьюер на сборках 02.10–06.10, — но каждая
+    была из уже знакомых классов: «программа сделала молча» и «упала, оставив
+    мусор». С `panic = "abort"` в выпуске паника при разборе битого файла
+    Excel закрывала программу без объяснения, а посреди импорта оставляла
+    файл прихода без строки в перечне. Набор и импорт по-разному решали, что
+    такое «имени нет». «—» превращалось в «***» только в базе, лишняя цифра
+    дня пропадала, запись без года уходила в чужое дело — всё без единого
+    слова человеку.
+
+    Защита: перехват паники в крейте (тесты panic_becomes_error и
+    open_create_and_share), одно правило имени и его копия в окне с общими
+    примерами, пометка `fallback_case`, оговорка о годе-опечатке, имя копии
+    по файлу прихода, запросы к делу — в statements.sql.
+    """
+    cargo = strip_comments(re.sub(r"(?m)#.*$", "", read("src-tauri/Cargo.toml")))
+    check('в выпуске нет panic = "abort" — паника перехватывается', "panic" not in cargo, cargo[-120:].replace("\n", " | "))
+    lib = read("src-tauri/core/src/lib.rs")
+    check("перехват паники — в крейте и с тестом", "pub fn guarded<" in lib and "catch_unwind" in lib and "fn panic_becomes_error" in lib)
+    parish = read("src-tauri/core/src/parish.rs")
+    check("наполнение нового прихода идёт под перехватом, и это проверено",
+          'crate::guarded("наполнение нового прихода"' in parish and 'panic!("разбор сломался")' in parish)
+    main = read("src-tauri/src/main.rs")
+    inspect = main.split("async fn import_inspect(", 1)[-1].split("\n}\n", 1)[0]
+    check("разбор файла перед импортом — под перехватом", "genmetric_core::guarded(" in inspect)
+
+    rec = read("src-tauri/core/src/records.rs")
+    imp = read("src-tauri/core/src/import.rs")
+    check("правило «имени нет» одно: импорт зовёт records::is_no_name",
+          "all(is_no_name)" in imp and "is_alphabetic" not in strip_comments(imp))
+    names = read("src/names.ts")
+    check("копия правила в окне — с теми же примерами в обоих тестах",
+          "export function noNameWord" in names and "records::is_no_name" in names
+          and all(w in read("scripts/test_names.mjs") and w in rec for w in ('"Имярек"', '"ИМЯ"', '"—"')))
+    check("заглушка заменяется на «***» в самом поле при уходе из него",
+          "showNoName(titleCase(" in read("src/IofField.tsx"))
+
+    body = rec.split("#[cfg(test)]", 1)[0]
+    check("запросов к mk_case в records.rs нет — они в statements.sql",
+          "mk_case" not in strip_comments(body), "литеральный запрос к делу вернулся в код")
+    sql = read("db/statements.sql")
+    check("блоки case_parish_key и case_or_first на месте", "-- @case_parish_key" in sql and "-- @case_or_first" in sql)
+    check("запись без года в чужом деле помечена, и формы об этом говорят",
+          "fallback_case: fallback.is_some()" in rec
+          and all("done.fallback_case" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")))
+    check("год-опечатка при импорте: оговорка в отчёте и тест", "fn odd_years(" in imp and "fn odd_year_is_reported" in imp
+          and "odd_years" in read("src/ParishDialog.tsx"))
+
+    db = read("src-tauri/core/src/db.rs")
+    check("копия перед обновлением называется по файлу прихода",
+          'format!("{stem}{BACKUP_MARK}{seconds}.sqlite")' in db and "genmetric-до-обновления-{seconds}" not in db)
+    check("копии и заменённые файлы приходами не становятся", "contains(crate::db::BACKUP_MARK)" in parish)
+    migrate = read("db/migrate.sql")
+    check("слияние двойников: лучшая строка — с подробностями; при тёзках пустая не сливается",
+          "ORDER BY (b.sig = '||||')" in migrate and "s.kinds <= 1" in migrate
+          and "при тёзках пустая строка не слита" in read("db/test_upgrade.py"))
+
+    num = read("src/NumberField.tsx")
+    check("поле числа не отбрасывает набранное молча", "reject()" in num and "onBlur" in num)
+    check("…и не начинает год заново с одной цифры", "Number(tail) >= Math.max(1, min)" in num)
+    check("выгрузки идут под перехватом паники", read("src-tauri/src/export.rs").count("genmetric_core::guarded(") == 2)
+    check("окно списка на сверку не закрывается при занятой форме",
+          "dirtyForms().includes(form)" in read("src/CaseHeader.tsx") and "data-review-busy" in read("src/ReviewDialog.tsx"))
+    forms = [read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")]
+    check("год дела, сохранённый во время правки, форма подхватывает после неё",
+          all("setYear(yearWhileEditing.current ?? b.year)" in f for f in forms))
+    check("пустой список младенцев из-за НП объясняется", "data-infant-elsewhere" in read("src/IofField.tsx"))
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", sql, re.S))
+    check("фамилии в подсказке — по полу, в обеих ветках запроса",
+          ":gender = 'Ж'" in blocks.get("surname_gender_filter", "") and "FROM lookup pair" in blocks.get("surname_gender_filter", "")
+          and lib.count("surname_gender_filter") >= 1
+          and "fn suggest_sql_runs" in lib)
+
+    export = read("src-tauri/src/export.rs")
+    check("«Найти на Familio» открывает только адрес, собранный крейтом",
+          "genmetric_core::familio_search_url(" in export and "pub fn open_familio(" in export
+          and "url: String" not in export.split("pub fn open_familio(", 1)[-1].split(")", 1)[0])
+    check("адрес поиска — title и georequisites (параметр search страница не читает)",
+          "places?title=" in lib and "&georequisites=" in lib and "places?search=" not in strip_comments(lib))
+    e2e = read("scripts/e2e/windows.py")
+    check("e2e грузит файл импорта несколькими частями и сверяет число частей",
+          "window.__genmetricChunk = 1024" in e2e and "data-parts" in e2e and "data-familio-find" in e2e)
+    css = read("src/styles.css")
+    check("шрифт Inter вшит: файлы, лицензия, строка на «О программе»",
+          all((REPO / "src" / "fonts" / f).exists() for f in
+              ("inter-cyrillic-wght-normal.woff2", "inter-cyrillic-ext-wght-normal.woff2",
+               "inter-latin-wght-normal.woff2", "OFL.txt"))
+          and 'font-family: "Inter", "Segoe UI"' in css and "SIL Open Font" in read("src/App.tsx"))
+    check("«всегда в столбик» — общая настройка, плотная раскладка отключается одним правилом",
+          '"ui_one_column"' in parish and ":root.onecol .formroot" in css)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261006_molcha_i_padenie,
     incident_20261005_imya_ne_ukazano,
     incident_20261005_enter_i_uezd,
     incident_20261003_otvet_na_prihody,

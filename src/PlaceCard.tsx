@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import Suggest from "./Suggest";
@@ -48,6 +48,7 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
   const [url, setUrl] = useState(existing?.familio_url ?? "");
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
+  const urlField = useRef<HTMLInputElement>(null);
 
   async function save() {
     if (busy) return;
@@ -129,10 +130,26 @@ export default function PlaceCard({ name, similar, defaults, existing, onPick, o
       <div className="field">
         <label>Familio</label>
         <div className="fieldbody">
-          <input data-field value={url} onChange={(e) => setUrl(e.target.value)}
+          <input data-field ref={urlField} value={url} onChange={(e) => setUrl(e.target.value)}
                  placeholder="ссылка, если есть" autoComplete="off" spellCheck={false}
                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (!e.ctrlKey && !e.metaKey) void save(); } }} />
         </div>
+      </div>
+      {/* Роман 03.10.2026, задача 3: найти пункт на Familio, чтобы взять оттуда
+          ссылку. Ищем по тому, что сейчас набрано в карточке. Вне обхода
+          клавишами: Enter по полям ведёт к сохранению, как раньше. */}
+      <div className="familiofind">
+        <button type="button" className="toggle small" tabIndex={-1} data-familio-find
+                title="Откроет в браузере поиск Familio по названию, губернии, уезду и волости из карточки"
+                onClick={() => {
+                  invoke<string>("open_familio", {
+                    name: (existing ? title : name).trim(), guberniya, uyezd, volost,
+                  }).catch((e) => report("Не удалось открыть поиск на Familio", e));
+                  // Найденную ссылку вставляют сюда — фокус ждёт в поле.
+                  urlField.current?.focus();
+                }}>
+          Найти на Familio ↗
+        </button>
       </div>
       <div className="modalbar">
         <button type="button" className="primary" disabled={busy} onClick={() => void save()}>

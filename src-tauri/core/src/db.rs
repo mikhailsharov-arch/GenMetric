@@ -9,6 +9,9 @@ use rusqlite::{Connection, OptionalExtension};
 /// Версия схемы, которую понимает эта сборка.
 pub const SCHEMA_VERSION: i64 = 9;
 
+/// Признак копии перед обновлением в имени файла.
+pub const BACKUP_MARK: &str = "-до-обновления-";
+
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
 /// поэтому логика обновления проверена, хотя вызывающий её код на Rust
 /// в песочнице не собирается.
@@ -67,10 +70,16 @@ pub fn open_database(bundled: &Path, db_path: &Path) -> Result<Connection, Box<d
 /// лежит в файле -wal, и копия одного основного файла отстала бы от базы.
 /// С 21.09.2026 обновление правит набранные записи, так что копия обязана
 /// быть полной (ревьюер).
+///
+/// Называется по файлу базы: у первого прихода — «genmetric-до-обновления-…»,
+/// как всегда было, у остальных — «2-Николо-Макарово-до-обновления-…». Раньше
+/// копии всех приходов назывались одинаково, и понять, чья копия, было нельзя.
 pub fn backup(conn: &Connection, db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     let seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let name = format!("genmetric-до-обновления-{seconds}.sqlite");
+    let stem = db_path.file_stem().map(|x| x.to_string_lossy().to_string())
+        .filter(|x| !x.is_empty()).unwrap_or_else(|| "genmetric".to_string());
+    let name = format!("{stem}{BACKUP_MARK}{seconds}.sqlite");
     let target = db_path.with_file_name(name);
     std::fs::copy(db_path, target)?;
     Ok(())

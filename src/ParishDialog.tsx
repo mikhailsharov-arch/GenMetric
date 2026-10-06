@@ -25,6 +25,8 @@ type ParishRow = {
 type Seen = {
   village: string; church: string; indexer: string;
   births: number; marriages: number; deaths: number; years: number[];
+  /** Годы, похожие на опечатку в колонке «Год». */
+  odd_years: number[];
   size: number; already_id: number | null; already_name: string | null;
 };
 
@@ -39,6 +41,13 @@ type Done = {
  *  на Windows не дошло, инцидент 13.09.2026), а 7 МБ одним массивом чисел —
  *  слишком тяжёлое сообщение. */
 const CHUNK = 512 * 1024;
+
+/** Размер части. Сквозная проверка на Windows ставит `window.__genmetricChunk`
+ *  поменьше: файл её фикстуры — 6 КБ и одной частью склейку не проверяет. */
+function chunkSize(): number {
+  const test = Number((window as unknown as { __genmetricChunk?: number }).__genmetricChunk);
+  return Number.isFinite(test) && test >= 1 ? Math.floor(test) : CHUNK;
+}
 
 function yearsText(years: number[]): string {
   if (!years.length) return "без года";
@@ -57,6 +66,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     (box?.querySelector<HTMLInputElement>("input[data-field]") ?? box)?.focus();
   }, [mode]);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Сколькими частями ушёл выбранный файл — для сквозной проверки. */
+  const [parts, setParts] = useState(0);
   const [name, setName] = useState("");
   const [fileName, setFileName] = useState("");
   const [seen, setSeen] = useState<Seen | null>(null);
@@ -118,11 +129,20 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     setSeen(null);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      for (let at = 0; at < bytes.length || at === 0; at += CHUNK) {
-        await invoke<number>("import_chunk", { bytes: bytes.subarray(at, at + CHUNK), first: at === 0 });
-        setBusy(`Читаю файл… ${Math.min(100, Math.round(((at + CHUNK) / Math.max(1, bytes.length)) * 100))}%`);
+      const step = chunkSize();
+      let sent = 0;
+      let got = 0;
+      for (let at = 0; at < bytes.length || at === 0; at += step) {
+        got = await invoke<number>("import_chunk", { bytes: bytes.subarray(at, at + step), first: at === 0 });
+        sent += 1;
+        setBusy(`Читаю файл… ${Math.min(100, Math.round(((at + step) / Math.max(1, bytes.length)) * 100))}%`);
         if (bytes.length === 0) break;
       }
+      // Программа отвечает, сколько байт у неё собралось: не столько, сколько
+      // в файле, — часть потерялась по дороге, и разбирать такой файл нельзя.
+      if (got !== bytes.length)
+        throw new Error(`файл дошёл до программы не целиком: ${got} из ${bytes.length} байт — выберите его ещё раз`);
+      setParts(sent);
       const s = await invoke<Seen>("import_inspect", { fileName: file.name });
       setSeen(s);
       setFileName(file.name);
@@ -275,11 +295,19 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
       )}
       {mode === "import" && seen && (
         <>
-          <p data-import-seen>
+          <p data-import-seen data-parts={parts}>
             В файле «{fileName}»: рождений {seen.births}, браков {seen.marriages}, смертей {seen.deaths};
             годы {yearsText(seen.years)}{seen.village ? `; село ${seen.village}` : ""}
             {seen.indexer ? `; индексировал ${seen.indexer}` : ""}.
           </p>
+          {seen.odd_years.length > 0 && (
+            <p className="reviewbusy" data-import-oddyears>
+              {seen.odd_years.length === 1 ? "Год" : "Годы"} {seen.odd_years.join(", ")} —
+              {seen.odd_years.length === 1 ? " стоит" : " стоят"} далеко от остальных, и записей там не больше трёх.
+              Если это опечатка в колонке «Год», проще поправить её в Excel и выбрать файл заново: иначе
+              такому году заведётся отдельное дело. Импортировать можно и так — эти строки попадут в список на сверку.
+            </p>
+          )}
           <p className="hint">
             Записи лягут в новый приход — в открытый ничего не добавится. Каждая запись
             сохраняется так же, как набранная руками, поэтому подсказки сразу знают людей и места из файла.

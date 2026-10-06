@@ -97,16 +97,28 @@ DICT_FOR_KIND = {
 
 
 def build(sql: dict, kind: str) -> str:
-    dict_block = sql[DICT_FOR_KIND.get(kind, "suggest_lookup")]
-    gendered = kind in ("first_name", "patronymic")
+    """Та же сборка, что genmetric_core::suggest_sql (src-tauri/core/src/lib.rs)."""
+    clean = lambda block: block.strip().rstrip(";")
+    usage = ""
+    if kind == "surname":
+        flt = clean(sql["surname_gender_filter"])
+        usage = flt.replace("{outer}", "usage_stat")
+        dict_block = clean(sql["suggest_surname"]) + "\n" + flt.replace("{outer}", "lookup")
+    else:
+        dict_block = sql[DICT_FOR_KIND.get(kind, "suggest_lookup")]
+        if kind in GENDERED:
+            usage = clean(sql["usage_gender_filter"])
     return (sql["suggest_ranked"]
-            .replace("{dict}", dict_block.strip().rstrip(";"))
-            .replace("{usage_gender}", sql["usage_gender_filter"].strip().rstrip(";") if gendered else ""))
+            .replace("{dict}", clean(dict_block))
+            .replace("{usage_gender}", usage))
+
+
+GENDERED = ("first_name", "patronymic", "surname")
 
 
 def suggest(db, sql, kind, prefix, gender=None, limit=8):
     params = {"kind": kind, "prefix": like_prefix(prefix), "limit": limit}
-    if kind in ("patronymic", "first_name"):
+    if kind in GENDERED:
         params["gender"] = gender
     rows = db.execute(build(sql, kind), params).fetchall()
     return [r[0] for r in rows]
@@ -132,9 +144,16 @@ def main() -> int:
     print("\n1а. Приложение берёт запросы отсюда, а не из своего кода")
     rust = (DB_DIR.parent / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
     body = rust.split("fn suggest(", 1)[-1].split("\n}\n", 1)[0]
+    # С 06.10.2026 запрос собирает крейт (suggest_sql в core/src/lib.rs, со
+    # своим тестом) — команда окна только вызывает сборку.
+    core = (DB_DIR.parent / "src-tauri" / "core" / "src" / "lib.rs").read_text(encoding="utf-8")
+    builder = core.split("pub fn suggest_sql(", 1)[-1].split("\n}\n", 1)[0]
+    check("suggest() в main.rs собирает запрос через genmetric_core::suggest_sql",
+          "genmetric_core::suggest_sql(" in body)
     for block in ("suggest_ranked", "suggest_first_name", "suggest_patronymic",
-                  "suggest_place", "suggest_lookup"):
-        check(f"main.rs берёт {block} из statements.sql", f'"{block}"' in body)
+                  "suggest_place", "suggest_lookup", "suggest_surname", "surname_gender_filter"):
+        check(f"крейт берёт {block} из statements.sql", f'"{block}"' in builder)
+    check("в suggest_sql не осталось своего SELECT", "SELECT" not in builder.upper())
     check("в suggest() не осталось своего SELECT",
           "SELECT" not in body.upper(), "запрос должен жить в statements.sql")
 
@@ -297,6 +316,26 @@ def main() -> int:
         db.execute(ins, ("surname", "parish", "п", "Томский", "томский", 2))
         check("фамилии прихода подсказываются, частая первой",
               suggest(db, sql, "surname", "том") == ["Томилин", "Томский"], str(suggest(db, sql, "surname", "том")))
+        # По полу персоны (06.10.2026): из частот и из перечня, куда фамилию
+        # кладёт сохранение записи.
+        for value, n in (("Томилина", 9), ("Томенко", 5), ("Томская", 1)):
+            db.execute(ins, ("surname", "parish", "п", value, norm(value), n))
+        for value in ("Томилин", "Томилина", "Томский", "Томская", "Томенко", "Томилинъ"):
+            db.execute("INSERT OR IGNORE INTO lookup (kind, value, value_norm) VALUES ('surname', ?, ?)", (value, norm(value)))
+        got_f = suggest(db, sql, "surname", "том", gender="Ж")
+        got_m = suggest(db, sql, "surname", "том", gender="М")
+        check("женщине — женские фамилии и фамилии без родового окончания",
+              got_f == ["Томилина", "Томенко", "Томская"], str(got_f))
+        check("мужчине — мужские, в том числе с «ъ» на конце",
+              got_m == ["Томилин", "Томенко", "Томский", "Томилинъ"], str(got_m))
+        for value in ("Сова", "Петров", "Палий"):
+            db.execute(ins, ("surname", "parish", "п", value, norm(value), 2))
+        check("без пары в приходе фамилия не прячется: «Сова» — мужчине, «Петров» и «Палий» — женщине",
+              suggest(db, sql, "surname", "сов", gender="М") == ["Сова"]
+              and suggest(db, sql, "surname", "петр", gender="Ж") == ["Петров"]
+              and suggest(db, sql, "surname", "пал", gender="Ж") == ["Палий"])
+        check("пол неизвестен — все фамилии",
+              len(suggest(db, sql, "surname", "том")) == 6, str(suggest(db, sql, "surname", "том")))
         check("опечатка в начале фамилии ничего не находит — видно, что фамилия новая",
               suggest(db, sql, "surname", "там") == [])
         # Написания, связанные человеком со словарём, — в подсказке имени.

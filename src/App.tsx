@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ErrorBar from "./ErrorBar";
 import FontScale from "./FontScale";
+import OneColumn, { useOneColumn } from "./OneColumn";
 import CaseHeader, { type Case } from "./CaseHeader";
 import BirthForm from "./BirthForm";
 import MarriageForm from "./MarriageForm";
@@ -45,6 +46,7 @@ type DbInfo = {
  */
 export default function App() {
   const [info, setInfo] = useState<DbInfo | null>(null);
+  const [oneColumn, toggleOneColumn] = useOneColumn();
   const [startup, setStartup] = useState<Startup | null>(null);
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
@@ -238,7 +240,8 @@ export default function App() {
       )}
       {screen === "about" && info && (
         <section>
-          <h2>Что внутри сборки</h2>
+          <OneColumn on={oneColumn} onToggle={toggleOneColumn} />
+          <h2 className="sub-h2">Что внутри сборки</h2>
           <p className="hint">
             Если эти числа не изменились после установки новой версии — значит
             обновление до базы не доехало, и об этом надо сказать.
@@ -279,6 +282,10 @@ export default function App() {
             </tbody>
           </table>
           <p className="path mono">{info.db_path}</p>
+          <p className="hint">
+            Шрифт интерфейса — Inter, © The Inter Project Authors, лицензия SIL Open Font
+            License 1.1 (текст лицензии — в исходном коде программы, src/fonts/OFL.txt).
+          </p>
           {info.repaired_entries > 0 && (
             <p className="hint">
               При обновлении исправлено записей: {info.repaired_entries} — номер девочек,

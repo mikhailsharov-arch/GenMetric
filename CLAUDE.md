@@ -25,10 +25,10 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 48, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 66, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 70, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 110, ошибок 0»
-    python3 db/test_suggest.py                                  # → «Итого: 61 ок, 0 ошибок»
+    python3 db/test_suggest.py                                  # → «Итого: 69 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
     python3 db/test_export.py                                   # → «Итог: успешно 113, ошибок 0» (выгрузка Familio и Excel)
@@ -36,8 +36,8 @@
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 13, ошибок 0»
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
-    node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 11, ошибок 0» (заглавные буквы в ИОФ)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 152, ошибок 0»
+    node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 33, ошибок 0» (заглавные буквы и слово «имени нет»)
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 178, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -51,13 +51,17 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 12 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 16 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
 сохранение записи и разбор ИОФ (`records.rs`), разбор возраста (`age.rs`,
 копия `src/age.ts` — правишь одно, правь другое), приходы (`parish.rs`),
-импорт из Excel-индексатора (`import.rs`).
+импорт из Excel-индексатора (`import.rs`). С 06.10.2026 там же: сборка
+запроса подсказок (`suggest_sql`), адрес поиска на Familio
+(`familio_search_url`) и перехват паники (`guarded`). Правило «имени в книге
+нет» — `records::is_no_name`, его копия для окна — `noNameWord` в
+`src/names.ts`: примеры в обоих тестах одни и те же.
 
 **Приходы.** Каждый приход — свой файл SQLite; общий файл
 `genmetric-общее.sqlite` (схема — `db/common.sql`) хранит перечень приходов,
@@ -225,6 +229,11 @@ Python: быстрая проверка в конвейере идёт на 3.14
 **Windows-установщик только `.exe`.** Msi показывал предупреждение 1946 о свойстве
 ярлыка; настройкой это не отключается.
 
+**В выпуске нет `panic = "abort"`** (с 06.10.2026). Разбор чужого файла идёт
+под `genmetric_core::guarded`: паника становится ошибкой в окне, а не
+закрытой программой и не файлом прихода без строки в перечне. Новый разбор
+файла от человека — под тот же перехват.
+
 ### Про молчание
 
 **Никогда не перехватывать ошибку без сообщения человеку.** Ошибки идут через
@@ -266,6 +275,11 @@ Python: быстрая проверка в конвейере идёт на 3.14
 
 **Название населённого пункта — колонка 10 листа «НП»** («НП для ввода МК»),
 а не колонка 1.
+
+**Шрифт Inter вшит в программу** (`src/fonts/`, лицензия OFL рядом): интерфейс
+и стенд выглядят одинаково на любой системе. Верхняя строка окна при ширине
+по умолчанию занята целиком — новой кнопке в ней места нет (06.10.2026
+переключатель «в столбик» из-за этого ушёл на «О программе»).
 
 **В стилях нет абсолютных размеров, кроме рамок и скруглений.** Всё масштабируется
 переменной `--ui-scale`, за этим следит `scripts/check_styles.py`. **Высота — самый

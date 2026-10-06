@@ -38,9 +38,17 @@ pub struct ParsedIof {
 /// Роман ставил в Excel звёздочки; в записи всегда хранится именно так.
 pub const NO_NAME: &str = "***";
 
-/// Слово из одних знаков («***», «*», «—», «?») — имени в книге нет.
+/// Имени в книге нет: слово из одних знаков («***», «*», «—», «?») или «Имя» —
+/// заготовка ячейки в Excel-индексаторе.
+///
+/// Одно правило и для набора, и для импорта (06.10.2026; раньше импорт считал
+/// по-своему). Цифра — не «имени нет»: это скорее опечатка, и её должен
+/// увидеть человек — в форме окном сверки, при импорте строкой в списке на
+/// сверку. Копия для окна — `noNameWord` в src/names.ts: правишь одно — правь
+/// другое (scripts/test_names.mjs сверяет те же примеры).
 pub fn is_no_name(word: &str) -> bool {
-    !word.is_empty() && !word.chars().any(|c| c.is_alphanumeric())
+    let word = word.trim();
+    !word.is_empty() && (!word.chars().any(|c| c.is_alphanumeric()) || word.to_lowercase() == "имя")
 }
 
 /// Похоже ли слово на отчество по окончанию — чтобы не сверять как отчество
@@ -290,7 +298,8 @@ pub fn seed_surnames(conn: &Connection) -> Result<usize, String> {
         return Ok(0);
     }
     let parish: String = conn
-        .query_row("SELECT parish_key FROM mk_case ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0))
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": 0 },
+                   |r| r.get::<_, Option<String>>(0))
         .optional().map_err(e)?.flatten().unwrap_or_default();
     let rows: Vec<(String, i64)> = {
         let mut stmt = conn.prepare(&statement("surname_counts")?).map_err(e)?;
@@ -393,6 +402,11 @@ pub struct Saved {
     /// Год, которому при этом сохранении заведено новое дело (копией
     /// прежнего): форма напомнит проверить фонд, опись и дело.
     pub new_case_year: Option<i64>,
+    /// Запись без года, а дела, которое назвала форма, уже нет: запись легла
+    /// в первое дело прихода. Форма скажет об этом — молча нельзя.
+    pub fallback_case: bool,
+    /// Год дела, к которому привязана запись без года (для того же сообщения).
+    pub fallback_year: Option<i64>,
 }
 
 /// Дело года книги: есть — оно; нет — дело без года получает этот год; нет и
@@ -423,9 +437,11 @@ pub fn case_for_year(conn: &Connection, year: i64) -> Result<(i64, bool), String
 
 pub fn save_entry(conn: &Connection, entry: &EntryInput) -> Result<Saved, String> {
     let parish: String = conn
-        .query_row("SELECT parish_key FROM mk_case ORDER BY (id = ?1) DESC, id LIMIT 1", [entry.case_id], |r| r.get(0))
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": entry.case_id },
+                   |r| r.get::<_, Option<String>>(0))
         .optional()
         .map_err(|e| e.to_string())?
+        .flatten()
         .unwrap_or_default();
 
     conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
@@ -448,19 +464,26 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
     {
         // Запись привязывается к делу своего года книги (год обряда, у браков
         // — год венчания), а не к тому, что прислала форма: дело — на год.
+        let mut fallback: Option<Option<i64>> = None;
         let (case_id, new_case_year) = match entry.rite_year.or(entry.event_year) {
             Some(year) => {
                 let (id, created) = case_for_year(conn, year)?;
                 (id, created.then_some(year))
             }
             // Записи без года дело назначает форма; если его уже убрали
-            // («Убрать дело этого года»), берём любое существующее — иначе
-            // сохранение упало бы на внешнем ключе.
+            // («Убрать дело этого года»), берём первое дело прихода — иначе
+            // сохранение упало бы на внешнем ключе. Не молча: `fallback`.
             None => {
-                let exists: Option<i64> = conn
-                    .query_row("SELECT id FROM mk_case ORDER BY (id = ?1) DESC, id LIMIT 1", [entry.case_id], |r| r.get(0))
+                let found: Option<(i64, Option<i64>)> = conn
+                    .query_row(&statement("case_or_first")?, rusqlite::named_params! { ":id": entry.case_id },
+                               |r| Ok((r.get(0)?, r.get(1)?)))
                     .optional().map_err(|e| e.to_string())?;
-                (exists.unwrap_or(entry.case_id), None)
+                if let Some((id, year)) = found {
+                    if id != entry.case_id {
+                        fallback = Some(year);
+                    }
+                }
+                (found.map(|f| f.0).unwrap_or(entry.case_id), None)
             }
         };
         let entry_id = match entry.id {
@@ -611,7 +634,8 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 }).map_err(|e| e.to_string())?;
             }
         }
-        Ok(Saved { id: entry_id, case_id, new_case_year })
+        Ok(Saved { id: entry_id, case_id, new_case_year, fallback_case: fallback.is_some(),
+                   fallback_year: fallback.flatten() })
     }
 }
 
@@ -759,7 +783,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         std::fs::copy(&seed, &path).unwrap();
         let conn = Connection::open(&path).unwrap();
-        for stub in ["*** Иванова Петрова", "* Иванова Петрова", "— Иванова Петрова"] {
+        for stub in ["*** Иванова Петрова", "* Иванова Петрова", "— Иванова Петрова", "Имя Иванова Петрова"] {
             let p = parse_iof_in(&conn, stub).unwrap();
             assert!(p.known_name && p.name_missing, "{stub}");
             assert_eq!((p.first_name.as_deref(), p.first_name_modern.as_deref()), (Some("***"), None), "{stub}");
@@ -768,7 +792,13 @@ mod tests {
         }
         let plain = parse_iof_in(&conn, "Мария Иванова").unwrap();
         assert!(plain.known_name && !plain.name_missing);
-        assert!(!is_no_name("Иван") && !is_no_name("2") && !is_no_name("") && is_no_name("?"));
+        // Те же примеры — в scripts/test_names.mjs для копии правила в окне.
+        for word in ["***", "*", "—", "?", "-", "Имя", "имя", "ИМЯ"] {
+            assert!(is_no_name(word), "{word}");
+        }
+        for word in ["Иван", "2", "", "Имярек", "Им", "N", "*а"] {
+            assert!(!is_no_name(word), "{word}");
+        }
 
         let case = Case { id: 0, archive: None, fond: None, opis: None, delo: None, church: Some("Ц".into()),
                           village: Some("Тестово".into()), uyezd: None, guberniya: None, year: Some(1897), indexer: None };
@@ -806,8 +836,12 @@ mod tests {
         let mut loose = EntryInput { id: None, case_id: 999, section: 2, page: None, no_male: None, no_female: None,
             event_day: None, event_month: None, event_year: None, rite_day: None, rite_month: None, rite_year: None,
             note: None, uncertain: None, persons: vec![] };
-        assert_eq!(save_entry(&conn, &loose).unwrap().case_id, 1);
+        let moved = save_entry(&conn, &loose).unwrap();
+        assert_eq!((moved.case_id, moved.fallback_case, moved.fallback_year), (1, true, Some(1897)));
+        // Своё дело на месте — оговорки нет.
         loose.case_id = 1;
+        let own = save_entry(&conn, &loose).unwrap();
+        assert_eq!((own.case_id, own.fallback_case, own.fallback_year), (1, false, None));
         std::mem::drop(conn);
         let _ = std::fs::remove_file(path);
     }

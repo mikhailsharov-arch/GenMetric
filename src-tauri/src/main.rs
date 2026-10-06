@@ -409,25 +409,17 @@ fn suggest(
         // остальные перечни — в lookup. Сами запросы в db/statements.sql:
         // ошибка «НП ищется в lookup» прожила три недели именно потому, что
         // запрос был в коде и его нечем было проверить.
-        let dict = statement(match kind.as_str() {
-            "first_name" => "suggest_first_name",
-            "patronymic" => "suggest_patronymic",
-            "place" => "suggest_place",
-            _ => "suggest_lookup",
-        })?;
-        let gendered = kind == "patronymic" || kind == "first_name";
-        // Ветка частот тоже фильтруется по полу — см. usage_gender_filter.
-        let usage_gender = if gendered { statement("usage_gender_filter")? } else { String::new() };
-        let sql = statement("suggest_ranked")?
-            .replace("{dict}", dict.trim().trim_end_matches(';'))
-            .replace("{usage_gender}", usage_gender.trim().trim_end_matches(';'));
+        // Сборка — в крейте (genmetric_core::suggest_sql), с тестом: ветка
+        // частот тоже отбирается по полу — имена и отчества по словарю,
+        // фамилии по окончанию.
+        let (sql, gendered) = genmetric_core::suggest_sql(&kind)?;
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         // :gender есть только в запросе отчеств — лишний именованный параметр
         // rusqlite считает ошибкой, поэтому список собирается по месту.
         let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
             vec![(":kind", &kind), (":prefix", &pattern), (":limit", &limit)];
-        // Пол нужен отчествам и именам. Заказчик 13.09.2026: матери
+        // Пол нужен отчествам, именам и фамилиям. Заказчик 13.09.2026: матери
         // подставлялись мужские имена — фильтровались только отчества.
         if gendered {
             params.push((":gender", &gender));
@@ -1433,7 +1425,10 @@ async fn import_inspect(app: State<'_, App>, file_name: String) -> Result<Import
     // Замок, отравленный паникой прошлого разбора, берём всё равно: в нём
     // просто байты файла.
     let file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
-    let seen = genmetric_core::import::inspect(&file).map_err(fail)?;
+    // Паника разбора битого файла — ошибка в окне, а не закрытая программа
+    // (в выпуске до 06.10.2026 стоял panic = "abort").
+    let seen = genmetric_core::guarded("разбор файла Excel", || genmetric_core::import::inspect(&file))
+        .map_err(fail)?;
     let already = parish::imported_from(&app.data_dir, &file_name, file.len() as i64).map_err(fail)?;
     Ok(ImportSeen {
         seen,
@@ -1642,7 +1637,8 @@ fn main() {
             export::export_years,
             export::export_familio,
             export::export_excel,
-            export::reveal_path
+            export::reveal_path,
+            export::open_familio
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить GenMetric");

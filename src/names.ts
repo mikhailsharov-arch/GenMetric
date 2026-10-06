@@ -10,3 +10,27 @@
 export function titleCase(text: string): string {
   return text.replace(/(^|[\s\-(«"])(\p{Ll})/gu, (_m, before: string, letter: string) => before + letter.toUpperCase());
 }
+
+/** Системное слово «имя в книге не указано» — как `records::NO_NAME`. */
+export const NO_NAME = "***";
+
+/**
+ * Слово-заглушка вместо имени: одни знаки («***», «—», «?») или «Имя».
+ * Копия `records::is_no_name` из крейта: правишь одно — правь другое
+ * (scripts/test_names.mjs и тест крейта сверяют одни и те же примеры).
+ */
+export function noNameWord(word: string): boolean {
+  const w = word.trim();
+  return w !== "" && (!/[\p{L}\p{N}]/u.test(w) || w.toLowerCase() === "имя");
+}
+
+/**
+ * «— Иванова Петрова» → «*** Иванова Петрова»: в записи заглушка всегда
+ * хранится как «***», и поле должно показывать то, что сохранится, а не то,
+ * что набрано (проверяющий 05.10.2026: замена шла молча).
+ */
+export function showNoName(text: string): string {
+  const m = /^(\s*)(\S+)/.exec(text);
+  if (!m || m[2] === NO_NAME || !noNameWord(m[2])) return text;
+  return m[1] + NO_NAME + text.slice(m[0].length);
+}

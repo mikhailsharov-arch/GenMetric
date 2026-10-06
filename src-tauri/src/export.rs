@@ -57,11 +57,16 @@ pub async fn export_familio(handle: tauri::AppHandle, app: State<'_, App>, years
     -> Result<Exported, String>
 {
     let dir = export_dir(&handle)?;
+    // Под перехватом паники: команда async, и без него паника оставила бы
+    // кнопку «Выгружаю…» навсегда, а замок базы — отравленным до перезапуска
+    // (ревьюер 06.10.2026; раньше программа просто закрывалась).
     with_conn(&app, "Выгрузка в Familio", |conn| {
-        let (bytes, counts) = familio_bytes(conn, &years, &about)?;
-        let name = format!("Familio_{}_{}_{}.xlsx", safe_name(&parish_name(conn)),
-                           safe_name(&about.years), file_stamp());
-        Ok(Exported { path: write_file(dir, &name, &bytes)?, ..counts })
+        genmetric_core::guarded("выгрузка в Familio", || {
+            let (bytes, counts) = familio_bytes(conn, &years, &about)?;
+            let name = format!("Familio_{}_{}_{}.xlsx", safe_name(&parish_name(conn)),
+                               safe_name(&about.years), file_stamp());
+            Ok(Exported { path: write_file(dir, &name, &bytes)?, ..counts })
+        })
     })
 }
 
@@ -70,9 +75,11 @@ pub async fn export_familio(handle: tauri::AppHandle, app: State<'_, App>, years
 pub async fn export_excel(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Exported, String> {
     let dir = export_dir(&handle)?;
     with_conn(&app, "Выгрузка в Excel", |conn| {
-        let (bytes, counts) = excel_bytes(conn)?;
-        let name = format!("GenMetric_{}_{}.xlsx", safe_name(&parish_name(conn)), file_stamp());
-        Ok(Exported { path: write_file(dir, &name, &bytes)?, ..counts })
+        genmetric_core::guarded("выгрузка в Excel", || {
+            let (bytes, counts) = excel_bytes(conn)?;
+            let name = format!("GenMetric_{}_{}.xlsx", safe_name(&parish_name(conn)), file_stamp());
+            Ok(Exported { path: write_file(dir, &name, &bytes)?, ..counts })
+        })
     })
 }
 
@@ -97,3 +104,31 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| format!("не удалось открыть папку: {e}"))
 }
 
+
+/// «Найти на Familio» в карточке населённого пункта: поиск по названию и
+/// губернии, уезду, волости — в браузере человека. Адрес собирает крейт
+/// (`familio_search_url`); произвольную ссылку из окна команда не примет.
+/// Возвращает открытый адрес.
+#[tauri::command]
+pub fn open_familio(app: State<App>, name: String, guberniya: String, uyezd: String, volost: String)
+    -> Result<String, String>
+{
+    if name.trim().is_empty() {
+        return Err("у пункта нет названия — искать нечего".into());
+    }
+    let url = genmetric_core::familio_search_url(&name, &guberniya, &uyezd, &volost);
+    // В журнал: что именно открыто, видно и человеку («Журнал»), и сквозной
+    // проверке — браузер на раннере она не читает.
+    crate::write_log(&app.log_path, &format!("Поиск на Familio: {url}"));
+    // Сквозная проверка на раннере браузер не открывает: чужое окно поверх
+    // программы забрало бы фокус у остальных шагов. Адрес уже в журнале.
+    if std::env::var_os("GENMETRIC_NO_BROWSER").is_some() {
+        return Ok(url);
+    }
+    // Без оболочки: cmd /c start портит «&» и «?» в адресе.
+    #[cfg(windows)]
+    let result = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(&url).spawn();
+    #[cfg(not(windows))]
+    let result = std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(&url).spawn();
+    result.map(|_| url).map_err(|e| format!("не удалось открыть браузер: {e}"))
+}

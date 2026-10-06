@@ -29,4 +29,6 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# panic = "abort" здесь нет намеренно (06.10.2026): с ним паника при разборе
+# битого файла Excel закрывала программу целиком, и перехватить её было
+# нечем. Теперь паника разматывает стек — см. genmetric_core::guarded.

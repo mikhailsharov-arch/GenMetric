@@ -43,6 +43,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
@@ -152,6 +153,17 @@ def run(driver, wait, archive):
           f"верх {top}, низ {top + height}, рабочая область {avail_top}…{avail_top + avail}")
     check("окно занимает почти всю высоту рабочей области", height >= avail * 0.85,
           f"{height} из {avail}")
+    # Шрифт Inter вшит в программу (06.10.2026): файлы лежат среди ресурсов
+    # окна, и грузит их WebView2 под правилами безопасности из tauri.conf.json
+    # — стенд этого не видит.
+    driver.set_script_timeout(20)
+    fonts = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "document.fonts.ready.then(() => done([getComputedStyle(document.body).fontFamily,"
+        " [...document.fonts].filter(f => f.family.replace(/[\"']/g, '') === 'Inter' && f.status === 'loaded').length,"
+        " [...document.fonts].filter(f => f.status === 'error').length]));")
+    check("шрифт Inter загружен в настоящем окне", fonts[0].replace('"', "").startswith("Inter") and fonts[1] >= 1 and fonts[2] == 0,
+          f"семейство «{fonts[0][:40]}», загружено начертаний {fonts[1]}, с ошибкой {fonts[2]}")
 
     print("\n2. Дело")
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Христорождественская"),
@@ -254,6 +266,15 @@ def run(driver, wait, archive):
     check("у девочки «№ ж. 7»", "№ ж. 7" in body)
     check("в мужской колонке ничего", "№ м." not in body)
 
+    print("\n5а. «Всегда в столбик» — общая настройка, переживает перезапуск")
+    click(driver, "//button[@aria-label='О программе']")
+    click(driver, "//button[@data-onecol]")
+    time.sleep(0.8)
+    on = driver.execute_script("return document.documentElement.classList.contains('onecol')")
+    pressed = driver.find_element(By.CSS_SELECTOR, "[data-onecol]").get_attribute("aria-pressed")
+    check("включено: форма в один столбец", bool(on) and pressed == "true",
+          f"класс {on}, кнопка «{pressed}» | {error_details(driver)}")
+
 
 def print_app_log():
     """Журнал ошибок приложения — там, куда его пишет main.rs."""
@@ -274,6 +295,9 @@ def launch(exe, msedgedriver, port=9222):
     env = dict(os.environ)
     env["GENMETRIC_E2E_DEBUG_PORT"] = str(port)
     env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--remote-debugging-port={port}"
+    # «Найти на Familio» на раннере браузер не открывает (export.rs): окно Edge
+    # поверх программы забрало бы фокус у остальных шагов.
+    env["GENMETRIC_NO_BROWSER"] = "1"
     app = subprocess.Popen([str(exe)], env=env, cwd=str(exe.parent))
     print(f"приложение запущено, pid {app.pid}")
     time.sleep(5)
@@ -324,6 +348,17 @@ def resumed(driver, wait):
     """После перезапуска форма продолжает с места остановки (заказчик 15.09.2026)."""
     print("\n6. Перезапуск: форма помнит, где остановились")
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".app")))
+    # «Всегда в столбик», включённое в конце первого запуска (шаг 5а), — на
+    # месте: настройка лежит в общем файле приходов и читается через Rust.
+    time.sleep(1)
+    check("«всегда в столбик» пережило перезапуск",
+          bool(driver.execute_script("return document.documentElement.classList.contains('onecol')")),
+          error_details(driver))
+    click(driver, "//button[@aria-label='О программе']")
+    click(driver, "//button[@data-onecol]")
+    time.sleep(0.5)
+    check("выключено — плотная раскладка вернулась",
+          not driver.execute_script("return document.documentElement.classList.contains('onecol')"))
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
     time.sleep(1)
@@ -444,6 +479,22 @@ def resumed(driver, wait):
     if opened:
         gub = field(driver, "Губерния", "//div[contains(@class,'modal')]//").get_attribute("value")
         check("губерния подставлена из дела", gub == "Костромская", f"«{gub}»")
+        # «Найти на Familio» (Роман 03.10.2026): команда идёт через настоящий
+        # Rust и открывает браузер системы. Что именно открыто — в журнале.
+        click(driver, "//div[contains(@class,'modal')]//button[@data-familio-find]")
+        time.sleep(1.5)
+        appdata = os.environ.get("APPDATA", "")
+        log = Path(appdata) / "org.genmetric.app" / "genmetric-журнал.txt"
+        journal = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        want = "https://familio.org/places?title=" + quote("Новодеревенька", safe="")
+        check("«Найти на Familio»: открыт поиск по названию и губернии, ошибки нет",
+              want in journal and "georequisites=" + quote("Костромская", safe="") in journal
+              and "Familio" not in error_details(driver),
+              (journal[-300:].replace("\n", " | ") or "журнала нет") + " | " + error_details(driver))
+        focused = driver.switch_to.active_element.get_attribute("placeholder") or ""
+        check("после кнопки фокус — в поле ссылки", "ссылка" in focused, f"«{focused}»")
+        # Дальше — как раньше, с первого поля карточки: Enter ведёт по полям.
+        field(driver, "Тип", "//div[contains(@class,'modal')]//").click()
         for _ in range(5):  # тип, губерния, уезд, волость, Familio → сохранить
             driver.switch_to.active_element.send_keys(Keys.ENTER)
             time.sleep(0.2)
@@ -786,11 +837,20 @@ def parishes(driver, wait):
     print("\n16. Импорт из Excel-индексатора — настоящим IPC, файл частями")
     fixture = REPO / "db" / "fixtures" / "indexer.xlsx"
     open_parishes(driver, wait)
+    # Файл фикстуры — 6 КБ, а часть в программе — 512 КБ: одной частью склейку
+    # частей в Rust проверка не видела (техдолг с 02.10.2026). Здесь часть —
+    # 1 КБ: файл идёт шестью, и разбор ниже читает уже склеенное.
+    driver.execute_script("window.__genmetricChunk = 1024;")
     feed_file(driver, fixture)
     try:
         WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-import-seen]")))
     except TimeoutException:
         pass
+    sent = [e.get_attribute("data-parts") for e in driver.find_elements(By.CSS_SELECTOR, "[data-import-seen]")]
+    expected_parts = -(-fixture.stat().st_size // 1024)
+    check(f"файл ушёл в программу частями: {expected_parts}",
+          bool(sent) and sent[0] == str(expected_parts) and expected_parts > 1,
+          f"частей «{sent[0] if sent else 'нет'}», байт {fixture.stat().st_size} | " + error_details(driver))
     seen = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-import-seen]")]
     check("файл прочитан: в нём 5 рождений, 2 брака, 4 смерти, село Никольское",
           bool(seen) and "рождений 5, браков 2, смертей 4" in seen[0] and "Никольское" in seen[0],

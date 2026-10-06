@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { focusNextField } from "./focus";
 
 /**
@@ -31,6 +31,15 @@ export default function NumberField({
   const max = limit ?? 9999;
   const own = useRef<HTMLInputElement>(null);
   const field = inputRef ?? own;
+  // Набранное не принято — поле коротко мигает: молча отброшенная цифра
+  // выглядела как залипшая клавиша (проверяющий 05.10.2026).
+  const [rejected, setRejected] = useState(false);
+  const rejectTimer = useRef<number | undefined>(undefined);
+  function reject() {
+    setRejected(true);
+    window.clearTimeout(rejectTimer.current);
+    rejectTimer.current = window.setTimeout(() => setRejected(false), 600);
+  }
 
   function step(delta: number) {
     const base = value ?? (delta > 0 ? min - 1 : min + 1);
@@ -77,14 +86,35 @@ export default function NumberField({
           tabIndex={noTab ? -1 : undefined}
           data-skip={noTab ? "" : undefined}
           inputMode="numeric"
+          className={rejected ? "rejected" : undefined}
           value={value ?? ""}
           onChange={(e) => {
             const raw = e.target.value.replace(/[^0-9]/g, "");
             // Больше предела не набирается: месяц 13 или день 32 — опечатка
             // (Роман 05.10.2026). Поле остаётся с прежним значением.
             // Только где предел задан явно (день, месяц, год): счёт не ограничен.
-            if (raw !== "" && limit !== undefined && Number(raw) > limit) return;
+            if (raw !== "" && limit !== undefined && Number(raw) > limit) {
+              // Цифра дописана в конец уже полного значения — после щелчка
+              // мышью курсор стоит в конце, и «15» + «7» давало «157», то есть
+              // ничего. Человек набирает новое число: начинаем его заново.
+              const old = value === null ? "" : String(value);
+              const tail = old !== "" && raw.startsWith(old) ? raw.slice(old.length) : "";
+              // Хвост «0» числом не становится: «4» + «0» — это «40», а не новый «0».
+              // И не меньше наименьшего: «1897» + «7» — это не год 7 (ревьюер
+              // 06.10.2026); у года новое число так не начать — поле мигает.
+              if (tail !== "" && Number(tail) >= Math.max(1, min) && Number(tail) <= limit) onChange(Number(tail));
+              else reject();
+              return;
+            }
             onChange(raw === "" ? null : Number(raw));
+          }}
+          onBlur={() => {
+            // Ноль — не день и не месяц. При наборе он нужен («05»), а
+            // оставшийся при уходе из поля — стирается, и поле мигает.
+            if (value === 0 && min >= 1) {
+              onChange(null);
+              reject();
+            }
           }}
           onKeyDown={onKeyDown}
         />

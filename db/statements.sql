@@ -67,6 +67,16 @@ SELECT archive, fond, opis, delo, church, village, uyezd, guberniya,
  ORDER BY (id = (SELECT e.case_id FROM entry e ORDER BY e.id DESC LIMIT 1)) DESC, updated_at DESC, id DESC
  LIMIT 1;
 
+-- @case_parish_key
+-- Ключ прихода для частот подсказок: дела :id, а нет такого — первого дела.
+SELECT parish_key FROM mk_case ORDER BY (id = :id) DESC, id LIMIT 1;
+
+-- @case_or_first
+-- Дело :id, а если его убрали («Убрать дело этого года») — первое дело
+-- прихода. Для записи без года: года нет, дело ей назначает форма. Вторым
+-- значением — год найденного дела: форма скажет, куда легла запись.
+SELECT id, year FROM mk_case ORDER BY (id = :id) DESC, id LIMIT 1;
+
 -- @case_new_id
 SELECT coalesce(max(id), 0) + 1 FROM mk_case;
 
@@ -458,6 +468,47 @@ AND (:gender IS NULL
      OR NOT EXISTS (SELECT 1 FROM name_form f WHERE f.form_norm = usage_stat.value_norm)
      OR EXISTS (SELECT 1 FROM name_form f
                  WHERE f.form_norm = usage_stat.value_norm AND f.gender = :gender))
+
+-- @surname_gender_filter
+-- Фамилии по полу персоны (06.10.2026): женщине не предлагать «Томилин»,
+-- мужчине — «Томилина». Словаря фамилий нет, поэтому фамилия другого рода
+-- прячется, только когда в приходе известна её пара: «Томилин» у женщины —
+-- если есть «Томилина». Без пары фамилия остаётся: «Сова» и «Калина» —
+-- мужские фамилии, «Палий» — женская, а если набран один «Томилин», женщине
+-- его лучше показать, чем промолчать (ревьюер 06.10.2026). Дореформенный «ъ»
+-- на конце учтён.
+-- Подставляется и в ветку частот (место usage_gender в suggest_ranked), и в
+-- словарную ветку suggest_surname. Слово outer в фигурных скобках сборка
+-- запроса заменяет именем таблицы внешней строки (usage_stat или lookup):
+-- во вложенном запросе та же таблица названа pair, и без имени value_norm
+-- означал бы её колонку. Пара ищется по индексам (kind, value_norm) —
+-- первый вариант с объединением таблиц без индекса на 12 000 фамилий думал
+-- 25 секунд на букву (проверяющий 06.10.2026).
+AND (:gender IS NULL OR :gender NOT IN ('М', 'Ж')
+     OR (:gender = 'Ж' AND NOT (
+            ((rtrim({outer}.value_norm, 'ъ') LIKE '%ов' OR rtrim({outer}.value_norm, 'ъ') LIKE '%ев' OR rtrim({outer}.value_norm, 'ъ') LIKE '%ин' OR rtrim({outer}.value_norm, 'ъ') LIKE '%ын')
+             AND (EXISTS (SELECT 1 FROM lookup pair WHERE pair.kind = 'surname' AND pair.value_norm IN (rtrim({outer}.value_norm, 'ъ') || 'а'))
+                      OR EXISTS (SELECT 1 FROM usage_stat pair WHERE pair.kind = 'surname' AND pair.scope = 'global'
+                                  AND pair.scope_key = '' AND pair.value_norm IN (rtrim({outer}.value_norm, 'ъ') || 'а'))))
+         OR (({outer}.value_norm LIKE '%ий' OR {outer}.value_norm LIKE '%ой' OR {outer}.value_norm LIKE '%ый')
+             AND (EXISTS (SELECT 1 FROM lookup pair WHERE pair.kind = 'surname' AND pair.value_norm IN (substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ая'))
+                      OR EXISTS (SELECT 1 FROM usage_stat pair WHERE pair.kind = 'surname' AND pair.scope = 'global'
+                                  AND pair.scope_key = '' AND pair.value_norm IN (substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ая'))))))
+     OR (:gender = 'М' AND NOT (
+            (({outer}.value_norm LIKE '%ова' OR {outer}.value_norm LIKE '%ева' OR {outer}.value_norm LIKE '%ина' OR {outer}.value_norm LIKE '%ына')
+             AND (EXISTS (SELECT 1 FROM lookup pair WHERE pair.kind = 'surname' AND pair.value_norm IN (substr({outer}.value_norm, 1, length({outer}.value_norm) - 1), substr({outer}.value_norm, 1, length({outer}.value_norm) - 1) || 'ъ'))
+                      OR EXISTS (SELECT 1 FROM usage_stat pair WHERE pair.kind = 'surname' AND pair.scope = 'global'
+                                  AND pair.scope_key = '' AND pair.value_norm IN (substr({outer}.value_norm, 1, length({outer}.value_norm) - 1), substr({outer}.value_norm, 1, length({outer}.value_norm) - 1) || 'ъ'))))
+         OR ({outer}.value_norm LIKE '%ая'
+             AND (EXISTS (SELECT 1 FROM lookup pair WHERE pair.kind = 'surname' AND pair.value_norm IN (substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ий', substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ой', substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ый'))
+                      OR EXISTS (SELECT 1 FROM usage_stat pair WHERE pair.kind = 'surname' AND pair.scope = 'global'
+                                  AND pair.scope_key = '' AND pair.value_norm IN (substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ий', substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ой', substr({outer}.value_norm, 1, length({outer}.value_norm) - 2) || 'ый')))))))
+
+-- @suggest_surname
+-- Словарная ветка для фамилий — перечень lookup (его пополняет сохранение
+-- записи). К запросу дописывается surname_gender_filter.
+SELECT value, 4, 0 FROM lookup
+ WHERE kind = :kind AND value_norm LIKE :prefix ESCAPE '\'
 
 -- @suggest_first_name
 -- Имя по полу роли: матери — женские, отцу — мужские. Заказчик 13.09.2026:

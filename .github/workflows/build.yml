@@ -137,7 +137,7 @@ jobs:
       # только ошибки, которых нет в самом образце Familio.
       # .NET в образе ubuntu-latest обычно есть, но состав образа меняется —
       # ставим явно, чтобы шаг не стал красным по чужой причине.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
 

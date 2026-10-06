@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { focusNextField } from "./focus";
 import { dismissWarn, report, warn } from "./errors";
-import { setDirty } from "./dirty";
+import { dirtyForms, setDirty } from "./dirty";
 import ExportPanel from "./ExportPanel";
 import ParishDialog from "./ParishDialog";
 import ReviewDialog from "./ReviewDialog";
@@ -252,7 +252,16 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
         <ReviewDialog
           onClose={() => { setReview(false); invoke<number>("review_count").then(setToReview)
             .catch((e) => report("Не удалось прочитать список на сверку", e)); }}
-          onOpenEntry={(section, id) => { setReview(false); onOpenEntry(section, id); }}
+          onOpenEntry={(section, id) => {
+            // Форма занята — запись в неё не откроется (формы сами берегут
+            // набранное). Окно списка при этом не закрываем: раньше оно
+            // закрывалось, и человек терял место в списке (проверяющий 03.10.2026).
+            const form = ["", "Рождения", "Браки", "Смерти"][section] ?? "";
+            if (dirtyForms().includes(form)) return form;
+            setReview(false);
+            onOpenEntry(section, id);
+            return null;
+          }}
         />
       )}
       {ask && (

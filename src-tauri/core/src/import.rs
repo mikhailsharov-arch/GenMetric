@@ -21,7 +21,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::age::parse_age;
-use crate::records::{parse_iof_in, save_entry_in_tx, Case, EntryInput, PersonInput};
+use crate::records::{is_no_name, parse_iof_in, save_entry_in_tx, Case, EntryInput, PersonInput};
 use crate::statement;
 use crate::xlsx::read_sheet;
 
@@ -38,6 +38,9 @@ pub struct Inspect {
     pub marriages: usize,
     pub deaths: usize,
     pub years: Vec<i64>,
+    /// Годы, похожие на опечатку в колонке «Год» (см. `odd_years`): окно
+    /// называет их до импорта — поправить в Excel проще, чем потом в записях.
+    pub odd_years: Vec<i64>,
 }
 
 /// Итог импорта — на экран (спека, п. 4.4): пропущенная строка — не молча.
@@ -91,10 +94,34 @@ fn place(row: &Row, col: u32) -> Option<String> {
     opt(row, col).filter(|v| v != "0")
 }
 
-/// Имени в книге нет, а в ячейке — заглушка: «***», «?», «Имя». У умершего
-/// это запись «личность не установлена» (в форме — флажок).
+/// Имени в книге нет, а в ячейке — одна заглушка: «***», «?», «Имя». У
+/// умершего это запись «личность не установлена» (в форме — флажок). Правило
+/// слова — то же, что при наборе (`records::is_no_name`).
 fn no_name(iof: &str) -> bool {
-    !iof.chars().any(|c| c.is_alphabetic()) || iof.trim().to_lowercase() == "имя"
+    iof.split_whitespace().all(is_no_name)
+}
+
+/// Годы, похожие на опечатку в колонке «Год»: записей не больше трёх, а
+/// ближайший другой год файла — дальше десяти лет («1989» среди 1886–1897).
+/// Опечатка заводит отдельное дело, и записи уходят из своего года — об этом
+/// надо сказать. Файл, честно охватывающий много лет подряд, сюда не попадает.
+fn odd_years(counts: &BTreeMap<i64, usize>) -> Vec<i64> {
+    counts.iter()
+        .filter(|(year, n)| {
+            let nearest = counts.keys().filter(|y| y != year).map(|y| (*y - **year).abs()).min();
+            **n <= 3 && nearest.map(|gap| gap > 10).unwrap_or(false)
+        })
+        .map(|(year, _)| *year)
+        .collect()
+}
+
+fn years_span(counts: &BTreeMap<i64, usize>, odd: &[i64]) -> String {
+    let rest: Vec<i64> = counts.keys().copied().filter(|y| !odd.contains(y)).collect();
+    match (rest.first(), rest.last()) {
+        (Some(a), Some(b)) if a != b => format!("{a}–{b}"),
+        (Some(a), _) => a.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn int(row: &Row, col: u32) -> Option<i64> {
@@ -257,7 +284,7 @@ fn book_year(section: usize, row: &Row) -> Option<i64> {
 pub fn inspect(bytes: &[u8]) -> Result<Inspect, String> {
     let book = load(bytes)?;
     let mut out = Inspect { indexer: book.indexer.clone(), ..Default::default() };
-    let mut years = std::collections::BTreeSet::new();
+    let mut years: BTreeMap<i64, usize> = BTreeMap::new();
     for (i, sheet) in book.sheets.iter().enumerate() {
         let mut n = 0;
         for (r, row) in sheet {
@@ -266,7 +293,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, String> {
             }
             n += 1;
             if let Some(y) = book_year(i, row) {
-                years.insert(y);
+                *years.entry(y).or_default() += 1;
             }
             if out.village.is_empty() {
                 let mk = split_mk(&cell(row, 4));
@@ -280,7 +307,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, String> {
             _ => out.deaths = n,
         }
     }
-    out.years = years.into_iter().collect();
+    out.odd_years = odd_years(&years);
+    out.years = years.into_keys().collect();
     if out.births + out.marriages + out.deaths == 0 {
         return Err("в файле нет ни одной записи".into());
     }
@@ -418,12 +446,14 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
     // Дела по годам: у индексатора реквизиты стоят в каждой строке, у нас —
     // дело на год книги. Берётся первое непустое значение года.
     let mut cases: BTreeMap<i64, Case> = BTreeMap::new();
+    let mut year_counts: BTreeMap<i64, usize> = BTreeMap::new();
     for (i, sheet) in book.sheets.iter().enumerate() {
         for (r, row) in sheet {
             if !is_record(*r, row) {
                 continue;
             }
             let Some(year) = book_year(i, row) else { continue };
+            *year_counts.entry(year).or_default() += 1;
             let case = cases.entry(year).or_insert_with(|| Case { year: Some(year), ..Default::default() });
             let mk = split_mk(&cell(row, 4));
             let (fond, opis, delo) = split_fod(&cell(row, 3));
@@ -474,6 +504,8 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
         }).map_err(|e| e.to_string())?;
     }
     report.years = cases.keys().copied().collect();
+    let odd = odd_years(&year_counts);
+    let usual = years_span(&year_counts, &odd);
 
     let mut imp = Importer {
         conn, unknown: BTreeMap::new(), unknown_total: 0, unknown_patr: BTreeMap::new(), unknown_patr_total: 0,
@@ -706,6 +738,12 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                     "лист «{name}», строка {r}: нет ни года, ни дат — запись перенесена без года; \
                      в списках по годам её не видно, в выгрузке она идёт только со всем приходом"));
             }
+            if let Some(y) = year.filter(|y| odd.contains(y)) {
+                report.notes.push(format!(
+                    "лист «{name}», строка {r}: год книги {y} стоит далеко от остальных ({usual}) — не опечатка ли в \
+                     колонке «Год»? Запись отнесена к делу {} года",
+                    if section == 2 { ey.unwrap_or(y) } else { y }));
+            }
             let in_date = if section == 2 { ey } else { ry };
             if let (Some(y), Some(d)) = (year, in_date) {
                 if y != d {
@@ -793,6 +831,16 @@ mod tests {
         assert_eq!(cell(&row, 7), "873");
         assert_eq!(cell(&row, 18), "1,5");
         assert!(no_name("***") && no_name("Имя") && no_name("?") && !no_name("Иван") && !no_name("Имярек"));
+        // Цифра и заглушка с отчеством — не «личность не установлена»: первое
+        // пойдёт на сверку, второе — умерший без имени, но с отчеством.
+        assert!(!no_name("1") && !no_name("*** Иванова"));
+        let years = |list: &[(i64, usize)]| -> BTreeMap<i64, usize> { list.iter().copied().collect() };
+        assert_eq!(odd_years(&years(&[(1886, 90), (1887, 80), (1989, 1)])), vec![1989]);
+        assert_eq!(odd_years(&years(&[(1886, 2), (1897, 1)])), vec![1886, 1897], "оба далеко и малы — оба под вопросом");
+        assert!(odd_years(&years(&[(1886, 90), (1896, 2)])).is_empty(), "десять лет — ещё не далеко");
+        assert!(odd_years(&years(&[(1886, 90), (1989, 4)])).is_empty(), "четыре записи — уже не опечатка");
+        assert!(odd_years(&years(&[(1889, 1)])).is_empty(), "единственный год сравнить не с чем");
+        assert_eq!(years_span(&years(&[(1886, 90), (1887, 80), (1989, 1)]), &[1989]), "1886–1887");
         let zero: Row = [(13, "#0".to_string()), (14, "Кнышево".to_string())].into_iter().collect();
         assert_eq!((place(&zero, 13), place(&zero, 14)), (None, Some("Кнышево".to_string())));
     }
@@ -909,6 +957,51 @@ mod tests {
         // Не индексатор — понятная ошибка, а не пустой приход.
         let err = inspect(include_bytes!("../../../db/export/familio_template.xlsx")).unwrap_err();
         assert!(err.contains("не индексатор"), "{err}");
+    }
+
+    /// Опечатка в колонке «Год»: год одной строки фикстуры переписан на 1990.
+    /// Окно называет год до импорта, отчёт и список на сверку — после.
+    #[test]
+    fn odd_year_is_reported() {
+        use std::io::{Cursor, Read, Write};
+        let Some(seed) = seed() else { return };
+        let src: &[u8] = include_bytes!("../../../db/fixtures/indexer.xlsx");
+        let mut archive = zip::ZipArchive::new(Cursor::new(src)).unwrap();
+        let mut out = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(Cursor::new(&mut out));
+            for i in 0..archive.len() {
+                let mut part = archive.by_index(i).unwrap();
+                let name = part.name().to_string();
+                let mut body = Vec::new();
+                part.read_to_end(&mut body).unwrap();
+                if name == "xl/worksheets/sheet1.xml" {
+                    let xml = String::from_utf8(body).unwrap();
+                    assert!(xml.contains(r#"<c r="E6"><v>1890</v></c>"#), "раскладка фикстуры изменилась");
+                    body = xml.replace(r#"<c r="E6"><v>1890</v></c>"#, r#"<c r="E6"><v>1990</v></c>"#).into_bytes();
+                }
+                zw.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+                zw.write_all(&body).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        assert!(inspect(src).unwrap().odd_years.is_empty(), "в самой фикстуре годы рядом");
+        assert_eq!(inspect(&out).unwrap().odd_years, vec![1990]);
+
+        let (path, conn) = fresh("oddyear", &seed);
+        conn.execute_batch("BEGIN").unwrap();
+        let rep = import_into(&conn, &out).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        let said: Vec<&String> = rep.notes.iter().filter(|n| n.contains("стоит далеко от остальных")).collect();
+        assert_eq!(said.len(), 1, "{:?}", rep.notes);
+        assert!(said[0].contains("лист «1», строка 6") && said[0].contains("1990") && said[0].contains("(1889–1890)"), "{said:?}");
+        let n: i64 = conn.query_row(
+            "SELECT count(*) FROM review_item r JOIN entry e ON e.id = r.entry_id
+              WHERE r.kind = 'note' AND r.text LIKE 'год книги 1990 стоит далеко%' AND r.row = 6 AND e.rite_year = 1990",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
     }
 
     /// «Золотая» проверка на файле заказчика (спека 2026-10-02, п. 5) — только

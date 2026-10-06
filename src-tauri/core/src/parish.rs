@@ -33,7 +33,7 @@ const NAME_MAX: usize = 60;
 
 /// Настройки окна — общие для всех приходов; остальные ключи (отпечаток
 /// поставки, загруженный архив, счётчики исправлений) — у каждого прихода свои.
-pub const COMMON_SETTINGS: &[&str] = &["ui_font_scale", "clergy_open", "familio_about"];
+pub const COMMON_SETTINGS: &[&str] = &["ui_font_scale", "ui_one_column", "clergy_open", "familio_about"];
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ParishRow {
@@ -93,7 +93,8 @@ fn adopt_orphans(common: &Connection, dir: &Path) -> Result<(), String> {
     }
     let mut found: Vec<String> = files
         .filter_map(|f| f.ok().map(|f| f.file_name().to_string_lossy().to_string()))
-        .filter(|n| n.ends_with(".sqlite") && !n.contains("-заменён-"))
+        // Не приходы: прежний файл заменённого прихода и копии перед обновлением.
+        .filter(|n| n.ends_with(".sqlite") && !n.contains("-заменён-") && !n.contains(crate::db::BACKUP_MARK))
         .collect();
     found.sort();
     for file in found {
@@ -345,7 +346,9 @@ pub fn create_with<T>(
         // падала с «database is locked» (ревьюер 02.10.2026). Наполнение в
         // общий файл не пишет.
         conn.execute_batch("BEGIN").map_err(s)?;
-        let out = match fill(&conn) {
+        // Паника в наполнении (битый файл Excel) — та же ошибка: откат и
+        // уборка файла ниже, а не файл прихода с -wal без строки в перечне.
+        let out = match crate::guarded("наполнение нового прихода", || fill(&conn)) {
             Ok(v) => v,
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -537,6 +540,30 @@ mod tests {
         assert_eq!(list(&dir).unwrap().len(), n_before);
         assert!(!std::fs::read_dir(dir.join(PARISH_DIR)).unwrap()
             .any(|f| f.unwrap().file_name().to_string_lossy().contains("Сбойный")));
+
+        // Паника наполнения (битый файл Excel) — то же: ошибка, а не падение,
+        // и ни файла с -wal/-shm, ни строки в перечне.
+        let crashed = create_with(&dir, &seed, "Паника", None, None, |conn| -> Result<(), String> {
+            conn.execute("INSERT INTO lookup (kind, value, value_norm) VALUES ('rank_m', 'мусор', 'мусор')", []).unwrap();
+            panic!("разбор сломался")
+        });
+        let why = crashed.unwrap_err();
+        assert!(why.contains("внутренняя ошибка") && why.contains("разбор сломался"), "{why}");
+        assert_eq!(list(&dir).unwrap().len(), n_before);
+        assert!(!std::fs::read_dir(dir.join(PARISH_DIR)).unwrap()
+            .any(|f| f.unwrap().file_name().to_string_lossy().contains("Паника")));
+        // Копия перед обновлением лежит рядом с приходом и называется по его
+        // файлу; при пропаже общего файла приходом она не становится.
+        let lost_file = list(&dir).unwrap().into_iter().find(|r| r.id == lost).unwrap().file;
+        let lost_path = dir.join(&lost_file);
+        crate::db::backup(&Connection::open(&lost_path).unwrap(), &lost_path).unwrap();
+        let copies: Vec<String> = std::fs::read_dir(dir.join(PARISH_DIR)).unwrap()
+            .map(|f| f.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(crate::db::BACKUP_MARK)).collect();
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert!(copies[0].starts_with(&format!("{lost}-Потерянный{}", crate::db::BACKUP_MARK)), "{copies:?}");
+        std::fs::remove_file(common_path(&dir)).unwrap();
+        assert_eq!(list(&dir).unwrap().len(), n_before, "копия «до-обновления» — не приход");
 
         // Импорт и повторный импорт того же файла: «заменить тот приход» —
         // прежний файл остаётся на диске под другим именем, в перечне — новый.

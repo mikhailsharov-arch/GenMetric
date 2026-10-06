@@ -251,25 +251,39 @@ UPDATE entry
 -- которой название написано иначе («Кнышёво» рядом с «Кнышево» — запись
 -- показала бы другое написание) или полное место набрано руками и отличается
 -- (ревьюер 03.10.2026): слияние ничего набранного не стирает.
+--
+-- 06.10.2026. «Лучшая» строка названия — та, у которой есть подробности, а
+-- не та, у которой меньше номер: раньше пустая строка с меньшим номером
+-- оставалась «лучшей», подробная рядом с ней под условие не подходила, и
+-- двойники не сливались. И осторожность с тёзками: если у названия
+-- подробности двух и более разных видов (два «Хмельничных» в разных уездах),
+-- пустая строка не сливается ни в одну — неясно, чья она.
 -- ---------------------------------------------------------------------------
 DROP TABLE IF EXISTS temp.m_dup;
+DROP TABLE IF EXISTS temp.m_sig;
+CREATE TEMP TABLE m_sig AS
+SELECT p.id, p.name_norm, p.name, p.origin,
+       trim(coalesce(p.full_location, '')) AS full_loc,
+       trim(coalesce(p.np_type, '')) || '|' || trim(coalesce(p.guberniya, '')) || '|'
+        || trim(coalesce(p.uyezd, '')) || '|' || trim(coalesce(p.volost, '')) || '|'
+        || trim(coalesce(p.familio_url, '')) AS sig
+  FROM main.place p;
 CREATE TEMP TABLE m_dup AS
 WITH s AS (
-    SELECT p.id, p.name_norm, p.name,
-           trim(coalesce(p.full_location, '')) AS full_loc,
-           trim(coalesce(p.np_type, '')) || '|' || trim(coalesce(p.guberniya, '')) || '|'
-            || trim(coalesce(p.uyezd, '')) || '|' || trim(coalesce(p.volost, '')) || '|'
-            || trim(coalesce(p.familio_url, '')) AS sig,
-           (SELECT b.id FROM main.place b WHERE b.name_norm = p.name_norm
-             ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''), (b.origin = 'archive'), b.id
-             LIMIT 1) AS best_id
-      FROM main.place p
+    SELECT m.*,
+           (SELECT b.id FROM temp.m_sig b WHERE b.name_norm = m.name_norm
+             ORDER BY (b.sig = '||||'), (b.full_loc = ''), (b.origin = 'archive'), b.id
+             LIMIT 1) AS best_id,
+           (SELECT count(DISTINCT k.sig) FROM temp.m_sig k
+             WHERE k.name_norm = m.name_norm AND k.sig <> '||||') AS kinds
+      FROM temp.m_sig m
 )
 SELECT s.id, s.best_id
   FROM s JOIN s b ON b.id = s.best_id
  WHERE s.id <> s.best_id AND s.name = b.name
-   AND (s.sig = '||||' OR s.sig = b.sig)
+   AND (s.sig = b.sig OR (s.sig = '||||' AND s.kinds <= 1))
    AND (s.full_loc = '' OR s.full_loc = s.name OR s.full_loc = b.full_loc);
+DROP TABLE IF EXISTS temp.m_sig;
 UPDATE main.person_mention
    SET place_id = (SELECT d.best_id FROM temp.m_dup d WHERE d.id = main.person_mention.place_id)
  WHERE place_id IN (SELECT id FROM temp.m_dup);

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { titleCase } from "./names";
+import { showNoName, titleCase } from "./names";
 import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
@@ -113,6 +113,9 @@ export default function IofField({
   /** Сколько в списке детей-тёзок первой строки (0 — тёзок нет). */
   const [namesakes, setNamesakes] = useState(0);
   const [namesFirstShown, setNamesFirstShown] = useState(false);
+  /** НП умершего набран, детей с таким именем в нём нет, а в приходе есть:
+   *  сколько их. Пустой список без объяснения читался как «не работает». */
+  const [elsewhere, setElsewhere] = useState(0);
   const seq = useRef(0);
   const justPicked = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -184,6 +187,7 @@ export default function IofField({
     setOpen(false);
     setPersons([]);
     setWords([]);
+    setElsewhere(0);
   }
 
   // Только набор с клавиатуры открывает список: программная подстановка
@@ -210,6 +214,7 @@ export default function IofField({
     // и перезапускает эффект — открытый по набору список пропадал бы.
     if (!byKeyboard) return;
     const mine = ++seq.current;
+    const askedGender = gender ?? parsedRef.current?.gender ?? null;
 
     Promise.all([
       wantPersons
@@ -266,12 +271,30 @@ export default function IofField({
         setNamesFirstShown(!!infantRows && !/\s/.test(value.trimStart()));
         setActive(twins && !namesFirst ? -1 : 0);
         setOpen(foundPersons.length + foundWords.length > 0);
+        setElsewhere(0);
+        // НП умершего отсеял всех детей — узнать, есть ли они в приходе
+        // вообще: опечатка в НП («Букарина») иначе выглядит как «ребёнка нет».
+        const placeTyped = infantPlace?.trim();
+        if (wantPersons && infantRows && placeTyped && infants.length === 0) {
+          invoke<InfantHint[]>("suggest_infant", {
+            // Пол — тот же, с каким спрашивали список выше: разбор имени за
+            // это время мог прийти, и счёт разошёлся бы со списком.
+            prefix: query, limit: 30, year: infantYear ?? null, place: null, gender: askedGender,
+          })
+            .then((all) => {
+              if (mine !== seq.current || all.length === 0) return;
+              setElsewhere(all.length);
+              setOpen(true);
+            })
+            .catch((e) => { if (mine === seq.current) report("Не удалось получить подсказки к ИОФ", e); });
+        }
       })
       .catch((e) => {
         if (mine !== seq.current) return;
         setPersons([]);
         setWords([]);
         setOpen(false);
+        setElsewhere(0);
         report("Не удалось получить подсказки к ИОФ", e);
       });
     // Пола в зависимостях намеренно нет. Разбор имени приходит асинхронно,
@@ -605,7 +628,8 @@ export default function IofField({
             // Только при настоящем уходе из поля: окно программы потеряло
             // фокус (клик в скан) — человек вернётся и допишет слово; правка
             // текста здесь запустила бы сверку недописанного (ревьюер 03.10.2026).
-            const proper = titleCase(e.currentTarget.value);
+            // И заглушка вместо имени («—», «?») — сразу как сохранится: «***».
+            const proper = showNoName(titleCase(e.currentTarget.value));
             if (proper !== e.currentTarget.value && (e.relatedTarget !== null || document.hasFocus())) {
               valueRef.current = proper;
               onChange(proper, null);
@@ -636,8 +660,14 @@ export default function IofField({
             )}
           </div>
         )}
-        {open && total > 0 && (
+        {open && (total > 0 || elsewhere > 0) && (
           <ul className="suggest">
+            {elsewhere > 0 && (
+              <li className="empty" data-infant-elsewhere onMouseDown={(e) => e.preventDefault()}>
+                в «{infantPlace?.trim()}» детей с таким именем нет, в приходе есть: {elsewhere}
+                {elsewhere >= 30 ? " или больше" : ""} — проверьте НП умершего или сотрите его
+              </li>
+            )}
             {namesakes > 1 && active < 0 && (
               <li className="empty" onMouseDown={(e) => e.preventDefault()}>
                 в деле {namesakes} детей с этим именем — выберите стрелкой ↓

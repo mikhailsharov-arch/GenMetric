@@ -29,9 +29,13 @@ const ORDER: Item["kind"][] = ["skipped", "note", "name", "patronymic"];
 const SECTION = ["", "рождение", "брак", "смерть"];
 
 export default function ReviewDialog({ onClose, onOpenEntry }: {
-  onClose: () => void; onOpenEntry: (section: number, id: number) => void;
+  onClose: () => void;
+  /** Открыть запись в форме. Возвращает название формы, если она занята
+   *  (в ней набрана или открыта другая запись) — тогда окно остаётся. */
+  onOpenEntry: (section: number, id: number) => string | null;
 }) {
   const [items, setItems] = useState<Item[]>([]);
+  const [busyForm, setBusyForm] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
 
   function load(done: boolean) {
@@ -55,6 +59,12 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
         Всё, что импорт перенёс не дословно или не смог сверить. «Открыть запись» —
         запись в форме (форма должна быть пустой); «Готово» — убрать строку из списка.
       </p>
+      {busyForm && (
+        <p className="reviewbusy" data-review-busy>
+          Форма «{busyForm}» занята: в ней набрана или открыта на правку другая запись. Закройте
+          это окно, сохраните или очистите её — и откройте запись отсюда снова. Список никуда не денется.
+        </p>
+      )}
       {ORDER.map((kind) => {
         const rows = items.filter((i) => i.kind === kind);
         if (!rows.length) return null;
@@ -76,7 +86,7 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
                     <td>
                       {i.entry_id !== null && i.section !== null && (
                         <button type="button" className="toggle small"
-                                onClick={() => onOpenEntry(i.section!, i.entry_id!)}>
+                                onClick={() => setBusyForm(onOpenEntry(i.section!, i.entry_id!))}>
                           Открыть запись
                         </button>
                       )}
