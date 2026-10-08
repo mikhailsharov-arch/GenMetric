@@ -73,30 +73,37 @@ def main() -> int:
     print("\n1. Целостность базы")
     check("integrity_check", one("PRAGMA integrity_check") == "ok")
     check("foreign_key_check", len(q("PRAGMA foreign_key_check")) == 0)
-    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 9)
+    check("версия схемы записана", one("SELECT max(version) FROM schema_version") == 10)
 
     print("\n2. Сверка с текстовыми справочниками")
     for csv_name, table in [("name_dict.csv", "name_dict"), ("lookup.csv", "lookup"),
                             ("lookup_kind.csv", "lookup_kind"), ("role.csv", "role"),
-                            ("place.csv", "place"), ("setting.csv", "setting")]:
+                            ("setting.csv", "setting")]:
         n_csv = len(read_csv(csv_name))
-        # к настройкам сборщик добавляет отпечаток поставки — его в CSV нет;
-        # к перечням — волости из справочника пунктов (перечень volost, 03.10.2026)
+        # к настройкам сборщик добавляет отпечаток поставки — его в CSV нет
         expected = n_csv + 1 if table == "setting" else n_csv
-        if table == "lookup":
-            places = read_csv("place.csv")
-            expected += len({r["volost"].strip() for r in places if r["volost"].strip()})
-            # …и уезды с губерниями пунктов, которых нет в lookup.csv (05.10.2026)
-            for kind in ("uyezd", "guberniya"):
-                have = {norm(r["value"]) for r in read_csv("lookup.csv") if r["kind"] == kind}
-                expected += len({norm(r[kind]) for r in places if r[kind].strip()} - have)
         n_db = one(f"SELECT count(*) FROM {table}")
         check(f"{table} перенесена полностью", expected == n_db, f"ожидалось {expected}, в базе {n_db}")
 
     kinds_csv = {r["kind"] for r in read_csv("lookup.csv")}
     kinds_db = {r["kind"] for r in q("SELECT DISTINCT kind FROM lookup")}
-    check("состав перечней совпадает (плюс волости из справочника пунктов)", kinds_csv | {"volost"} == kinds_db,
-          f"{len(kinds_db)} перечней")
+    check("состав перечней совпадает", kinds_csv == kinds_db, f"{len(kinds_db)} перечней")
+    # Чистая поставка (Роман 06.10 и 07.10.2026): пунктов нет, перечни — по
+    # его файлу «Справочник». Чужих наработок новый человек не получает.
+    check("в поставке нет ни одного населённого пункта", one("SELECT count(*) FROM place") == 0)
+    check("волостей в поставке нет — они заводятся с пунктами",
+          one("SELECT count(*) FROM lookup WHERE kind = 'volost'") == 0)
+    sizes = dict(q("SELECT kind, count(*) FROM lookup GROUP BY kind"))
+    want = {"archive": 53, "church": 80, "uyezd": 1, "guberniya": 115, "rank_m": 51, "rank_f": 41,
+            "rank_clergy": 9, "confession": 1, "kinship": 6, "marriage_order": 3, "death_cause": 40, "np_type": 12}
+    check("перечни — по файлу «Справочник»", all(sizes.get(k) == n for k, n in want.items()),
+          str({k: sizes.get(k) for k in want if sizes.get(k) != want[k]}))
+    check("узких званий прежней поставки нет",
+          one("SELECT count(*) FROM lookup WHERE value IN ('уволенный в запас армии бомбардир наводчик', "
+              "'директор Лодзинской гимназии', 'притча вдова')") == 0)
+    check("в поставке нет персон, дел, записей и частот",
+          all(one(f"SELECT count(*) FROM {t}") == 0 for t in
+              ("person_index", "clergy_index", "spouse_index", "mk_case", "entry", "person_mention", "usage_stat")))
     check("у каждого перечня есть название",
           one("SELECT count(*) FROM lookup l LEFT JOIN lookup_kind k USING(kind) WHERE k.kind IS NULL") == 0)
 
@@ -146,12 +153,6 @@ def main() -> int:
                     GROUP BY k.kind, k.title
                     ORDER BY count(l.id) DESC, k.title""")
     check("состав справочников считается", len(summary) == 15, f"{len(summary)} перечней")
-    check("уезды справочника пунктов — в перечне: «Юрьевецкий» подсказывается в карточке",
-          one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Юрьевецкий'") == 1
-          and one("SELECT count(*) FROM place p WHERE trim(coalesce(p.uyezd, '')) <> '' AND NOT EXISTS "
-                  "(SELECT 1 FROM lookup l WHERE l.kind = 'uyezd' AND l.value = p.uyezd)") == 0)
-    check("волости справочника пунктов — в перечне volost",
-          one("SELECT count(*) FROM lookup WHERE kind = 'volost'") > 10)
     check("в сводке нет перечней без названия", all(r[1] for r in summary))
 
     print("\n6. Ранжирование подсказок по частоте")

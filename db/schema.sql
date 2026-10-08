@@ -143,6 +143,12 @@ CREATE TABLE place (
   -- общий для всех приходов, и из двух разных карточек одного пункта верна
   -- более поздняя (db/parish_sync.sql). Пусто — карточку не правили.
   updated_at      TEXT,
+  -- Комментарий деревни-тёзки (схема 10, 08.10.2026; Роман 06.10.2026: два
+  -- «Хмельничных» в разных приходах). Пункт с комментарием называется в
+  -- программе «Хмельничное (Столпино)» — так он стоит в name, в поле НП и в
+  -- памяти персон; комментарий отдельно — чтобы в выгрузки шло чистое
+  -- название (statements.sql, place_clean). Пусто — комментария нет.
+  comment         TEXT,
   UNIQUE (name, np_type, uyezd, guberniya)
 );
 CREATE INDEX ix_place_norm ON place (name_norm);
@@ -154,6 +160,16 @@ CREATE INDEX ix_place_norm ON place (name_norm);
 CREATE TABLE place_renamed (
   old_norm    TEXT PRIMARY KEY,
   renamed_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Значения перечней, убранные при обновлении как нигде не занятые (схема 10,
+-- 08.10.2026; Роман 08.10.2026: «убрать лишние неиспользуемые значения и у нас
+-- тоже»). Сверка приходов (parish_sync.sql) убирает их и из общего файла —
+-- иначе они тут же вернулись бы оттуда — и очищает эту таблицу.
+CREATE TABLE lookup_dropped (
+  kind        TEXT NOT NULL,
+  value_norm  TEXT NOT NULL,
+  PRIMARY KEY (kind, value_norm)
 );
 
 -- ============================================================================

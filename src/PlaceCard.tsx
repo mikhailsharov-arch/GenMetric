@@ -2,9 +2,9 @@ import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import Suggest from "./Suggest";
-import { report } from "./errors";
+import { report, warn } from "./errors";
 import { focusNextField } from "./focus";
-import { capFirst } from "./names";
+import { capFirst, placeLabel, splitPlaceLabel } from "./names";
 
 /**
  * Карточка населённого пункта при первом вводе (Роман, приоритет 2 от
@@ -25,6 +25,8 @@ export type Similar = { value: string; distance: number };
 export type PlaceInfo = {
   id: number; name: string; np_type: string | null; guberniya: string | null;
   uyezd: string | null; volost: string | null; familio_url: string | null; origin: string;
+  /** Комментарий деревни-тёзки и название без него (08.10.2026). */
+  comment: string; clean: string;
 };
 
 type Props = {
@@ -36,19 +38,43 @@ type Props = {
   /** Волость последнего заведённого пункта — по умолчанию у нового (Роман
    *  06.10.2026): пункты одной волости заводят подряд. */
   lastVolost?: string;
+  /** Тип нового пункта по умолчанию: «с.» у села прихода, иначе «д.». */
+  defaultType?: string;
+  /** Известный пункт без единой подробности заполнять из дела, как новый, —
+   *  только у карточки села прихода (её открывает экран «Дело»). У карточки
+   *  из формы записи так нельзя: пункт чужого прихода получил бы уезд дела. */
+  fillBare?: boolean;
   onPick: (name: string) => void;
   onSaved: (name: string) => void;
   onCancel: () => void;
 };
 
-export default function PlaceCard({ name, similar, defaults, existing, lastVolost, onPick, onSaved, onCancel }: Props) {
+export default function PlaceCard({ name, similar, defaults, existing, lastVolost, defaultType, fillBare, onPick, onSaved, onCancel }: Props) {
   // Название правится только у известного пункта (Роман 25.09.2026: «вдруг
   // пользователь допустил ошибку в названии»); у нового оно уже в заголовке.
-  const [title, setTitle] = useState(existing?.name ?? name);
-  const [npType, setNpType] = useState(existing ? existing.np_type ?? "" : "д.");
-  const [guberniya, setGuberniya] = useState(existing ? existing.guberniya ?? "" : defaults.guberniya);
-  const [uyezd, setUyezd] = useState(existing ? existing.uyezd ?? "" : defaults.uyezd);
-  const [volost, setVolost] = useState(existing ? existing.volost ?? "" : lastVolost ?? "");
+  // Название в карточке — чистое; комментарий деревни-тёзки — отдельным
+  // полем (Роман 06.10.2026). В программе пункт называется «Название
+  // (комментарий)», в выгрузки идёт чистое название.
+  // Новый пункт набрали сразу с комментарием — «Хмельничное (Нежитино)», по
+  // образцу подсказки: хвост в скобках раскладывается в поле комментария,
+  // иначе скобки ушли бы в выгрузку как часть названия (ревьюер 08.10.2026).
+  // Скобки — часть названия? Человек сотрёт комментарий и допишет название.
+  const typed = existing ? { name: "", comment: "" } : splitPlaceLabel(name);
+  const [title, setTitle] = useState(existing?.clean ?? existing?.name ?? typed.name);
+  const [comment, setComment] = useState(existing?.comment ?? typed.comment);
+  // Название нового пункта правится в карточке, только если его разложили.
+  const titleEditable = !!existing || typed.comment !== "";
+  // Известный пункт без единой подробности (заведён одним названием: село
+  // прихода, пункт из архива Excel) заполняется как новый — из дела (Роман
+  // 06.10.2026: карточка села «остаётся пустой»). Заполненное не трогается.
+  const bare = !!fillBare && !!existing
+    && ![existing.np_type, existing.guberniya, existing.uyezd, existing.volost, existing.familio_url]
+      .some((v) => (v ?? "").trim() !== "");
+  const fresh = !existing || bare;
+  const [npType, setNpType] = useState(fresh ? defaultType ?? "д." : existing.np_type ?? "");
+  const [guberniya, setGuberniya] = useState(fresh ? defaults.guberniya : existing.guberniya ?? "");
+  const [uyezd, setUyezd] = useState(fresh ? defaults.uyezd : existing.uyezd ?? "");
+  const [volost, setVolost] = useState(existing && !bare ? existing.volost ?? "" : existing ? "" : lastVolost ?? "");
   const [url, setUrl] = useState(existing?.familio_url ?? "");
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
@@ -58,13 +84,17 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
     if (busy) return;
     setBusy(true);
     try {
-      const finalName = (existing ? title : name).trim();
-      const card = { name: finalName, np_type: npType, guberniya, uyezd, volost, familio_url: url };
+      const cleanName = (titleEditable ? title : name).trim();
+      const card = { name: cleanName, comment: comment.trim(), np_type: npType, guberniya, uyezd, volost, familio_url: url };
       if (existing) await invoke("place_update", { id: existing.id, card });
       else await invoke<number>("place_save", { card });
-      onSaved(finalName);
+      onSaved(placeLabel(cleanName, comment));
     } catch (e) {
-      report(`Не удалось сохранить населённый пункт «${name}»`, e);
+      // «Такой пункт уже есть» — не поломка, а подсказка: присылать нечего
+      // (проверяющий 08.10.2026: стёрли комментарий у тёзки — вышло название
+      // другого пункта, а полоса говорила «это не ваша ошибка»).
+      if (String(e).includes("уже есть в справочнике")) warn("Такой пункт уже есть", String(e));
+      else report(`Не удалось сохранить населённый пункт «${name}»`, e);
     } finally {
       setBusy(false);
     }
@@ -77,7 +107,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
         <p className="hint">
           Поправьте, что нужно, включая название, — Enter ведёт по полям, на последнем
           сохраняет. Записи с этим пунктом получат новое название сами.
-          {existing.origin === "archive" && " Пункт пришёл из архива Excel без губернии и уезда."}
+          {bare && " У пункта не было подробностей — тип, губерния и уезд подставлены из дела, проверьте их."}
         </p>
       )}
       {!existing && similar.length > 0 && (
@@ -115,7 +145,16 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
           {" "}губерния и уезд подставлены из дела, волость — от последнего заведённого пункта; ссылку можно оставить пустой.
         </p>
       )}
-      {existing && (
+      {/* Скобки разложены не молча: у заказчика есть пункты, где скобки —
+          часть названия («Загнетино (Поздеевка)»), и в выгрузку они идут
+          (проверяющий 08.10.2026). */}
+      {!existing && typed.comment !== "" && (
+        <p className="hint" data-split-hint>
+          <b>Скобки вынесены в комментарий:</b> в выгрузку пойдёт «{title.trim()}», а «{comment.trim() || typed.comment}» останется
+          пометкой для деревень-тёзок. Если скобки — часть названия, сотрите комментарий и допишите их в название.
+        </p>
+      )}
+      {titleEditable && (
         <div className="field">
           <label>Название</label>
           <div className="fieldbody">
@@ -132,6 +171,18 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
       {/* Волость — со списком уже известных; набранная в карточке губерния,
           уезд и волость запоминаются (Роман 02.10.2026). */}
       <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse fix={capFirst} />
+      {/* Комментарий — для деревень с одинаковым названием: «Хмельничное» из
+          Столпина и «Хмельничное» из Нежитина. Нужен редко, поэтому вне обхода
+          Enter (без data-field): обычная карточка заполняется теми же
+          нажатиями, что и раньше. Tab и мышь в поле ведут. */}
+      <div className="field">
+        <label title="Для деревень с одинаковым названием. Виден в подсказке и в поле НП, в выгрузки не идёт.">Коммент.</label>
+        <div className="fieldbody">
+          <input data-place-comment value={comment} onChange={(e) => setComment(e.target.value)}
+                 placeholder="для тёзок: чей приход или волость" autoComplete="off" spellCheck={false}
+                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); urlField.current?.focus(); } }} />
+        </div>
+      </div>
       <div className="field">
         <label>Familio</label>
         <div className="fieldbody">
@@ -148,7 +199,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
                 title="Откроет в браузере поиск Familio по названию, губернии, уезду и волости из карточки"
                 onClick={() => {
                   invoke<string>("open_familio", {
-                    name: (existing ? title : name).trim(), guberniya, uyezd, volost,
+                    name: (titleEditable ? title : name).trim(), guberniya, uyezd, volost,
                   }).catch((e) => report("Не удалось открыть поиск на Familio", e));
                   // Найденную ссылку вставляют сюда — фокус ждёт в поле.
                   urlField.current?.focus();

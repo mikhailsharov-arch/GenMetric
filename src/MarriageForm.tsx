@@ -392,7 +392,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                         person(by("clergy3"), EMPTY_PERSON)]);
       setEditingId(e.id);
       window.scrollTo({ top: 0 });
-      countField.current?.focus();
+      // В день венчания, а не в «Счёт»: счёт вне обхода клавишами.
+      dayField.current?.focus();
     } catch (err) {
       report("Не удалось открыть запись о браке", err);
     }

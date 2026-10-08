@@ -107,6 +107,8 @@ type Props = {
   enterToEmpty?: boolean;
   /** Уход из поля ИОФ. */
   onIofLeave?: () => void;
+  /** Мать: «законная жена его» в подсказке персон — как есть. */
+  keepWifeRank?: boolean;
 };
 
 /** Самое частое звание роли и пола; ответ держится минуту — частоты меняются
@@ -202,7 +204,7 @@ export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
-  defaultRank, enterToEmpty, onIofLeave,
+  defaultRank, enterToEmpty, onIofLeave, keepWifeRank,
 }: Props) {
   const latest = useRef(person);
   latest.current = person;
@@ -386,6 +388,7 @@ export default function PersonBlock({
         enterToEmpty={enterToEmpty}
         onLeave={onIofLeave}
         noSurnameMark={compact}
+        keepWifeRank={keepWifeRank}
         infantRows={infantRows}
         infantYear={infantYear}
         infantPlace={infantPlace === undefined ? person.place : infantPlace}

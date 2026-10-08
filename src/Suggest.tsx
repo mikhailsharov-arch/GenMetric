@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { focusNextField, scrollInList } from "./focus";
 import { report } from "./errors";
-import { typedCase } from "./names";
+import { splitPlaceLabel, typedCase } from "./names";
 
 export type Item = { value: string; tier: number; count: number };
 
@@ -137,6 +137,14 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
 
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  /** Пункт с комментарием деревни-тёзки: комментарий — серым (Роман 06.10.2026:
+   *  «Хмельничное (Столпино)» — чистое название и рядом серым комментарий). */
+  function placeShown(value: string) {
+    if (kind !== "place") return value;
+    const p = splitPlaceLabel(value);
+    return p.comment ? <>{p.name} <span className="sub placecomment">({p.comment})</span></> : value;
+  }
+
   /**
    * Выбор строки — и подстановка, и переход к следующему полю одним нажатием.
    *
@@ -270,7 +278,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
                 pick(it);
               }}
             >
-              <span className="val">{it.value}</span>
+              <span className="val">{placeShown(it.value)}</span>
               <span className={`tier t${it.tier}`}>{TIER_TITLE[it.tier]}</span>
             </li>
           ))}

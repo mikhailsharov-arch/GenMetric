@@ -688,11 +688,14 @@ def incident_20261001_pustye_mesta():
     check("выгрузка берёт лучшую строку пункта по названию", "CREATE TEMP TABLE x_place" in sql
           and "LEFT JOIN place p ON p.id = xp.best_id" in sql)
     check("полное место не бывает пустым при известном пункте",
-          "coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), ''), p.name) AS place_full" in sql)
+          "coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), '')," in sql
+          and "AS place_full" in sql)
     te = read("db/test_export.py")
     check("поведение проверяется в test_export (двойник и пункт без подробностей)",
           "двойник: person_location" in te and "пункт без подробностей: person_location" in te)
-    check("…и в test_upgrade", "пункт из архива без подробностей получил их из поставки" in read("db/test_upgrade.py"))
+    # С 08.10.2026 пунктов в поставке нет: подробности пункту даёт карточка, а
+    # обновление чужих подробностей не подставляет.
+    check("…и в test_upgrade", "пункт из архива без подробностей остался как был" in read("db/test_upgrade.py"))
 
 
 def incident_20261002_odno_delo_na_vse_gody():
@@ -793,7 +796,9 @@ def incident_20261005_enter_i_uezd():
           and "knownPersons.filter((p) => /\\s/.test(p.iof.trim()) || p.place || p.rank)" in iof)
     check("уезды и губернии пунктов — в перечнях поставки",
           '("uyezd", "uyezd"), ("guberniya", "guberniya")' in read("db/build_seed.py"))
-    check("…и это проверяет verify_seed", "«Юрьевецкий» подсказывается в карточке" in read("db/verify_seed.py"))
+    # С 08.10.2026 поставка чистая: уезды пополняет сама карточка пункта.
+    check("…а карточка пункта пополняет перечни уезда, губернии и волости",
+          'extend_lookup(conn, "uyezd", card.uyezd.as_deref())' in read("src-tauri/src/main.rs"))
     check("поля, которые подставляются сами, пропускают все клавиши перехода",
           'hasAttribute("data-skip")' in read("src/focus.ts") and "data-skip" in read("src/NumberField.tsx"))
 
@@ -948,9 +953,12 @@ def incident_20261006_otvet_na_sborku_05_10():
           'classList.add("up")' in focus and "floorNow()" in focus and ".suggest.up" in read("src/styles.css"))
     birth = read("src/BirthForm.tsx")
     check("Enter в ИОФ матери ведёт к первому пустому полю", "enterToEmpty" in birth and "focusNextEmptyField(el)" in iof)
-    place_csv = read("db/seed/place.csv")
-    check("тестовых строк шаблона в поставке нет",
-          not any(w in place_csv for w in ("Лодзь", "Петровская", "Галический", "Котело")))
+    # С 08.10.2026 пунктов в поставке нет вовсе; тот же файл теперь — пункты
+    # для проверок, и тестовых строк шаблона в нём тоже быть не должно.
+    place_csv = read("db/fixtures/place.csv")
+    check("тестовых строк шаблона нет ни в поставке, ни в пунктах для проверок",
+          place_csv != "" and not (REPO / "db" / "seed" / "place.csv").exists()
+          and not any(w in place_csv for w in ("Лодзь", "Петровская", "Галический", "Котело")))
     migrate = read("db/migrate.sql")
     check("у установленных тестовые строки уходят, только если пункт не занят и не правлен",
           "name_norm = 'лодзь'" in migrate and "NOT EXISTS (SELECT 1 FROM main.person_mention m WHERE m.place_id = main.place.id)" in migrate
@@ -1070,7 +1078,69 @@ def incident_20261007_otvet_na_sborku_06_10():
           and "const pageGuard = editingId === null ?" in birth and "const pageGuard = fresh ?" in marriage)
 
 
+def incident_20261008_chistaya_postavka():
+    """
+    06–08.10.2026, Роман: новый человек получал справочник пунктов и звания
+    чужого прихода («Мои наработанные данные мешать не должны»); два
+    «Хмельничных» из разных приходов были одним пунктом; персона с тремя
+    званиями — тремя строками подсказки; «законная жена его» подставлялась
+    восприемнице. Спека 2026-10-08-chistaya-postavka-i-punkty.
+    """
+    seed_dir = sorted(p.name for p in (REPO / "db" / "seed").glob("*.csv"))
+    check("в поставке нет файла пунктов; пункты для проверок — в fixtures",
+          "place.csv" not in seed_dir and (REPO / "db" / "fixtures" / "place.csv").exists())
+    build = read("db/build_seed.py")
+    check("сборщик без явного файла пунктов собирает пустой справочник",
+          "def build(db_path: Path, places: Path | None = None)" in build
+          and "rows = read_csv(places) if places else []" in build)
+    check("файл пунктов для проверок в отпечаток поставки не входит",
+          "fixtures" not in build.split("def seed_stamp", 1)[-1].split("return h.hexdigest()", 1)[0])
+    workflow = read(".github/workflows/build.yml")
+    check("установщик собирается без пунктов", "build_seed.py src-tauri/resources/seed.sqlite" in workflow
+          and "TEST_PLACES" not in workflow)
+    mig = read("db/migrate.sql")
+    cleanup = mig.split("-- Уборка перечней", 1)[-1]
+    check("уборка перечней: только то, чего нет в поставке и что нигде не стоит",
+          "NOT EXISTS (SELECT 1 FROM seed.lookup s WHERE s.kind = l.kind AND s.value_norm = l.value_norm)" in cleanup
+          and "NOT EXISTS (SELECT 1 FROM temp.m_used u" in cleanup)
+    check("уборка смотрит записи, дела и пункты",
+          all(f"FROM main.{t} WHERE" in cleanup for t in ("person_mention", "mk_case", "place")))
+    check("уборка не удаляет ни записей, ни упоминаний, ни пунктов, ни памяти персон",
+          not any(f"DELETE FROM main.{t}" in cleanup or f"UPDATE main.{t}" in cleanup
+                  for t in ("entry", "person_mention", "place", "mk_case", "person_index", "spouse_index", "clergy_index")))
+    check("убранное уходит и из общего файла приходов — иначе вернулось бы сверкой",
+          "INSERT OR IGNORE INTO main.lookup_dropped" in cleanup
+          and "FROM main.lookup_dropped d" in read("db/parish_sync.sql"))
+    tu = read("db/test_upgrade.py")
+    check("обновление проверяется снимком записей до и после", "snapshot(db) == before" in tu)
+    sql = read("db/statements.sql")
+    blocks = dict((b.split("\n", 1)[0].strip(), b) for b in sql.split("-- @")[1:])
+    check("у пункта с комментарием краткое и полное место — из чистого названия",
+          all("trim(coalesce(:np_type, '') || ' ' || :clean)" in blocks[b] and ":comment" in blocks[b]
+              for b in ("place_save", "place_update")))
+    check("в выгрузку идёт чистое название пункта",
+          "substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3)" in blocks["export_prepare"]
+          and "substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3)" in blocks["familio_location"]
+          and "p.name AS place," not in blocks["export_prepare"])
+    main_rs = read("src-tauri/src/main.rs")
+    check("название пункта с комментарием собирает одна функция — и при заведении, и при правке",
+          main_rs.count("genmetric_core::text::place_label(&clean, &comment)") == 2)
+    check("общий файл приходов получает колонку комментария",
+          "ALTER TABLE place ADD COLUMN comment TEXT" in read("src-tauri/core/src/parish.rs")
+          and "comment         TEXT" in read("db/common.sql"))
+    check("одна персона — одна строка: правило в запросе, память не переписывается",
+          all("row_number() OVER (PARTITION BY p.iof, p.place" in blocks[b]
+              for b in ("person_suggest", "person_suggest_infant"))
+          and "person_index" not in cleanup)
+    check("«законная жена его» вне поля матери — по званию мужа",
+          'hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());' in main_rs
+          and "keepWifeRank" in read("src/BirthForm.tsx").split('title="Мать"', 1)[-1][:500])
+    check("версия схемы 10 — в сборщике и в программе",
+          "SCHEMA_VERSION = 10" in build and "SCHEMA_VERSION: i64 = 10" in read("src-tauri/core/src/db.rs"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261008_chistaya_postavka,
     incident_20261007_otvet_na_sborku_06_10,
     incident_20261006_otvet_na_sborku_05_10,
     incident_20261006_molcha_i_padenie,

@@ -109,6 +109,10 @@ type Props = {
   /** Без отметки «такой фамилии ещё не было» — причт: его фамилии в память
    *  фамилий прихода не идут. */
   noSurnameMark?: boolean;
+  /** Поле матери: персону со званием «законная жена его» подсказывать как
+   *  есть. В остальных полях звание жены показывается по званию мужа —
+   *  «крестьянская жена» (Роман 06.10.2026). */
+  keepWifeRank?: boolean;
 };
 
 export default function IofField({
@@ -116,7 +120,7 @@ export default function IofField({
   infantRows,
   infantYear,
   infantPlace,
-  singleWord, enterToEmpty, onLeave, noSurnameMark,
+  singleWord, enterToEmpty, onLeave, noSurnameMark, keepWifeRank,
 }: Props) {
   const onLeaveRef = useRef(onLeave);
   onLeaveRef.current = onLeave;
@@ -243,6 +247,7 @@ export default function IofField({
             // Дети идут своими строками (infantRows) — тогда в общем списке
             // их поднимать незачем.
             preferInfant: (preferInfant ?? false) && !infantRows,
+            keepWifeRank: keepWifeRank ?? false,
           })
         : Promise.resolve([] as PersonHint[]),
       wantPersons && infantRows
@@ -568,13 +573,13 @@ export default function IofField({
   }
 
   // Современное написание — целиком, «Василий Васильевич Промтов», а не
-  // одно изменившееся отчество. Заказчик 22.09.2026. Показывается, только
-  // если хоть что-то отличается от набранного.
-  const differs = parsed && (
-    (parsed.first_name_modern && parsed.first_name_modern !== parsed.first_name) ||
-    (parsed.patronymic_modern && parsed.patronymic_modern !== parsed.patronymic));
+  // одно изменившееся отчество (заказчик 22.09.2026). С 08.10.2026 — всегда,
+  // и когда совпадает с набранным (Роман 06.10.2026: «Показывать строку
+  // всегда» — у «Александра Федоровна Фотеичева» он её не увидел и счёл
+  // поломкой). Строка под полем у разобранного имени есть и так — с полом.
+  const shown = !!parsed && parsed.known_name && value.trim() !== "";
   // У «***» (имени в книге нет) звёздочки в современное написание не идут.
-  const modern = differs
+  const modern = shown
     ? [parsed.name_missing ? null : parsed.first_name_modern ?? parsed.first_name,
        parsed.patronymic_modern ?? parsed.patronymic,
        parsed.surname].filter(Boolean).join(" ")

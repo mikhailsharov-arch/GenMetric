@@ -36,7 +36,7 @@ REPO = DB_DIR.parent
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
 FROM_VERSION = 6
-TO_VERSION = 9
+TO_VERSION = 10
 
 ok_count = 0
 fail_count = 0
@@ -83,6 +83,19 @@ def build_old_database(path: Path) -> None:
         [("rank_m", "крестьянин", "крестьянин", 10, "seed"),
          # значение, которого нет в поставке: человек завёл его сам
          ("rank_m", "мещанин города Юрьевца", "мещанин города юрьевца", 9999, "user"),
+         # Уборка перечней 08.10.2026 (ответ Романа 6Б): значения, которых нет в
+         # новой поставке. Набранное человеком и нигде не стоящее — уйдёт;
+         # значение прежней поставки, не стоящее нигде, — уйдёт; оно же,
+         # стоящее в записи, — останется.
+         ("rank_m", "отставной канонир", "отставной канонир", 9998, "user"),
+         ("rank_m", "уволенный в запас армии бомбардир наводчик",
+          "уволенный в запас армии бомбардир наводчик", 9997, "seed"),
+         ("rank_m", "отставной унтер-офицер", "отставной унтер-офицер", 9996, "seed"),
+         ("death_cause", "древность", "древность", 9995, "seed"),
+         ("death_cause", "апоплексия", "апоплексия", 9994, "seed"),
+         # В записи это звание стоит в дореформенном написании («…ъ»), а в
+         # перечень сохранение кладёт современное — оно занято (ревьюер 08.10.2026).
+         ("rank_m", "безземельный крестьянин", "безземельный крестьянин", 9993, "user"),
          # Две записи, попавшие в чужой перечень прошлой поставкой. У Романа
          # они в базе есть, и просто убрать их из поставки недостаточно.
          ("rank_f", "крестьянский сын", "крестьянский сын", 470, "seed"),
@@ -101,6 +114,18 @@ def build_old_database(path: Path) -> None:
                "VALUES (1, 1, 1, '957', 6, 12, 1896)")
     db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name) "
                "VALUES (1, 'child', 10, 'Евграф')")
+    # Звания и причина смерти, стоящие в записи: в перечне они останутся. Одно
+    # набрано с заглавной буквы — сравнение идёт по ключу, не по написанию.
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, rank) "
+               "VALUES (1, 'child', 11, 'Занятый', 'Мещанин города Юрьевца')")
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, rank, death_cause) "
+               "VALUES (1, 'child', 12, 'Занятая', 'отставной унтер-офицер', 'древность')")
+    db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, rank) "
+               "VALUES (1, 'child', 13, 'Старинный', 'безземельный крестьянинъ')")
+    db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
+               "VALUES ('rank_m','global','','отставной канонир','отставной канонир',7)")
+    db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) "
+               "VALUES ('rank_m','global','','отставной унтер-офицер','отставной унтер-офицер',5)")
     # Запись другого года в том же деле: до 02.10.2026 дело было одно на всю
     # базу, а реквизиты — у каждого года свои. Обновление заводит году своё дело.
     db.execute("INSERT INTO entry (id, case_id, section, page, event_day, event_month, event_year, "
@@ -243,6 +268,18 @@ def upgrade(user_db: Path, seed_db: Path) -> None:
     conn.close()
 
 
+def snapshot(db) -> list:
+    """Набранное: записи и упоминания с названием пункта (не номером — слияние
+    двойников пунктов номер меняет законно). Обновление обязано оставить это
+    как было; исключение — починка счёта девочек 21.09.2026, она в снимок не
+    входит."""
+    return db.execute(
+        "SELECT e.id, e.section, e.page, e.event_day, e.event_month, e.event_year, e.note, "
+        "       m.role_code, m.sort_order, m.first_name, m.patronymic, m.surname, m.gender, m.rank, "
+        "       m.confession, m.note, (SELECT p.name FROM place p WHERE p.id = m.place_id) "
+        "  FROM entry e LEFT JOIN person_mention m ON m.entry_id = e.id ORDER BY e.id, m.id").fetchall()
+
+
 def main() -> int:
     _utf8_stdout()
     with tempfile.TemporaryDirectory() as tmp:
@@ -271,6 +308,7 @@ def main() -> int:
                          ).fetchone()[0] == 2)
         check("у человека есть набранная запись",
               db.execute("SELECT count(*) FROM entry").fetchone()[0] == 6)
+        before = snapshot(db)
         db.close()
 
         upgrade(user, seed)
@@ -313,12 +351,11 @@ def main() -> int:
         check("таблица форм имён заполнена", n_forms > 12000, f"{n_forms} написаний")
         check("имена перенесены", one("SELECT count(*) FROM name_dict") > 3000)
         n_rank_m = one("SELECT count(*) FROM lookup WHERE kind='rank_m'")
-        # 122 из поставки плюс одно, заведённое человеком. Было 123: «крестьянская
-        # вдова после 1-го брака» лежала среди мужских званий и убрана оттуда —
-        # в женском перечне она и так есть.
-        check("мужских званий стало 122 плюс своё", n_rank_m == 123, f"{n_rank_m}")
-        check("женские звания появились",
-              one("SELECT count(*) FROM lookup WHERE kind='rank_f'") == 75)
+        # 51 из поставки (файл «Справочник» Романа) плюс два занятых в записи:
+        # своё «мещанин города Юрьевца» и «отставной унтер-офицер» прежней поставки.
+        check("мужских званий: 51 из поставки и три занятых в записи", n_rank_m == 54, f"{n_rank_m}")
+        check("женские звания — по новой поставке",
+              one("SELECT count(*) FROM lookup WHERE kind='rank_f'") == 41)
         # Переложенные записи не должны остаться в чужом перечне у тех, кто уже
         # успел получить прежнюю поставку: migrate.sql только дополняет, поэтому
         # для них есть отдельное удаление.
@@ -333,8 +370,10 @@ def main() -> int:
         # Ровно этой проверки не хватало в августе: у Романа не появилась новая
         # таблица, и половина сборки молча не работала. НП — тот же случай:
         # без них поле подсказывать нечем, а поставку человек не пересоздаёт.
-        n_place = one("SELECT count(*) FROM place")
-        check("справочник НП доехал до пользователя", n_place > 100, f"{n_place} пунктов")
+        # С 08.10.2026 пунктов в поставке нет: у установленного остаются свои,
+        # чужие не добавляются.
+        check("пункты поставки больше не добавляются: «Аксениха» не появилась",
+              one("SELECT count(*) FROM place WHERE name_norm = 'аксениха'") == 0)
         check("Борисоглебское на месте",
               one("SELECT count(*) FROM place WHERE name='Борисоглебское'") == 1)
         check("двойник без подробностей слит с пунктом поставки, упоминание переведено",
@@ -357,11 +396,12 @@ def main() -> int:
         check("тестовый пункт шаблона «Лодзь» убран вместе с губернией и уездом (Роман 06.10.2026)",
               one("SELECT count(*) FROM place WHERE name_norm = 'лодзь'") == 0
               and one("SELECT count(*) FROM lookup WHERE value IN ('Петровская', 'Лодзинский')") == 0)
-        check("«Котело» стоит в записи — остался, его уезд в перечне тоже; своё «Петровский» не тронуто",
+        check("«Котело» стоит в записи — остался, его уезд в перечне тоже",
               one("SELECT place_id FROM person_mention WHERE first_name = 'Котельский'") == 9041
               and one("SELECT count(*) FROM place WHERE id = 9041") == 1
-              and one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Галический'") == 1
-              and one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Петровский'") == 1)
+              and one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Галический'") == 1)
+        check("уезд «Петровский», заведённый человеком и нигде не стоящий, убран (уборка 08.10.2026)",
+              one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Петровский'") == 0)
         check("в самой поставке тестовых строк больше нет",
               sqlite3.connect(seed).execute(
                   "SELECT (SELECT count(*) FROM place WHERE name IN ('Лодзь', 'Котело')) + "
@@ -373,11 +413,32 @@ def main() -> int:
         check("список на сверку после импорта доехал: таблица и индекс (схема 9)",
               one("SELECT count(*) FROM sqlite_master WHERE name IN ('review_item', 'ix_review_open')") == 2
               and one("SELECT count(*) FROM review_item") == 0)
-        check("уезды справочника пунктов доехали: «Юрьевецкий» в перечне (Роман 05.10.2026)",
-              one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Юрьевецкий'") == 1)
-        check("перечень волостей доехал — карточка пункта их подскажет",
-              one("SELECT count(*) FROM lookup_kind WHERE kind = 'volost'") == 1
-              and one("SELECT count(*) FROM lookup WHERE kind = 'volost'") > 10)
+        check("перечень волостей есть — карточка пункта будет его пополнять",
+              one("SELECT count(*) FROM lookup_kind WHERE kind = 'volost'") == 1)
+
+        print("\n2а. Уборка перечней: только незанятое вне поставки (Роман 08.10.2026)")
+        gone = lambda v: one("SELECT count(*) FROM lookup WHERE value = ?", v) == 0
+        check("набранное человеком и нигде не стоящее — убрано вместе с частотами",
+              gone("отставной канонир")
+              and one("SELECT count(*) FROM usage_stat WHERE value = 'отставной канонир'") == 0)
+        check("значение прежней поставки, не стоящее нигде, — убрано",
+              gone("уволенный в запас армии бомбардир наводчик") and gone("апоплексия"))
+        check("значение прежней поставки, стоящее в записи, — осталось, частоты целы",
+              not gone("отставной унтер-офицер") and not gone("древность")
+              and one("SELECT count FROM usage_stat WHERE value = 'отставной унтер-офицер'") == 5)
+        check("значение, набранное в записи с заглавной буквы, — осталось (сравнение по ключу)",
+              not gone("мещанин города Юрьевца"))
+        check("звание, стоящее в записи в дореформенном написании («…ъ»), — осталось",
+              not gone("безземельный крестьянин"))
+        check("значения новой поставки на месте, даже если нигде не стоят",
+              not gone("псаломщик") and not gone("чахотка") and not gone("Костромской"))
+        check("убранное записано для сверки приходов; счётчик уборки — в настройках",
+              one("SELECT count(*) FROM lookup_dropped WHERE value_norm = 'отставной канонир'") == 1
+              and int(one("SELECT value FROM setting WHERE key = 'cleanup_lookups'")) >= 4)
+        check("записи, упоминания и их тексты не изменились",
+              snapshot(db) == before, "снимок записей до и после обновления различается")
+        check("появилась колонка комментария пункта (схема 10)",
+              "comment" in [r[1] for r in db.execute("PRAGMA table_info(place)")])
         check("разбор ИОФ заработает: «Никита» не подменяется",
               db.execute("SELECT d.name FROM name_form f JOIN name_dict d ON d.id=f.name_id "
                          "WHERE f.kind IN ('name','variant') AND f.form_norm='никита' "
@@ -387,7 +448,7 @@ def main() -> int:
               one("SELECT count(*) FROM role WHERE code IN ('godparent3','godparent4')") == 2)
 
         print("\n3. После обновления ничего пользовательского не потерялось")
-        check("значение, заведённое человеком, на месте",
+        check("значение, заведённое человеком и стоящее в записи, на месте",
               one("SELECT count(*) FROM lookup WHERE value='мещанин города Юрьевца'") == 1)
         check("оно не задвоилось",
               one("SELECT count(*) FROM lookup WHERE value='крестьянин' AND kind='rank_m'") == 1)
@@ -432,6 +493,9 @@ def main() -> int:
         db = sqlite3.connect(user)
         check("повторное обновление ничего не сломало",
               db.execute("SELECT count(*) FROM lookup WHERE value='мещанин города Юрьевца'").fetchone()[0] == 1)
+        check("повторная уборка ничего больше не убрала и записей не тронула",
+              db.execute("SELECT count(*) FROM lookup WHERE kind='rank_m'").fetchone()[0] == 54
+              and snapshot(db) == before)
         check("и не задвоило имена",
               db.execute("SELECT count(*) FROM name_dict").fetchone()[0] == 3112)
         check("повторная починка ничего не нашла и счётчик не вырос",
@@ -451,10 +515,10 @@ def main() -> int:
               db.execute("SELECT count(*) FROM place WHERE name_norm='логинцево'").fetchone()[0] == 0)
         row = db.execute("SELECT np_type, uyezd, full_location, familio_url, origin FROM place "
                          "WHERE name_norm='чертеж малый'").fetchall()
-        check("пункт из архива без подробностей получил их из поставки",
-              len(row) == 1 and row[0][0] == "д." and row[0][1] == "Макарьевский"
-              and (row[0][2] or "").startswith("д. Чертеж Малый,") and (row[0][3] or "").startswith("https://familio.org/"),
-              str(row))
+        # До 08.10.2026 такой пункт получал подробности из поставки; теперь
+        # пунктов в поставке нет — он остаётся как был, заполняется карточкой.
+        check("пункт из архива без подробностей остался как был — чужих подробностей нет",
+              row == [(None, None, None, None, "archive")], str(row))
         check("набранное руками полное место не затёрто поставкой",
               db.execute("SELECT full_location, np_type FROM place WHERE name_norm='поселихино'").fetchone()
               == ("мой текст", None))

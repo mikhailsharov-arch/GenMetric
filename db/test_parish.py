@@ -63,7 +63,7 @@ def sync(db: sqlite3.Connection) -> None:
 
 def card(name, np_type=None, uyezd=None, guberniya=None, volost=None, url=None):
     return dict(name=name, name_norm=norm(name), np_type=np_type, guberniya=guberniya,
-                uyezd=uyezd, volost=volost, familio_url=url)
+                uyezd=uyezd, volost=volost, familio_url=url, clean=name, comment=None)
 
 
 def main() -> int:
@@ -74,7 +74,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         seed = tmp / "seed.sqlite"
-        build_seed.build(seed)
+        build_seed.build(seed, places=build_seed.TEST_PLACES)
         common = tmp / "genmetric-общее.sqlite"
         path_a, path_b = tmp / "genmetric.sqlite", tmp / "приход-б.sqlite"
         shutil.copy(seed, path_a)
@@ -282,7 +282,41 @@ def main() -> int:
         check("«Котело», оставшееся в приходе, — на месте и в общем файле",
               a.execute("SELECT (SELECT count(*) FROM common.place WHERE name_norm = 'котело') + "
                         "(SELECT count(*) FROM main.place WHERE name_norm = 'котело')").fetchone()[0] == 2)
+
+        print("\n10. Уборка перечней и комментарий пункта через общий файл (08.10.2026)")
+        # Значение, убранное обновлением как нигде не занятое, уходит и из
+        # общего файла — иначе шаг 3 сверки тут же вернул бы его в приход.
+        a.execute("INSERT INTO main.lookup (kind, value, value_norm, sort_order, origin) "
+                  "VALUES ('rank_m', 'отставной канонир', 'отставной канонир', 9990, 'user')")
+        a.commit()
+        sync(a)
+        check("пополненное значение — в общем файле",
+              a.execute("SELECT count(*) FROM common.lookup WHERE value_norm = 'отставной канонир'").fetchone()[0] == 1)
+        a.execute("DELETE FROM main.lookup WHERE value_norm = 'отставной канонир'")
+        a.execute("INSERT INTO main.lookup_dropped (kind, value_norm) VALUES ('rank_m', 'отставной канонир')")
+        a.commit()
+        sync(a)
+        check("убранное ушло из общего файла и в приход не вернулось; память об уборке очищена",
+              a.execute("SELECT (SELECT count(*) FROM common.lookup WHERE value_norm = 'отставной канонир') + "
+                        "(SELECT count(*) FROM main.lookup WHERE value_norm = 'отставной канонир') + "
+                        "(SELECT count(*) FROM main.lookup_dropped)").fetchone()[0] == 0)
+        sync(a)
+        check("повторная сверка его не возвращает",
+              a.execute("SELECT count(*) FROM main.lookup WHERE value_norm = 'отставной канонир'").fetchone()[0] == 0)
+        # Пункт с комментарием деревни-тёзки доезжает до другого прихода с
+        # комментарием и чистым кратким местом.
+        twin = dict(card("Заборье (Столпино)", "д.", "Макарьевский", "Костромская"), clean="Заборье", comment="Столпино")
+        a.execute(sql["place_save"], twin)
+        a.commit()
+        sync(a)
         a.close()
+        b = open_parish(path_b, common)
+        sync(b)
+        row = b.execute("SELECT name, comment, short_location FROM main.place WHERE name_norm = ?",
+                        (norm("Заборье (Столпино)"),)).fetchone()
+        check("пункт с комментарием пришёл в другой приход: название, комментарий, чистое краткое место",
+              row == ("Заборье (Столпино)", "Столпино", "д. Заборье"), str(row))
+        b.close()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

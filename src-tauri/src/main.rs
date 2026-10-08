@@ -665,7 +665,7 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<Saved, String> {
 /// со званием приходилось набирать руками для каждой персоны.
 #[tauri::command]
 fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: Option<String>,
-                  prefer_infant: Option<bool>)
+                  prefer_infant: Option<bool>, keep_wife_rank: Option<bool>)
     -> Result<Vec<PersonHint>, String>
 {
     // Умерший: младенцы из записей о рождении — первыми (Роман 28.09.2026).
@@ -690,6 +690,24 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: O
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(|e| e.to_string())?);
+        }
+        drop(stmt);
+        // «Законная жена его» — звание матери в записи о рождении; в других
+        // ролях та же женщина — «крестьянская жена»: по званию мужа (Роман
+        // 06.10.2026). В поле матери звание остаётся как есть.
+        if !keep_wife_rank.unwrap_or(false) {
+            let husband = statement("wife_husband_rank")?;
+            for hint in out.iter_mut() {
+                if hint.rank.as_deref().map(str::trim) != Some(genmetric_core::records::WIFE_RANK) {
+                    continue;
+                }
+                let rank: Option<String> = conn
+                    .query_row(&husband, rusqlite::named_params! { ":iof": hint.iof, ":place": hint.place },
+                               |r| r.get(0))
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());
+            }
         }
         Ok(out)
     })
@@ -959,13 +977,37 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
             items.push(row.map_err(|e| e.to_string())?);
         }
         let max_dist = (norm.chars().count() / 4).max(2);
-        Ok(PlaceCheck { known: false, similar: rank_similar(&norm, items, 8, max_dist), last_volost })
+        // Деревни-тёзки с комментарием — первыми: название то же самое.
+        let mut similar: Vec<Similar> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&statement("place_commented")?).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (label, comment) = row.map_err(|e| e.to_string())?;
+                if normalize(genmetric_core::text::place_clean(&label, &comment)) == norm {
+                    similar.push(Similar { value: label, gender: None, distance: 0 });
+                }
+            }
+        }
+        for s in rank_similar(&norm, items, 8, max_dist) {
+            if !similar.iter().any(|x| x.value == s.value) {
+                similar.push(s);
+            }
+        }
+        Ok(PlaceCheck { known: false, similar, last_volost })
     })
 }
 
 #[derive(Deserialize)]
 struct PlaceCard {
+    /// Чистое название — без комментария; метку «Название (комментарий)»
+    /// собирает `place_label`.
     name: String,
+    /// Комментарий деревни-тёзки (Роман 06.10.2026); пусто — нет.
+    #[serde(default)]
+    comment: Option<String>,
     np_type: Option<String>,
     guberniya: Option<String>,
     uyezd: Option<String>,
@@ -983,6 +1025,9 @@ struct PlaceInfo {
     volost: Option<String>,
     familio_url: Option<String>,
     origin: String,
+    /// Комментарий деревни-тёзки и чистое название без него.
+    comment: String,
+    clean: String,
 }
 
 /// Карточка известного пункта — на правку. None, если пункта нет.
@@ -991,10 +1036,15 @@ fn place_get(app: State<App>, name: String) -> Result<Option<PlaceInfo>, String>
     with_conn(&app, &format!("Карточка НП «{name}»"), |conn| {
         conn.query_row(&statement("place_get")?,
                        rusqlite::named_params! { ":name_norm": normalize(&name) },
-                       |r| Ok(PlaceInfo {
-                           id: r.get(0)?, name: r.get(1)?, np_type: r.get(2)?, guberniya: r.get(3)?,
-                           uyezd: r.get(4)?, volost: r.get(5)?, familio_url: r.get(6)?, origin: r.get(7)?,
-                       }))
+                       |r| {
+                           let (name, comment): (String, String) = (r.get(1)?, r.get(8)?);
+                           let clean = genmetric_core::text::place_clean(&name, &comment).to_string();
+                           Ok(PlaceInfo {
+                               id: r.get(0)?, name, np_type: r.get(2)?, guberniya: r.get(3)?,
+                               uyezd: r.get(4)?, volost: r.get(5)?, familio_url: r.get(6)?, origin: r.get(7)?,
+                               comment, clean,
+                           })
+                       })
             .optional()
             .map_err(|e| e.to_string())
     })
@@ -1006,10 +1056,14 @@ fn place_get(app: State<App>, name: String) -> Result<Option<PlaceInfo>, String>
 #[tauri::command]
 fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String> {
     with_conn_shared(&app, &format!("Правка НП «{}»", card.name), |conn| {
-        let name = card.name.trim().to_string();
-        if name.is_empty() {
+        let clean = card.name.trim().to_string();
+        if clean.is_empty() {
             return Err("Название населённого пункта пустое".to_string());
         }
+        let comment = card.comment.as_deref().map(str::trim).unwrap_or("").to_string();
+        // Название в программе — с комментарием; смена комментария — то же
+        // переименование: записи и память подсказок следуют за пунктом.
+        let name = genmetric_core::text::place_label(&clean, &comment);
         let norm = normalize(&name);
         let old_name: String = conn
             .query_row("SELECT name FROM place WHERE id = ?1", [id], |r| r.get(0))
@@ -1040,6 +1094,7 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
             ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
             ":familio_url": blank(&card.familio_url),
+            ":clean": clean, ":comment": if comment.is_empty() { None } else { Some(comment.clone()) },
         }).map_err(|e| {
             if e.to_string().contains("UNIQUE") {
                 format!("Пункт «{name}» с такими типом, уездом и губернией уже есть в справочнике")
@@ -1151,10 +1206,12 @@ fn review_done(app: State<App>, id: i64, done: bool) -> Result<(), String> {
 #[tauri::command]
 fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
     with_conn_shared(&app, &format!("Карточка НП «{}»", card.name), |conn| {
-        let name = card.name.trim().to_string();
-        if name.is_empty() {
+        let clean = card.name.trim().to_string();
+        if clean.is_empty() {
             return Err("Название населённого пункта пустое".to_string());
         }
+        let comment = card.comment.as_deref().map(str::trim).unwrap_or("").to_string();
+        let name = genmetric_core::text::place_label(&clean, &comment);
         let norm = normalize(&name);
         if let Some(id) = conn
             .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
@@ -1172,6 +1229,7 @@ fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
             ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
             ":familio_url": blank(&card.familio_url),
+            ":clean": clean, ":comment": if comment.is_empty() { None } else { Some(comment.clone()) },
         }).map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         // Пункт заведён — тогда и частоты: не раньше, чтобы сбой вставки не

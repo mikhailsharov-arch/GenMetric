@@ -167,7 +167,9 @@ def main() -> int:
             continue
         seen.add(key)
         rows.append(row)
-    total["place.csv"] = write_csv(SEED_DIR / "place.csv",
+    # С 08.10.2026 пунктов в поставке нет (новый человек не получает чужой
+    # приход): справочник пунктов идёт в пункты для проверок, не в seed/.
+    total["place.csv"] = write_csv(SEED_DIR.parent / "fixtures" / "place.csv",
                                    [n for n, _ in PLACE_COLUMNS], rows)
 
     print(f"Извлечено из {xlsm.name}:")

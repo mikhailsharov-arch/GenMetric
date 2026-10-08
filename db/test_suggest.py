@@ -159,7 +159,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "db.sqlite"
-        build_seed.build(path)
+        build_seed.build(path, places=build_seed.TEST_PLACES)
         db = sqlite3.connect(path)
 
         print("\n2. Запросы исполняются")
@@ -224,7 +224,7 @@ def main() -> int:
 
         print("\n4в. Весь перечень по пустому префиксу — заказчик 21.09.2026: архив из выпадающего списка")
         archives = suggest(db, sql, "archive", "", limit=200)
-        check("перечень архивов отдаётся целиком", len(archives) == 59, f"{len(archives)}")
+        check("перечень архивов отдаётся целиком", len(archives) == 53, f"{len(archives)}")
         check("«ГА Костромской области» в перечне", "ГА Костромской области" in archives)
         db.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)"
                    " VALUES ('archive','global','','ГА Костромской области','га костромской области',3,datetime('now'))")
@@ -267,6 +267,36 @@ def main() -> int:
               got.index("Чертеж Большой") < len(got) - 1 or len(got) == 2, ", ".join(got))
         check("дубликатов нет", len(got) == len(set(got)), ", ".join(got))
 
+        print("\n6а. Одна персона — одна строка в подсказке (Роман 06.10.2026)")
+        # Память хранит строку на каждое звание; подсказка сворачивает их по
+        # ИОФ и НП: звание — последнее набранное, частота — сумма.
+        db.executemany(
+            "INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses, last_used_at) VALUES (?,?,?,?,?,?,?)",
+            [("Арсений Харитонов Шошин", "арсений харитонов шошин", "Бухарино", "крестьянин", "М", 5, "2026-10-01 10:00:00"),
+             ("Арсений Харитонов Шошин", "арсений харитонов шошин", "Бухарино", "отставной рядовой", "М", 2, "2026-10-07 10:00:00"),
+             ("Арсений Харитонов Шошин", "арсений харитонов шошин", "Бухарино", "", "М", 1, "2026-10-08 10:00:00"),
+             ("Арсений Харитонов Шошин", "арсений харитонов шошин", "Малово", "мещанин", "М", 1, "2026-09-01 10:00:00")])
+        for block in ("person_suggest", "person_suggest_infant"):
+            got = db.execute(sql[block], {"prefix": "арсений харитонов%", "limit": 6, "gender": "М"}).fetchall()
+            check(f"{block}: у ИОФ и НП одна строка; другой НП — своя", [(r[0], r[1]) for r in got]
+                  == [("Арсений Харитонов Шошин", "Бухарино"), ("Арсений Харитонов Шошин", "Малово")], str(got))
+            check(f"{block}: звание — последнее набранное непустое, частота — сумма",
+                  got[0][2] == "отставной рядовой" and got[0][4] == 8, str(got[0]))
+        check("память персон не переписана: строк по-прежнему четыре",
+              db.execute("SELECT count(*) FROM person_index WHERE iof = 'Арсений Харитонов Шошин'").fetchone()[0] == 4)
+        got = db.execute(sql["person_suggest"], {"prefix": "арсений харитонов%", "limit": 6, "gender": "Ж"}).fetchall()
+        check("по полу роли строка по-прежнему отсеивается", got == [], str(got))
+        db.executemany("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?,?,?,?,?,?)",
+                       [("Анна Иванова Шошина", "анна иванова шошина", "Бухарино", "законная жена его", "Ж", 3)])
+        db.execute("INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, wife_rank, uses) "
+                   "VALUES ('арсений харитонов шошин', 'Анна Иванова Шошина', 'Бухарино', 'законная жена его', 3)")
+        got = db.execute(sql["wife_husband_rank"], {"iof": "Анна Иванова Шошина", "place": "Бухарино"}).fetchone()
+        check("звание мужа для жены из памяти — последнее набранное", got == ("отставной рядовой",), str(got))
+        check("у женщины без мужа в памяти звания мужа нет",
+              db.execute(sql["wife_husband_rank"], {"iof": "Дарья Петрова", "place": None}).fetchone() is None)
+        db.execute("DELETE FROM person_index WHERE iof IN ('Арсений Харитонов Шошин', 'Анна Иванова Шошина')")
+        db.execute("DELETE FROM spouse_index WHERE wife_iof = 'Анна Иванова Шошина'")
+
         print("\n7. Причт запоминается и выдаётся списком")
         # Заказчик 27.08.2026: причт надо выбирать из списка, а не набирать.
         for iof, rank, times in [("Иоанн Предтеченский", "священник", 3),
@@ -285,9 +315,8 @@ def main() -> int:
         mas = suggest(db, sql, "rank_m", "крестьян", limit=40)
         check("«крестьянский сын» только среди мужских",
               "крестьянский сын" in mas and "крестьянский сын" not in fem)
-        check("«крестьянская вдова после 1-го брака» только среди женских",
-              "крестьянская вдова после 1-го брака" in fem
-              and "крестьянская вдова после 1-го брака" not in mas)
+        check("«крестьянская вдова» только среди женских",
+              "крестьянская вдова" in fem and "крестьянская вдова" not in mas)
 
         print("\n9. Кириллица: регистр и «ё»")
         db.execute(

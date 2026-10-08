@@ -67,7 +67,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         seed = tmp / "seed.sqlite"
-        build_seed.build(seed)
+        build_seed.build(seed, places=build_seed.TEST_PLACES)
         dictionary = sqlite3.connect(seed)
 
         print("\n1. Сбор памяти из строк листов")
@@ -119,7 +119,7 @@ def main() -> int:
 
         print("\n3. Слияние в базу пользователя")
         user = tmp / "user.sqlite"
-        build_seed.build(user)
+        build_seed.build(user, places=build_seed.TEST_PLACES)
         db = sqlite3.connect(user, isolation_level=None)
         one = lambda q, *a: db.execute(q, a).fetchone()[0]
         # Набранное в программе до загрузки — терять нельзя.

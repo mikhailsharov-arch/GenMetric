@@ -145,7 +145,50 @@ def fill(driver, label, value, scope="//"):
     el = field(driver, label, scope)
     el.clear()
     el.send_keys(value)
+    # clear() у WebDriver React не будит: если поле перерисовалось между
+    # очисткой и набором (счёт ставится сам, НП подставляется), прежнее
+    # значение вернулось бы и набранное дописалось к нему. Сверяем и, если не
+    # сошлось, набираем заново поверх выделенного — как человек (техдолг
+    # после сборки 08.10.2026). Регистр программа правит сама — его не сверяем.
+    got = el.get_attribute("value") or ""
+    if got.strip().lower() != str(value).strip().lower():
+        print(f"  [инфо]   поле «{label}»: вместо «{value}» оказалось «{got}» — набираю заново")
+        el.send_keys(Keys.CONTROL, "a")
+        el.send_keys(value)
     el.send_keys(Keys.ESCAPE)  # закрыть подсказку, если открылась
+
+
+def village_card(driver, wait, name):
+    """Карточка села прихода: открывается сама после первого сохранения дела
+    нового прихода (Роман 06.10.2026). Сохраняем её — это и проверка того,
+    что карточка с новым полем комментария проходит через настоящий Rust."""
+    try:
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place']")))
+        time.sleep(0.5)  # окно первые 350 мс не принимает набор (Modal.GUARD_MS)
+        opened = True
+    except TimeoutException:
+        opened = False
+    check(f"после первого сохранения дела открылась карточка села «{name}»", opened, error_details(driver))
+    if not opened:
+        return
+    modal = "//div[contains(@class,'modal')]//"
+    kind = field(driver, "Тип", modal).get_attribute("value")
+    gub = field(driver, "Губерния", modal).get_attribute("value")
+    check("в карточке села тип «с.», губерния из дела", kind == "с." and gub == "Костромская", f"«{kind}», «{gub}»")
+    click(driver, modal + "button[normalize-space()='Сохранить населённый пункт']")
+    try:
+        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
+    except TimeoutException:
+        pass
+    driver.set_script_timeout(20)
+    got = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('place_get', {name: arguments[0]})"
+        ".then((r) => done(r), (e) => done({error: String(e)}));", name)
+    check("село заведено пунктом: тип и чистое название на месте",
+          bool(got) and "error" not in got and got.get("np_type") == "с." and got.get("clean") == name
+          and got.get("comment") == "" and not driver.find_elements(By.CSS_SELECTOR, ".modal"),
+          str(got)[:300] + " | " + error_details(driver))
 
 
 def run(driver, wait, archive):
@@ -184,9 +227,22 @@ def run(driver, wait, archive):
                          ("Село", "Борисоглебское"), ("Уезд", "Макарьевский"),
                          ("Губерния", "Костромская")]:
         fill(driver, label, value)
+    # Чистая поставка (08.10.2026): пунктов в установщике нет — чужая деревня
+    # прежней поставки программе неизвестна.
+    driver.set_script_timeout(20)
+    clean = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "Promise.all([call('place_check', {name: 'Аксениха'}), call('suggest', {kind: 'place', prefix: '', limit: 200}),"
+        "             call('suggest', {kind: 'rank_m', prefix: '', limit: 200})])"
+        ".then((r) => done({check: r[0], places: r[1].length, ranks: r[2].length}), (e) => done({error: String(e)}));")
+    check("поставка чистая: пунктов нет, мужских званий 51",
+          "error" not in clean and clean["check"].get("known") is False and clean["places"] == 0 and clean["ranks"] == 51,
+          str(clean)[:300])
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
     check("дело сохранено", True)
+    village_card(driver, wait, "Борисоглебское")
 
     print("\n3. Архив через настоящий IPC")
     # С 05.10.2026 блок архива — на экране «ⓘ О программе», не на «Деле».
@@ -307,6 +363,54 @@ def run(driver, wait, archive):
               str(called["place"])[:200])
         check("звание по умолчанию — строка или пусто", called["rank"] is None or isinstance(called["rank"], str),
               str(called["rank"]))
+
+    print("\n5в. Новое в сборках 08.10 — через настоящий Rust")
+    # Флажок «звание само» — настройка ПРИХОДА (не общая): пишется и читается
+    # через те же команды, что зовёт окно. Пункт с комментарием деревни-тёзки:
+    # название в программе с комментарием, чистое — отдельно; набранное без
+    # комментария находит тёзку первой среди похожих. Подсказка персон
+    # принимает новый параметр «звание жены как есть».
+    called = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  await call('set_setting', {key: 'auto_rank_godparent', value: '0'});"
+        "  const off = await call('get_setting', {key: 'auto_rank_godparent'});"
+        "  await call('set_setting', {key: 'auto_rank_godparent', value: '1'});"
+        "  const on = await call('get_setting', {key: 'auto_rank_godparent'});"
+        "  await call('place_save', {card: {name: 'Заборье', comment: 'Столпино', np_type: 'д.',"
+        "    guberniya: 'Костромская', uyezd: 'Макарьевский', volost: '', familio_url: ''}});"
+        "  const got = await call('place_get', {name: 'Заборье (Столпино)'});"
+        "  const twin = await call('place_check', {name: 'Заборье'});"
+        "  await call('place_update', {id: got.id, card: {name: 'Заборье', comment: 'Нежитино', np_type: 'д.',"
+        "    guberniya: 'Костромская', uyezd: 'Макарьевский', volost: '', familio_url: ''}});"
+        "  const renamed = await call('place_get', {name: 'Заборье (Нежитино)'});"
+        "  const persons = await call('suggest_person', {prefix: 'Евлампия', limit: 6, gender: 'Ж',"
+        "    preferInfant: false, keepWifeRank: false});"
+        "  const asIs = await call('suggest_person', {prefix: 'Евлампия', limit: 6, gender: 'Ж',"
+        "    preferInfant: false, keepWifeRank: true});"
+        "  const clergy = await call('list_clergy', {limit: 100});"
+        "  return {off, on, got, twin, renamed, persons, asIs, clergy: clergy.length};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("новые команды и параметры отвечают без ошибки", "error" not in called, str(called)[:400])
+    if "error" not in called:
+        check("флажок «звание само» пишется и читается в настройках прихода",
+              called["off"] == "0" and called["on"] == "1", f"{called['off']} / {called['on']}")
+        got = called["got"] or {}
+        check("пункт с комментарием: название с комментарием, чистое — отдельно",
+              got.get("name") == "Заборье (Столпино)" and got.get("clean") == "Заборье" and got.get("comment") == "Столпино",
+              str(got)[:200])
+        similar = [x.get("value") for x in (called["twin"] or {}).get("similar", [])]
+        check("набрали без комментария — тёзка первой среди похожих",
+              called["twin"].get("known") is False and similar[:1] == ["Заборье (Столпино)"], str(similar)[:200])
+        renamed = called["renamed"] or {}
+        check("смена комментария переименовывает пункт", renamed.get("comment") == "Нежитино"
+              and renamed.get("clean") == "Заборье", str(renamed)[:200])
+        ranks = [p.get("rank") for p in called["persons"]]
+        as_is = [p.get("rank") for p in called["asIs"]]
+        # В архиве сквозной проверки Евлампия Васильева — жена крестьянина.
+        check("«законная жена его» в подсказке — «крестьянская жена», в поле матери — как есть",
+              ranks == ["крестьянская жена"] and as_is == ["законная жена его"], f"{ranks} / {as_is}")
 
     print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")
     # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его
@@ -837,6 +941,7 @@ def parishes(driver, wait):
         fill(driver, label, value)
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
+    village_card(driver, wait, "Николо-Макарово")
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
     b = "//div[contains(@class,'birth')]//"
     year = field(driver, "Год", b).get_attribute("value")
@@ -944,7 +1049,8 @@ def parishes(driver, wait):
     click(driver, PARISH + "//button[normalize-space()='Перейти в приход']")
     reloaded(driver, wait, "Никольское (из Excel)")
     # Список на сверку после импорта (Роман 03.10.2026).
-    rows = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".parishrow")]
+    rows = driver.execute_script(
+        "return [...document.querySelectorAll('.parishrow')].map((e) => e.innerText);") or []
     check("на экране «Дело» — «На сверку после импорта»", any("На сверку после импорта" in r for r in rows), " || ".join(rows))
     click(driver, "//div[contains(@class,'parishrow')][contains(.,'На сверку')]//button")
     review = "//div[@data-modal='review']"

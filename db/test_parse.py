@@ -205,7 +205,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "db.sqlite"
-        build_seed.build(path)
+        build_seed.build(path, places=build_seed.TEST_PLACES)
         db = sqlite3.connect(path)
         db.execute("PRAGMA foreign_keys = ON")
         # Именованные параметры (:name_norm) — только словарём: Python 3.14
@@ -214,7 +214,7 @@ def main() -> int:
         one = lambda q, *a: db.execute(q, a[0] if len(a) == 1 and isinstance(a[0], dict) else a).fetchone()
 
         print("\n5. Схема 5: name_alias")
-        check("версия схемы 9", one("SELECT max(version) FROM schema_version")[0] == 9)
+        check("версия схемы 10", one("SELECT max(version) FROM schema_version")[0] == 10)
         check("таблица name_alias есть и пуста", one("SELECT count(*) FROM name_alias")[0] == 0)
 
         print("\n1. Конечный «ъ»")
@@ -289,7 +289,7 @@ def main() -> int:
         check("на «Новодеревенька» ложных похожих нет", top == [], str(top))
         card = dict(name="Новодеревенька", name_norm=norm("Новодеревенька"), np_type="д.",
                     guberniya="Костромская", uyezd="Макарьевский", volost="Заобнорская",
-                    familio_url=None)
+                    familio_url=None, clean="Новодеревенька", comment=None)
         db.execute(sql["place_save"], card)
         row = one("SELECT short_location, full_location, origin FROM place WHERE name_norm=?",
                   card["name_norm"])
@@ -300,7 +300,7 @@ def main() -> int:
         check("origin = user", row[2] == "user")
         check("place_find находит", one(sql["place_find"], dict(name_norm=card["name_norm"])) is not None)
         card2 = dict(name="Пустошь", name_norm=norm("Пустошь"), np_type=None, guberniya=None,
-                     uyezd=None, volost=None, familio_url=None)
+                     uyezd=None, volost=None, familio_url=None, clean="Пустошь", comment=None)
         db.execute(sql["place_save"], card2)
         row = one("SELECT short_location, full_location FROM place WHERE name_norm=?", card2["name_norm"])
         check("карточка без подробностей — без хвостов", row == ("Пустошь", "Пустошь"), str(row))
@@ -308,7 +308,8 @@ def main() -> int:
         check("place_get отдаёт карточку", got is not None and got[1] == "Новодеревенька" and got[3] == "Костромская", str(got))
         db.execute(sql["place_update"], dict(id=got[0], name="Новодеревенька", name_norm=norm("Новодеревенька"),
                                              np_type="с.", guberniya="Ярославская",
-                                             uyezd="Любимский", volost=None, familio_url="https://familio.org/x"))
+                                             uyezd="Любимский", volost=None, familio_url="https://familio.org/x",
+                                             clean="Новодеревенька", comment=None))
         row = one("SELECT name, np_type, guberniya, full_location, familio_url FROM place WHERE id=?", got[0])
         check("place_update: поля новые",
               row[0] == "Новодеревенька" and row[1] == "с." and row[2] == "Ярославская", str(row))
@@ -341,7 +342,8 @@ def main() -> int:
         check("своё же название не считается занятым",
               one(sql["place_name_taken"], dict(name_norm=norm("Новодеревенька"), id=got[0])) is None)
         params = dict(id=got[0], name="Новая Деревенька", name_norm=norm("Новая Деревенька"),
-                      np_type="д.", guberniya="Костромская", uyezd="Макарьевский", volost=None, familio_url=None)
+                      np_type="д.", guberniya="Костромская", uyezd="Макарьевский", volost=None, familio_url=None,
+                      clean="Новая Деревенька", comment=None)
         db.execute(sql["place_update"], params)
         for b in ("place_rename_persons_merge", "place_rename_persons_drop",
                   "place_rename_usage_merge", "place_rename_usage_drop", "place_rename_persons"):
@@ -373,8 +375,10 @@ def main() -> int:
               "if renamed {" in rust)
         check("main.rs: занятое название — понятная ошибка, не UNIQUE",
               "уже есть в справочнике" in rust)
-        check("place_get: не из архива первой",
-              "ORDER BY (origin = 'archive'), id" in sql["place_get"])
+        best = ("ORDER BY (full_location IS NULL OR trim(full_location) = ''),\n"
+                "          (np_type IS NULL OR trim(np_type) = ''), (origin = 'archive'), id")
+        check("place_get и place_find берут лучшую строку одним правилом (не из архива первой)",
+              best in sql["place_get"] and best in sql["place_find"])
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

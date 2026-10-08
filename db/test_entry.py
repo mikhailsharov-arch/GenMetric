@@ -91,7 +91,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "db.sqlite"
-        build_seed.build(path)
+        build_seed.build(path, places=build_seed.TEST_PLACES)
         db = sqlite3.connect(path)
         db.execute("PRAGMA foreign_keys = ON")
         one = lambda q, *a: db.execute(q, a).fetchone()

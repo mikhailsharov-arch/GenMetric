@@ -715,7 +715,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
                         person(by("clergy3"), { ...EMPTY_PERSON })]);
       setEditingId(e.id);
       window.scrollTo({ top: 0 });
-      countField.current?.focus();
+      // В день рождения, а не в «Счёт»: счёт теперь вне обхода клавишами.
+      dayField.current?.focus();
     } catch (err) {
       report("Не удалось открыть запись", err);
     }
@@ -931,6 +932,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         confessionLabel="Вероисп."
         gender="Ж"
         enterToEmpty
+        keepWifeRank
         onIofLeave={motherLeft}
         onPickPerson={pickInto(setMother)}
       />

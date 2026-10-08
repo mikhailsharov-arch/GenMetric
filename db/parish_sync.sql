@@ -61,7 +61,7 @@ DELETE FROM common.place
 DROP TABLE IF EXISTS temp.s_best;
 CREATE TEMP TABLE s_best AS
 SELECT p.id, p.name, p.name_norm, p.np_type, p.guberniya, p.uyezd, p.volost,
-       p.short_location, p.full_location, p.familio_url, p.origin, p.created_at, p.updated_at,
+       p.short_location, p.full_location, p.familio_url, p.origin, p.created_at, p.updated_at, p.comment,
        (trim(coalesce(p.np_type, '')) || trim(coalesce(p.guberniya, '')) || trim(coalesce(p.uyezd, ''))
         || trim(coalesce(p.volost, '')) || trim(coalesce(p.familio_url, ''))) <> '' AS filled,
        trim(coalesce(p.np_type, '')) || '|' || trim(coalesce(p.guberniya, '')) || '|'
@@ -69,14 +69,16 @@ SELECT p.id, p.name, p.name_norm, p.np_type, p.guberniya, p.uyezd, p.volost,
         || trim(coalesce(p.familio_url, '')) AS sig
   FROM main.place p
  WHERE p.id = (SELECT b.id FROM main.place b WHERE b.name_norm = p.name_norm
-                ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''), (b.origin = 'archive'), b.id
+                -- то же правило «лучшей строки», что в place_find (statements.sql)
+                ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
+                         (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id
                 LIMIT 1);
 
 -- 2а. Из прихода в общий файл: новые пункты…
 INSERT OR IGNORE INTO common.place (name, name_norm, np_type, guberniya, uyezd, volost,
-                                    short_location, full_location, familio_url, origin, created_at, updated_at)
+                                    short_location, full_location, familio_url, origin, created_at, updated_at, comment)
 SELECT b.name, b.name_norm, b.np_type, b.guberniya, b.uyezd, b.volost,
-       b.short_location, b.full_location, b.familio_url, b.origin, b.created_at, b.updated_at
+       b.short_location, b.full_location, b.familio_url, b.origin, b.created_at, b.updated_at, b.comment
   FROM temp.s_best b
  WHERE b.name_norm NOT IN (SELECT old_norm FROM common.place_renamed);
 
@@ -99,9 +101,9 @@ UPDATE common.place
 
 -- 2б. Из общего файла в приход: новые пункты…
 INSERT OR IGNORE INTO main.place (name, name_norm, np_type, guberniya, uyezd, volost,
-                                  short_location, full_location, familio_url, origin, updated_at)
+                                  short_location, full_location, familio_url, origin, updated_at, comment)
 SELECT c.name, c.name_norm, c.np_type, c.guberniya, c.uyezd, c.volost,
-       c.short_location, c.full_location, c.familio_url, coalesce(c.origin, 'user'), c.updated_at
+       c.short_location, c.full_location, c.familio_url, coalesce(c.origin, 'user'), c.updated_at, c.comment
   FROM common.place c
  WHERE NOT EXISTS (SELECT 1 FROM main.place p WHERE p.name_norm = c.name_norm)
    AND c.name_norm NOT IN (SELECT old_norm FROM main.place_renamed);
@@ -123,7 +125,32 @@ UPDATE OR IGNORE main.place
                    || trim(coalesce(c.uyezd, '')) || '|' || trim(coalesce(c.volost, '')) || '|'
                    || trim(coalesce(c.familio_url, '')));
 
+-- Комментарий деревни-тёзки — часть названия («Хмельничное (Столпино)»), и
+-- у одного названия он один: пустой заполняется с той стороны, где он есть.
+UPDATE common.place
+   SET comment = (SELECT b.comment FROM temp.s_best b WHERE b.name_norm = common.place.name_norm)
+ WHERE trim(coalesce(comment, '')) = ''
+   AND EXISTS (SELECT 1 FROM temp.s_best b
+                WHERE b.name_norm = common.place.name_norm AND trim(coalesce(b.comment, '')) <> '');
+UPDATE main.place
+   SET comment = (SELECT c.comment FROM common.place c WHERE c.name_norm = main.place.name_norm)
+ WHERE trim(coalesce(comment, '')) = ''
+   AND EXISTS (SELECT 1 FROM common.place c
+                WHERE c.name_norm = main.place.name_norm AND trim(coalesce(c.comment, '')) <> '');
+
 DROP TABLE IF EXISTS temp.s_best;
+
+-- ---------------------------------------------------------------------------
+-- 2в. Значения перечней, убранные обновлением как нигде не занятые
+--     (migrate.sql, 08.10.2026), уходят и из общего файла — иначе шаг 3 тут
+--     же вернул бы их в приход. Память об уборке одноразовая: если значением
+--     пользуется другой приход, он принесёт его в общий файл снова, и это
+--     правильно — значит, оно у человека в работе.
+-- ---------------------------------------------------------------------------
+DELETE FROM common.lookup
+ WHERE EXISTS (SELECT 1 FROM main.lookup_dropped d
+                WHERE d.kind = common.lookup.kind AND d.value_norm = common.lookup.value_norm);
+DELETE FROM main.lookup_dropped;
 
 -- ---------------------------------------------------------------------------
 -- 3. Перечни: пополненное человеком. Сравнение по ключу поиска (value_norm),

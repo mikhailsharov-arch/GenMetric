@@ -17,12 +17,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::age::parse_age;
 use crate::records::{is_no_name, parse_iof_in, save_entry_in_tx, Case, EntryInput, PersonInput};
 use crate::statement;
+use crate::text::normalize;
 use crate::xlsx::read_sheet;
 
 type Row = BTreeMap<u32, String>;
@@ -71,6 +72,62 @@ const SHEETS: [(&str, &str, &str); 3] = [("1", "Рождения", "рожден
 // ----------------------------------------------------------------------------
 //  Ячейки
 // ----------------------------------------------------------------------------
+
+/// Справочник пунктов индексатора — лист «НП»: строка 1 — шапка, строка 2 —
+/// подписи, с третьей — пункты. Колонки: 1 — чистое название, 2 — тип, 3 —
+/// губерния, 4 — уезд, 5 — волость, 6 — краткое место, 7 — полное, 8 — ссылка
+/// Familio, 10 — «НП для ввода МК»: то, что набирают в поле НП и что стоит в
+/// записях (грабля «название пункта — колонка 10 листа „НП“»).
+///
+/// Пункты записей к этому моменту уже заведены одними названиями; здесь они
+/// получают подробности, а пункты листа, которых в записях нет, заводятся.
+/// Листа нет (наша собственная выгрузка в Excel) — шаг пропускается.
+fn import_places(conn: &Connection, bytes: &[u8]) -> Result<(), String> {
+    let Ok(sheet) = read_sheet(bytes, "НП") else { return Ok(()) };
+    let find = statement("place_find")?;
+    let fill = statement("place_import_fill")?;
+    let insert = statement("place_import_insert")?;
+    let e = |e: rusqlite::Error| format!("лист «НП»: {e}");
+    for (r, row) in &sheet {
+        if *r < 3 {
+            continue;
+        }
+        let Some(name) = place(row, 10).or_else(|| place(row, 1)) else { continue };
+        let norm = normalize(&name);
+        let (np_type, guberniya, uyezd, volost) = (place(row, 2), place(row, 3), place(row, 4), place(row, 5));
+        let (short, full) = (place(row, 6), place(row, 7));
+        let url = place(row, 8).filter(|u| u.starts_with("http"));
+        if [&np_type, &guberniya, &uyezd, &volost, &short, &full, &url].iter().all(|v| v.is_none()) {
+            continue; // строка без единой подробности ничего не добавит
+        }
+        let id: Option<i64> = conn
+            .query_row(&find, rusqlite::named_params! { ":name_norm": norm }, |r| r.get(0))
+            .optional().map_err(e)?;
+        match id {
+            Some(id) => {
+                conn.execute(&fill, rusqlite::named_params! {
+                    ":id": id, ":np_type": np_type, ":guberniya": guberniya, ":uyezd": uyezd, ":volost": volost,
+                    ":short_location": short, ":full_location": full, ":familio_url": url,
+                }).map_err(e)?;
+            }
+            None => {
+                // OR IGNORE тут нет нарочно: строка листа с теми же названием,
+                // типом, уездом и губернией — повтор, его пропускаем сами.
+                let res = conn.execute(&insert, rusqlite::named_params! {
+                    ":name": name, ":name_norm": norm, ":np_type": np_type, ":guberniya": guberniya,
+                    ":uyezd": uyezd, ":volost": volost, ":short_location": short, ":full_location": full,
+                    ":familio_url": url,
+                });
+                if let Err(err) = res {
+                    if !err.to_string().contains("UNIQUE") {
+                        return Err(e(err));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Текст ячейки. Число `read_sheet` отдаёт с «#»: «#873», «#1.5».
 fn cell(row: &Row, col: u32) -> String {
@@ -796,6 +853,8 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
         }
     }
 
+    import_places(conn, bytes)?;
+
     report.persons = count("SELECT count(*) FROM person_mention WHERE role_code NOT LIKE 'clergy%'")?;
     report.places = count("SELECT count(*) FROM place")? - places_before;
     let top = |map: BTreeMap<String, usize>| -> Vec<String> {
@@ -943,6 +1002,17 @@ mod tests {
         assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'note'") as usize, rep.notes.len());
         assert_eq!(num("SELECT count(*) FROM review_item r JOIN entry e ON e.id = r.entry_id WHERE r.kind = 'note' AND r.text LIKE 'родство%' AND e.section = 3"), 1);
         assert_eq!(num("SELECT count(*) FROM review_item WHERE text LIKE 'лист %'"), 0, "место — в колонках, не в тексте");
+        // Лист «НП»: пункт из записей получил подробности, пункт только из
+        // справочника перенесён, пункт без строки на листе остался названием.
+        let text = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get::<_, Option<String>>(0)).unwrap().unwrap_or_default() };
+        assert_eq!(text("SELECT full_location FROM place WHERE name = 'Тестово Малое'"),
+                   "д. Тестово Малое, Тестовская волость, Тестовский уезд, Тестовская губерния");
+        assert_eq!(text("SELECT familio_url FROM place WHERE name = 'Тестово Малое'"),
+                   "https://familio.org/settlements/00000000-0000-0000-0000-000000000001");
+        assert_eq!(text("SELECT np_type FROM place WHERE name = 'Верхнее Тестово'"), "с.");
+        assert_eq!(text("SELECT short_location FROM place WHERE name = 'д.Дальнее Тестово, Дальняя волость'"), "д. Дальнее Тестово");
+        assert_eq!(num("SELECT count(*) FROM place WHERE name = 'Нижнее Тестово' AND np_type IS NULL"), 1);
+        assert_eq!(num("SELECT count(*) FROM place WHERE name_norm = 'тестово малое'"), 1, "пункт не задвоен");
 
         // Тот же путь, что набор руками: память персон, жён, причта, перечни.
         assert!(num("SELECT count(*) FROM person_index WHERE iof = 'Никита Алексеев'") == 1);

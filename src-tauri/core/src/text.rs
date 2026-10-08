@@ -33,10 +33,42 @@ pub fn normalize_words(input: &str) -> String {
     input.split_whitespace().map(normalize_name).collect::<Vec<_>>().join(" ")
 }
 
+/// Название пункта в программе: у деревни-тёзки с комментарием — «Хмельничное
+/// (Столпино)» (Роман 06.10.2026). Так пункт стоит в поле НП, в подсказке и в
+/// памяти персон; в выгрузки идёт чистое название (`place_clean`). Копия для
+/// окна — `placeLabel` в `src/names.ts`: правишь одно — правь другое.
+pub fn place_label(name: &str, comment: &str) -> String {
+    let (name, comment) = (name.trim(), comment.trim());
+    if comment.is_empty() { name.to_string() } else { format!("{name} ({comment})") }
+}
+
+/// Чистое название: метка без комментария. Комментарий берётся из колонки, а
+/// не угадывается по скобкам: «Никольское (Старое)» может быть и названием.
+pub fn place_clean<'a>(label: &'a str, comment: &str) -> &'a str {
+    let (label, comment) = (label.trim(), comment.trim());
+    if comment.is_empty() {
+        return label;
+    }
+    label.strip_suffix(&format!(" ({comment})")).map(str::trim_end).unwrap_or(label)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn place_comment() {
+        assert_eq!(place_label("Хмельничное", "Столпино"), "Хмельничное (Столпино)");
+        assert_eq!(place_label(" Хмельничное ", "  "), "Хмельничное");
+        assert_eq!(place_clean("Хмельничное (Столпино)", "Столпино"), "Хмельничное");
+        assert_eq!(place_clean("Хмельничное", ""), "Хмельничное");
+        // Скобки в названии без комментария — часть названия.
+        assert_eq!(place_clean("Никольское (Старое)", ""), "Никольское (Старое)");
+        // Комментарий в колонке есть, а метка другая — метку не режем.
+        assert_eq!(place_clean("Хмельничное", "Столпино"), "Хмельничное");
+        assert_eq!(place_clean(&place_label("д.Балахонка, Заобнорская волость", "чужой приход"), "чужой приход"),
+                   "д.Балахонка, Заобнорская волость");
+    }
 
     #[test]
     fn nfc() {

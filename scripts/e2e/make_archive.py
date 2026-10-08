@@ -39,7 +39,7 @@ def main() -> int:
     out = Path(sys.argv[1])
     with tempfile.TemporaryDirectory() as tmp:
         seed = Path(tmp) / "seed.sqlite"
-        build_seed.build(seed)
+        build_seed.build(seed, places=build_seed.TEST_PLACES)
         dictionary = sqlite3.connect(seed)
         births = [
             row(no=1, c13="Чертеж Малый", c14="крестьянин", c15="Никита Алексеев",

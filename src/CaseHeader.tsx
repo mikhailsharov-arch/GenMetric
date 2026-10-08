@@ -9,6 +9,9 @@ import ParishDialog from "./ParishDialog";
 import ReviewDialog from "./ReviewDialog";
 import NumberField from "./NumberField";
 import Modal from "./Modal";
+import PlaceCard, { type PlaceInfo, type Similar } from "./PlaceCard";
+import { placeCase } from "./names";
+import { placeTypes } from "./placetypes";
 
 /**
  * Шапка дела: архив, фонд, опись, дело, приход, год, кто индексирует.
@@ -191,6 +194,44 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
       load(c.year);
   }
 
+  // --- Карточка села прихода (Роман 06.10.2026) ---
+  // «При создании прихода программа не предлагает заполнить карточку этого
+  // села… карточка остаётся пустой»; его решение — «предлагать заполнить
+  // сразу при создании прихода». После первого сохранения дела нового прихода
+  // карточка открывается сама, если села нет в справочнике или у него нет
+  // подробностей. Позже — ссылкой «карточка» в поле «Село».
+  const [villageCard, setVillageCard] = useState<{ name: string; similar: Similar[]; existing?: PlaceInfo;
+                                                   defaults: { guberniya: string; uyezd: string } } | null>(null);
+  async function openVillageCard(from: Case, auto: boolean) {
+    const text = (from.village ?? "").trim();
+    if (!text || document.querySelector(".modal")) return;
+    const defaults = { guberniya: from.guberniya ?? "", uyezd: from.uyezd ?? "" };
+    try {
+      const existing = await invoke<PlaceInfo | null>("place_get", { name: text });
+      if (existing) {
+        const filled = [existing.np_type, existing.guberniya, existing.uyezd, existing.volost]
+          .some((v) => (v ?? "").trim() !== "");
+        if (auto && filled) return;
+        setVillageCard({ name: existing.name, similar: [], existing, defaults });
+        return;
+      }
+      const r = await invoke<{ known: boolean; similar: Similar[] }>("place_check", { name: text });
+      // Сама открывшаяся карточка похожих не показывает: село только что
+      // набрано в деле, и вопрос «не это ли вы имели в виду» тут лишний.
+      setVillageCard({ name: text, similar: auto ? [] : r.similar, defaults });
+    } catch (e) {
+      report(`Не удалось открыть карточку села «${text}»`, e);
+    }
+  }
+  function villageSaved(saved: string) {
+    const was = villageCard;
+    setVillageCard(null);
+    // В деле — название, как оно стоит в справочнике: по нему выгрузка
+    // находит карточку села (чистое название она выводит сама). Поправили
+    // название или комментарий — дело изменено и ждёт «Сохранить дело».
+    if (was && (c.village ?? "").trim() !== saved) set("village")(saved);
+  }
+
   async function save(overwrite = false) {
     // Год — четыре цифры в разумных пределах: «189» завело бы дело 189 года.
     if (c.year !== null && (c.year < 1500 || c.year > 2100)) {
@@ -212,6 +253,7 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
       // Прежняя жёлтая полоса («Новый год книги…», «Сначала сохраните дело»)
       // после сохранения устарела.
       dismissWarn();
+      const firstSave = !(c.id > 0);
       const next = { ...toSave, id: r.id };
       setC(next);
       setLoadedYear(next.year);
@@ -227,6 +269,8 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
         ? `Году ${next.year} заведено своё дело. Реквизиты прежнего года не изменились. Формы встали на ${next.year} год.`
         : "Сохранено. Можно переходить к записям.");
       setOk(true);
+      // Новый приход: дело сохранено впервые — карточка его села.
+      if (firstSave) void openVillageCard(next, true);
     } catch (e) {
       report("Не удалось сохранить дело", e);
     } finally {
@@ -320,7 +364,18 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
         </div>
       </div>
       <Suggest label="Церковь" kind="church" value={c.church ?? ""} onChange={set("church")} />
-      <Suggest label="Село" kind="place" value={c.village ?? ""} onChange={set("village")} />
+      {/* Заглавная буква — как в поле НП формы; «карточка» — тип, волость и
+          ссылка Familio села прихода. */}
+      <Suggest label="Село" kind="place" value={c.village ?? ""} onChange={set("village")}
+               fix={(text, final) => placeCase(text, placeTypes(), final)}
+               action={{ label: "карточка", onClick: () => void openVillageCard(c, false) }} />
+      {villageCard && (
+        <PlaceCard name={villageCard.name} similar={villageCard.similar} existing={villageCard.existing}
+                   defaults={villageCard.defaults} defaultType="с." fillBare
+                   onPick={(name) => { setVillageCard(null); set("village")(name); }}
+                   onSaved={villageSaved}
+                   onCancel={() => setVillageCard(null)} />
+      )}
       <Suggest label="Уезд" kind="uyezd" browse value={c.uyezd ?? ""} onChange={set("uyezd")} />
       <Suggest label="Губерния" kind="guberniya" browse value={c.guberniya ?? ""} onChange={set("guberniya")} />
       {/* 22.09.2026 год с этого экрана убирали («чтобы наличие двух годов не

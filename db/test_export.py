@@ -240,7 +240,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "db.sqlite"
-        build_seed.build(path)
+        build_seed.build(path, places=build_seed.TEST_PLACES)
         db = sqlite3.connect(path)
         fill(db, sql)
         db.executescript(sql["export_prepare"])
@@ -454,6 +454,45 @@ def main() -> int:
               next((x[5:7] for x in loc if x[0] == "Пустошка Дальняя"), None) == ["Пустошка Дальняя"] * 2)
         check("place_find для новых записей выбирает полную строку, не двойника",
               db.execute(sql["place_find"], {"name_norm": "кнышево"}).fetchone()[0] > 0)
+
+        # Деревня-тёзка с комментарием (Роман 06.10.2026): в программе пункт
+        # называется «Заборье (Столпино)», в выгрузку идёт чистое «Заборье».
+        db.execute(sql["place_save"], dict(
+            name="Заборье (Столпино)", name_norm=norm("Заборье (Столпино)"), np_type="д.", guberniya="Костромская",
+            uyezd="Макарьевский", volost="Нежитинская", familio_url=None, clean="Заборье", comment="Столпино"))
+        twin = db.execute(sql["place_find"], {"name_norm": norm("Заборье (Столпино)")}).fetchone()[0]
+        db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent3'", (twin,))
+        db.executescript(sql["export_prepare"])
+        r = rows(db, sql, "familio_birth")[0]
+        check("пункт с комментарием: в записи Familio — чистое название и полное место без комментария",
+              v("AO") == "Заборье" and v("AP") == "д. Заборье, Нежитинская волость, Макарьевский уезд, Костромская губерния",
+              str([v("AO"), v("AP")]))
+        loc = rows(db, sql, "familio_location")
+        check("location: «Заборье» без комментария, краткое и полное место чистые",
+              any(x[0] == "Заборье" and x[5] == "д. Заборье" and "Столпино" not in (x[6] or "") for x in loc)
+              and not any("Столпино" in str(c) for x in loc for c in x),
+              str([x[:7] for x in loc if "Забор" in str(x[0])]))
+        # Село дела — тот же пункт с комментарием. В деле оно может стоять и
+        # чистым, и с комментарием (выбрано из подсказки): в выгрузке — чистое
+        # и с полным местом, на листе location — одной строкой (ревьюер 08.10.2026).
+        was = db.execute("SELECT village FROM mk_case WHERE id = 1").fetchone()[0]
+        for village in ("Заборье", "Заборье (Столпино)"):
+            db.execute("UPDATE mk_case SET village = ?", (village,))
+            db.executescript(sql["export_prepare"])
+            got = db.execute("SELECT DISTINCT village, village_full FROM x_entry").fetchall()
+            check(f"село дела «{village}»: в выгрузке чистое название и полное место карточки",
+                  got == [("Заборье", "д. Заборье, Нежитинская волость, Макарьевский уезд, Костромская губерния")], str(got))
+            names = [x[0] for x in rows(db, sql, "familio_location")]
+            check(f"село дела «{village}»: на листе location одна строка «Заборье», без пустого двойника",
+                  names.count("Заборье") == 1 and not any("Столпино" in str(n) for n in names), str(names))
+            check(f"село дела «{village}»: имя файла выгрузки — без комментария",
+                  db.execute(sql["export_parish"]).fetchone()[0] == "Заборье")
+        db.execute("UPDATE mk_case SET village = ?", (was,))
+        db.executescript(sql["export_prepare"])
+        excel = [str(c) for x in rows(db, sql, "excel_births") for c in x]
+        check("выгрузка в Excel: комментария пункта нет ни в одной ячейке",
+              any(c == "Заборье" for c in excel) and not any("Столпино" in c for c in excel),
+              str([c for c in excel if "Забор" in c][:4]))
 
         # Запись без года (до 22.09 год не был обязателен): со всем приходом
         # выгружается, по списку годов — нет, и окно это показывает.

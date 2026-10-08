@@ -19,7 +19,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DB_DIR = Path(__file__).resolve().parent
 SEED_DIR = DB_DIR / "seed"
 
@@ -64,15 +64,24 @@ def seed_stamp() -> str:
     return h.hexdigest()[:12]
 
 
-def read_csv(name: str):
-    path = SEED_DIR / name
+# Пункты для проверок. В поставке пунктов нет (с 08.10.2026: новый человек
+# заводит свои — Роман 06.10.2026, «пустой справочник пунктов, всё заводит
+# сам»), а проверкам нужен справочник с настоящими карточками: это прежний
+# `seed/place.csv`. В установщик он не попадает и в отпечаток не входит.
+TEST_PLACES = DB_DIR / "fixtures" / "place.csv"
+
+
+def read_csv(name):
+    path = name if isinstance(name, Path) else SEED_DIR / name
     if not path.exists():
         raise SystemExit(f"Не найден файл справочника: {path}")
     with path.open(encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
 
 
-def build(db_path: Path) -> dict:
+def build(db_path: Path, places: Path | None = None) -> dict:
+    """Собирает базу поставки. `places` — файл пунктов для проверок
+    (`TEST_PLACES`); без него справочник пунктов пуст, как в установщике."""
     # Папку создаём сами: git не хранит пустые каталоги, поэтому в свежем
     # клоне src-tauri/resources/ может отсутствовать.
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +149,7 @@ def build(db_path: Path) -> dict:
           int(r["age_max"]) if nz(r["age_max"]) else None) for r in rows])
     stats["role"] = len(rows)
 
-    rows = read_csv("place.csv")
+    rows = read_csv(places) if places else []
     db.executemany(
         """INSERT INTO place
            (name, name_norm, np_type, guberniya, uyezd, volost,

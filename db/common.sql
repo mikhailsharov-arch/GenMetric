@@ -42,7 +42,10 @@ CREATE TABLE IF NOT EXISTS place (
   familio_url     TEXT,
   origin          TEXT,
   created_at      TEXT,
-  updated_at      TEXT
+  updated_at      TEXT,
+  -- Комментарий деревни-тёзки (08.10.2026); у прежних общих файлов колонку
+  -- добавляет open_common (parish.rs).
+  comment         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS place_renamed (

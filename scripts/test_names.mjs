@@ -1,6 +1,6 @@
 // Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { feminineSurname, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES } from "../src/names.ts";
+import { feminineSurname, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -72,5 +72,12 @@ same("тип заглавными распознаётся", left("Почино�
 same("губерния: «костромская» → «Костромская»", capFirst("костромская"), "Костромская");
 same("губерния: «Область войска Донского» не меняется", capFirst("Область войска Донского"), "Область войска Донского");
 same("волость: остальное не трогается", capFirst("ново-никольская"), "Ново-никольская");
+// Название пункта с комментарием деревни-тёзки — те же примеры, что в тесте
+// крейта place_comment (src-tauri/core/src/text.rs).
+same("метка: «Хмельничное» + «Столпино»", placeLabel("Хмельничное", "Столпино"), "Хмельничное (Столпино)");
+same("метка: пустой комментарий — просто название", placeLabel(" Хмельничное ", "  "), "Хмельничное");
+same("показ: название и комментарий", JSON.stringify(splitPlaceLabel("Хмельничное (Столпино)")), JSON.stringify({ name: "Хмельничное", comment: "Столпино" }));
+same("показ: без скобок — комментария нет", JSON.stringify(splitPlaceLabel("Хмельничное")), JSON.stringify({ name: "Хмельничное", comment: "" }));
+same("показ: его пункт чужого прихода остаётся целым", splitPlaceLabel("д.Балахонка, Заобнорская волость").comment, "");
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

@@ -56,7 +56,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "seed.sqlite"
-        build_seed.build(db_path)
+        build_seed.build(db_path, places=build_seed.TEST_PLACES)
         db = sqlite3.connect(db_path)
         one = lambda sql, *a: db.execute(sql, a).fetchone()
 

@@ -132,3 +132,25 @@ export function typedCase(e: { target: HTMLInputElement; nativeEvent: Event },
   }
   return proper;
 }
+
+/**
+ * Название пункта в программе: у деревни-тёзки с комментарием — «Хмельничное
+ * (Столпино)» (Роман 06.10.2026). Копия `text::place_label` из крейта: правишь
+ * одно — правь другое (примеры одни и те же в scripts/test_names.mjs и в
+ * тесте крейта place_comment).
+ */
+export function placeLabel(name: string, comment: string): string {
+  const n = name.trim(), c = comment.trim();
+  return c === "" ? n : `${n} (${c})`;
+}
+
+/**
+ * Метка пункта для показа: название и комментарий в скобках на конце — он
+ * рисуется серым. Только для экрана: настоящий комментарий лежит в карточке
+ * пункта, а здесь он угадывается по скобкам — у названия со своими скобками
+ * («Никольское (Старое)») серым окажется его хвост, и только.
+ */
+export function splitPlaceLabel(label: string): { name: string; comment: string } {
+  const m = /^(.*\S) \(([^()]+)\)$/.exec(label.trim());
+  return m ? { name: m[1], comment: m[2] } : { name: label, comment: "" };
+}

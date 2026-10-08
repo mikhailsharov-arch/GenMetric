@@ -75,6 +75,16 @@ pub fn open_common(dir: &Path) -> Result<Connection, String> {
     let conn = Connection::open(common_path(dir)).map_err(|e| format!("общий файл не открылся: {e}"))?;
     conn.busy_timeout(std::time::Duration::from_secs(3)).map_err(s)?;
     conn.execute_batch(COMMON_SQL).map_err(|e| format!("общий файл не размечен: {e}"))?;
+    // Колонка комментария пункта (08.10.2026): общий файл размечается только
+    // CREATE … IF NOT EXISTS, и у прежнего файла новой колонки не появилось бы.
+    let has_comment: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('place') WHERE name = 'comment'")
+        .and_then(|mut st| st.exists([]))
+        .map_err(s)?;
+    if !has_comment {
+        conn.execute_batch("ALTER TABLE place ADD COLUMN comment TEXT")
+            .map_err(|e| format!("общий файл: не добавлена колонка комментария пункта: {e}"))?;
+    }
     conn.execute("INSERT OR IGNORE INTO parish (id, file) VALUES (1, ?1)", [FIRST_FILE]).map_err(s)?;
     adopt_orphans(&conn, dir)?;
     Ok(conn)
