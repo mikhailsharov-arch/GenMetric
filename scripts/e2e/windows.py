@@ -47,7 +47,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
+                                        TimeoutException, WebDriverException)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options as EdgeOptions
@@ -769,7 +770,9 @@ def feed_file(driver, path):
 def open_parishes(driver, wait):
     """Окно «Приходы» с экрана «Дело»."""
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
-    click(driver, "//div[contains(@class,'parishrow')]//button")
+    # Строка прихода — с классом main: с 08.10.2026 на «Деле» есть и другая
+    # строка того же вида, «Всегда в столбик».
+    click(driver, "//div[contains(@class,'parishrow') and contains(@class,'main')]//button")
     wait.until(EC.visibility_of_element_located((By.XPATH, PARISH)))
     # Перечень приходит отдельным запросом чуть позже окна: сборка 05.10
     # упала на том, что список прочитали раньше, чем он появился.
@@ -781,12 +784,19 @@ def open_parishes(driver, wait):
 
 def reloaded(driver, wait, name):
     """После смены прихода окно перечитывается целиком: ждём новое название."""
+    # Текст читается одним вызовом в окне, а не по элементам: окно в этот
+    # момент перечитывается, и элемент, найденный до перезагрузки, к чтению
+    # текста уже не существует (StaleElementReference, сборка 08.10.2026 —
+    # со второй строкой «Всегда в столбик» гонка стала попадать).
+    def parish_row(d):
+        return d.execute_script(
+            "return [...document.querySelectorAll('.parishrow.main')].map((e) => e.innerText).join(' ');") or ""
     try:
-        WebDriverWait(driver, 90).until(lambda d: name in " ".join(
-            e.text for e in d.find_elements(By.CSS_SELECTOR, ".parishrow")))
+        WebDriverWait(driver, 90, ignored_exceptions=(StaleElementReferenceException, WebDriverException)) \
+            .until(lambda d: name in parish_row(d))
     except TimeoutException:
         pass
-    row = " ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".parishrow"))
+    row = parish_row(driver)
     check(f"открыт приход «{name}»", name in row, f"«{row}» | {error_details(driver)}")
     time.sleep(1.0)  # формы дочитывают списки и место работы
 
