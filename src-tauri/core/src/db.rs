@@ -168,3 +168,82 @@ pub fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<d
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn seed() -> Option<PathBuf> {
+        // Поставку собирает db/build_seed.py; в конвейере она есть до тестов.
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
+        p.exists().then_some(p)
+    }
+
+    /// Обновление базы — настоящим SQLite программы. До 08.10.2026 `migrate.sql`
+    /// исполнял только Python-тест, а у Python и у программы SQLite разных
+    /// сборок: вложенную цепочку replace один разбирал, другой отвечал «parser
+    /// stack overflow» (так упала сборка 08.10.2026). У человека это было бы
+    /// «база не обновилась».
+    #[test]
+    fn upgrade_runs_in_app_sqlite() {
+        let Some(seed) = seed() else {
+            eprintln!("нет resources/seed.sqlite — тест обновления пропущен");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("genmetric-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("genmetric.sqlite");
+        std::fs::copy(&seed, &path).unwrap();
+        {
+            // «Прежняя установка»: другой отпечаток, запись со званием в
+            // дореформенном написании и два своих звания — занятое и нет.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "UPDATE setting SET value = 'прежняя' WHERE key = 'seed_stamp';
+                 INSERT INTO mk_case (id, church, village, year) VALUES (1, 'Никольская', 'Никольское', 1890);
+                 INSERT INTO entry (id, case_id, section, event_year) VALUES (1, 1, 1, 1890);
+                 INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, rank)
+                 VALUES (1, 'father', 20, 'Иван', 'Безземельный крестьянинъ');
+                 INSERT INTO lookup (kind, value, value_norm, sort_order, origin)
+                 VALUES ('rank_m', 'безземельный крестьянин', 'безземельный крестьянин', 9001, 'user'),
+                        ('rank_m', 'отставной канонир', 'отставной канонир', 9002, 'user');
+                 INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count)
+                 VALUES ('rank_m', 'global', '', 'отставной канонир', 'отставной канонир', 3);",
+            ).unwrap();
+        }
+        let conn = open_database(&seed, &path).expect("обновление прошло");
+        let num = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(num("SELECT count(*) FROM lookup WHERE value = 'безземельный крестьянин'"), 1, "занятое осталось");
+        assert_eq!(num("SELECT count(*) FROM lookup WHERE value = 'отставной канонир'"), 0, "незанятое убрано");
+        assert_eq!(num("SELECT count(*) FROM usage_stat WHERE value = 'отставной канонир'"), 0);
+        assert_eq!(num("SELECT count(*) FROM lookup_dropped WHERE value_norm = 'отставной канонир'"), 1);
+        assert_eq!(num("SELECT count(*) FROM person_mention WHERE rank = 'Безземельный крестьянинъ'"), 1, "запись цела");
+        assert_eq!(num("SELECT count(*) FROM lookup WHERE kind = 'rank_m' AND origin = 'seed'"), 51);
+        let stamp: String = conn.query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0)).unwrap();
+        assert_ne!(stamp, "прежняя", "отпечаток поставки обновлён");
+        assert_eq!(num("SELECT max(version) FROM schema_version"), SCHEMA_VERSION);
+        drop(conn);
+        // Копия «до-обновления» сделана.
+        let copies = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(BACKUP_MARK)).count();
+        assert_eq!(copies, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// То же на настоящей базе — только у разработчика:
+    ///     GENMETRIC_UPGRADE_DB=/путь/копия.sqlite cargo test -p genmetric-core upgrade_real -- --ignored --nocapture
+    /// Файл обновляется на месте — давать копию.
+    #[test]
+    #[ignore]
+    fn upgrade_real() {
+        let seed = seed().expect("resources/seed.sqlite");
+        let path = PathBuf::from(std::env::var("GENMETRIC_UPGRADE_DB").expect("GENMETRIC_UPGRADE_DB"));
+        let count = |c: &Connection, t: &str| -> i64 { c.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0)).unwrap() };
+        let before = { let c = Connection::open(&path).unwrap(); (count(&c, "entry"), count(&c, "person_mention"), count(&c, "lookup")) };
+        let conn = open_database(&seed, &path).expect("обновление прошло");
+        println!("записей {} → {}, упоминаний {} → {}, значений перечней {} → {}",
+                 before.0, count(&conn, "entry"), before.1, count(&conn, "person_mention"), before.2, count(&conn, "lookup"));
+        assert_eq!((before.0, before.1), (count(&conn, "entry"), count(&conn, "person_mention")));
+    }
+}

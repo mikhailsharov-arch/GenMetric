@@ -349,35 +349,116 @@ DELETE FROM main.usage_stat
 -- Память причта («звание пусто» и «звания нет» одного человека) сливается
 -- выше — при каждом обновлении.
 -- ---------------------------------------------------------------------------
+-- Ключ считается по шагам — одной заменой буквы на запрос, а не одной
+-- вложенной цепочкой replace: цепочку в сорок уровней SQLite прежних сборок не
+-- разбирает («parser stack overflow» — так упала сборка 08.10.2026 на Linux;
+-- у человека так упало бы обновление базы). Шаги собраны программой.
 DROP TABLE IF EXISTS temp.m_used;
 CREATE TEMP TABLE m_used (grp TEXT NOT NULL, norm TEXT NOT NULL);
-INSERT INTO temp.m_used SELECT DISTINCT 'rank', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(rank, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.person_mention WHERE trim(coalesce(rank, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'confession', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(confession, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.person_mention WHERE trim(coalesce(confession, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'kinship', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(kinship, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.person_mention WHERE trim(coalesce(kinship, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'marriage_order', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(marriage_order, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.person_mention WHERE trim(coalesce(marriage_order, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'death_cause', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(death_cause, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.person_mention WHERE trim(coalesce(death_cause, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'archive', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(archive, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.mk_case WHERE trim(coalesce(archive, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'church', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(church, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.mk_case WHERE trim(coalesce(church, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'uyezd', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(uyezd, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.mk_case WHERE trim(coalesce(uyezd, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'guberniya', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(guberniya, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.mk_case WHERE trim(coalesce(guberniya, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'uyezd', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(uyezd, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.place WHERE trim(coalesce(uyezd, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'guberniya', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(guberniya, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.place WHERE trim(coalesce(guberniya, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'volost', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(volost, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.place WHERE trim(coalesce(volost, '')) <> '';
-INSERT INTO temp.m_used SELECT DISTINCT 'np_type', trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(np_type, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))
-  FROM main.place WHERE trim(coalesce(np_type, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'rank', lower(trim(rank)) FROM main.person_mention WHERE trim(coalesce(rank, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'confession', lower(trim(confession)) FROM main.person_mention WHERE trim(coalesce(confession, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'kinship', lower(trim(kinship)) FROM main.person_mention WHERE trim(coalesce(kinship, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'marriage_order', lower(trim(marriage_order)) FROM main.person_mention WHERE trim(coalesce(marriage_order, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'death_cause', lower(trim(death_cause)) FROM main.person_mention WHERE trim(coalesce(death_cause, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'archive', lower(trim(archive)) FROM main.mk_case WHERE trim(coalesce(archive, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'church', lower(trim(church)) FROM main.mk_case WHERE trim(coalesce(church, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'uyezd', lower(trim(uyezd)) FROM main.mk_case WHERE trim(coalesce(uyezd, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'guberniya', lower(trim(guberniya)) FROM main.mk_case WHERE trim(coalesce(guberniya, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'uyezd', lower(trim(uyezd)) FROM main.place WHERE trim(coalesce(uyezd, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'guberniya', lower(trim(guberniya)) FROM main.place WHERE trim(coalesce(guberniya, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'volost', lower(trim(volost)) FROM main.place WHERE trim(coalesce(volost, '')) <> '';
+INSERT INTO temp.m_used SELECT DISTINCT 'np_type', lower(trim(np_type)) FROM main.place WHERE trim(coalesce(np_type, '')) <> '';
+UPDATE temp.m_used SET norm = replace(norm, 'А', 'а');
+UPDATE temp.m_used SET norm = replace(norm, 'Б', 'б');
+UPDATE temp.m_used SET norm = replace(norm, 'В', 'в');
+UPDATE temp.m_used SET norm = replace(norm, 'Г', 'г');
+UPDATE temp.m_used SET norm = replace(norm, 'Д', 'д');
+UPDATE temp.m_used SET norm = replace(norm, 'Е', 'е');
+UPDATE temp.m_used SET norm = replace(norm, 'Ж', 'ж');
+UPDATE temp.m_used SET norm = replace(norm, 'З', 'з');
+UPDATE temp.m_used SET norm = replace(norm, 'И', 'и');
+UPDATE temp.m_used SET norm = replace(norm, 'Й', 'й');
+UPDATE temp.m_used SET norm = replace(norm, 'К', 'к');
+UPDATE temp.m_used SET norm = replace(norm, 'Л', 'л');
+UPDATE temp.m_used SET norm = replace(norm, 'М', 'м');
+UPDATE temp.m_used SET norm = replace(norm, 'Н', 'н');
+UPDATE temp.m_used SET norm = replace(norm, 'О', 'о');
+UPDATE temp.m_used SET norm = replace(norm, 'П', 'п');
+UPDATE temp.m_used SET norm = replace(norm, 'Р', 'р');
+UPDATE temp.m_used SET norm = replace(norm, 'С', 'с');
+UPDATE temp.m_used SET norm = replace(norm, 'Т', 'т');
+UPDATE temp.m_used SET norm = replace(norm, 'У', 'у');
+UPDATE temp.m_used SET norm = replace(norm, 'Ф', 'ф');
+UPDATE temp.m_used SET norm = replace(norm, 'Х', 'х');
+UPDATE temp.m_used SET norm = replace(norm, 'Ц', 'ц');
+UPDATE temp.m_used SET norm = replace(norm, 'Ч', 'ч');
+UPDATE temp.m_used SET norm = replace(norm, 'Ш', 'ш');
+UPDATE temp.m_used SET norm = replace(norm, 'Щ', 'щ');
+UPDATE temp.m_used SET norm = replace(norm, 'Ъ', 'ъ');
+UPDATE temp.m_used SET norm = replace(norm, 'Ы', 'ы');
+UPDATE temp.m_used SET norm = replace(norm, 'Ь', 'ь');
+UPDATE temp.m_used SET norm = replace(norm, 'Э', 'э');
+UPDATE temp.m_used SET norm = replace(norm, 'Ю', 'ю');
+UPDATE temp.m_used SET norm = replace(norm, 'Я', 'я');
+UPDATE temp.m_used SET norm = replace(norm, 'Ё', 'е');
+UPDATE temp.m_used SET norm = replace(norm, 'ё', 'е');
+UPDATE temp.m_used SET norm = replace(norm, 'І', 'и');
+UPDATE temp.m_used SET norm = replace(norm, 'і', 'и');
+UPDATE temp.m_used SET norm = replace(norm, 'Ѣ', 'е');
+UPDATE temp.m_used SET norm = replace(norm, 'ѣ', 'е');
+UPDATE temp.m_used SET norm = replace(norm, 'Ѳ', 'ф');
+UPDATE temp.m_used SET norm = replace(norm, 'ѳ', 'ф');
+UPDATE temp.m_used SET norm = trim(replace(norm || ' ', 'ъ ', ' '));
 CREATE INDEX temp.ix_m_used ON m_used (grp, norm);
+
+-- Значения перечней с теми же ключами: и по ключу поиска, и по написанию.
+DROP TABLE IF EXISTS temp.m_look;
+CREATE TEMP TABLE m_look AS
+SELECT l.id, l.kind, l.value_norm, lower(trim(l.value_norm)) AS k1, lower(trim(l.value)) AS k2
+  FROM main.lookup l
+ WHERE l.kind IN ('rank_m', 'rank_f', 'rank_clergy', 'confession', 'kinship', 'marriage_order',
+                  'death_cause', 'archive', 'church', 'uyezd', 'guberniya', 'volost', 'np_type');
+UPDATE temp.m_look SET k1 = replace(k1, 'А', 'а'), k2 = replace(k2, 'А', 'а');
+UPDATE temp.m_look SET k1 = replace(k1, 'Б', 'б'), k2 = replace(k2, 'Б', 'б');
+UPDATE temp.m_look SET k1 = replace(k1, 'В', 'в'), k2 = replace(k2, 'В', 'в');
+UPDATE temp.m_look SET k1 = replace(k1, 'Г', 'г'), k2 = replace(k2, 'Г', 'г');
+UPDATE temp.m_look SET k1 = replace(k1, 'Д', 'д'), k2 = replace(k2, 'Д', 'д');
+UPDATE temp.m_look SET k1 = replace(k1, 'Е', 'е'), k2 = replace(k2, 'Е', 'е');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ж', 'ж'), k2 = replace(k2, 'Ж', 'ж');
+UPDATE temp.m_look SET k1 = replace(k1, 'З', 'з'), k2 = replace(k2, 'З', 'з');
+UPDATE temp.m_look SET k1 = replace(k1, 'И', 'и'), k2 = replace(k2, 'И', 'и');
+UPDATE temp.m_look SET k1 = replace(k1, 'Й', 'й'), k2 = replace(k2, 'Й', 'й');
+UPDATE temp.m_look SET k1 = replace(k1, 'К', 'к'), k2 = replace(k2, 'К', 'к');
+UPDATE temp.m_look SET k1 = replace(k1, 'Л', 'л'), k2 = replace(k2, 'Л', 'л');
+UPDATE temp.m_look SET k1 = replace(k1, 'М', 'м'), k2 = replace(k2, 'М', 'м');
+UPDATE temp.m_look SET k1 = replace(k1, 'Н', 'н'), k2 = replace(k2, 'Н', 'н');
+UPDATE temp.m_look SET k1 = replace(k1, 'О', 'о'), k2 = replace(k2, 'О', 'о');
+UPDATE temp.m_look SET k1 = replace(k1, 'П', 'п'), k2 = replace(k2, 'П', 'п');
+UPDATE temp.m_look SET k1 = replace(k1, 'Р', 'р'), k2 = replace(k2, 'Р', 'р');
+UPDATE temp.m_look SET k1 = replace(k1, 'С', 'с'), k2 = replace(k2, 'С', 'с');
+UPDATE temp.m_look SET k1 = replace(k1, 'Т', 'т'), k2 = replace(k2, 'Т', 'т');
+UPDATE temp.m_look SET k1 = replace(k1, 'У', 'у'), k2 = replace(k2, 'У', 'у');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ф', 'ф'), k2 = replace(k2, 'Ф', 'ф');
+UPDATE temp.m_look SET k1 = replace(k1, 'Х', 'х'), k2 = replace(k2, 'Х', 'х');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ц', 'ц'), k2 = replace(k2, 'Ц', 'ц');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ч', 'ч'), k2 = replace(k2, 'Ч', 'ч');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ш', 'ш'), k2 = replace(k2, 'Ш', 'ш');
+UPDATE temp.m_look SET k1 = replace(k1, 'Щ', 'щ'), k2 = replace(k2, 'Щ', 'щ');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ъ', 'ъ'), k2 = replace(k2, 'Ъ', 'ъ');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ы', 'ы'), k2 = replace(k2, 'Ы', 'ы');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ь', 'ь'), k2 = replace(k2, 'Ь', 'ь');
+UPDATE temp.m_look SET k1 = replace(k1, 'Э', 'э'), k2 = replace(k2, 'Э', 'э');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ю', 'ю'), k2 = replace(k2, 'Ю', 'ю');
+UPDATE temp.m_look SET k1 = replace(k1, 'Я', 'я'), k2 = replace(k2, 'Я', 'я');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ё', 'е'), k2 = replace(k2, 'Ё', 'е');
+UPDATE temp.m_look SET k1 = replace(k1, 'ё', 'е'), k2 = replace(k2, 'ё', 'е');
+UPDATE temp.m_look SET k1 = replace(k1, 'І', 'и'), k2 = replace(k2, 'І', 'и');
+UPDATE temp.m_look SET k1 = replace(k1, 'і', 'и'), k2 = replace(k2, 'і', 'и');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ѣ', 'е'), k2 = replace(k2, 'Ѣ', 'е');
+UPDATE temp.m_look SET k1 = replace(k1, 'ѣ', 'е'), k2 = replace(k2, 'ѣ', 'е');
+UPDATE temp.m_look SET k1 = replace(k1, 'Ѳ', 'ф'), k2 = replace(k2, 'Ѳ', 'ф');
+UPDATE temp.m_look SET k1 = replace(k1, 'ѳ', 'ф'), k2 = replace(k2, 'ѳ', 'ф');
+UPDATE temp.m_look SET k1 = trim(replace(k1 || ' ', 'ъ ', ' ')), k2 = trim(replace(k2 || ' ', 'ъ ', ' '));
 
 -- Что уходит. Только перечни, которые человек пополняет набором; звание,
 -- занятое у кого угодно, остаётся во всех трёх перечнях званий. Ключ — без
@@ -387,15 +468,13 @@ CREATE INDEX temp.ix_m_used ON m_used (grp, norm);
 DROP TABLE IF EXISTS temp.m_unused;
 CREATE TEMP TABLE m_unused AS
 SELECT l.id, l.kind, l.value_norm
-  FROM main.lookup l
- WHERE l.kind IN ('rank_m', 'rank_f', 'rank_clergy', 'confession', 'kinship', 'marriage_order',
-                  'death_cause', 'archive', 'church', 'uyezd', 'guberniya', 'volost', 'np_type')
-   AND NOT EXISTS (SELECT 1 FROM seed.lookup s WHERE s.kind = l.kind AND s.value_norm = l.value_norm)
+  FROM temp.m_look l
+ WHERE NOT EXISTS (SELECT 1 FROM seed.lookup s WHERE s.kind = l.kind AND s.value_norm = l.value_norm)
    AND NOT EXISTS (SELECT 1 FROM temp.m_used u
                     WHERE u.grp = CASE WHEN l.kind IN ('rank_m', 'rank_f', 'rank_clergy') THEN 'rank' ELSE l.kind END
-                      AND u.norm IN (trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(l.value_norm, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' ')),
-                          trim(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(coalesce(l.value, ''))), 'А', 'а'), 'Б', 'б'), 'В', 'в'), 'Г', 'г'), 'Д', 'д'), 'Е', 'е'), 'Ж', 'ж'), 'З', 'з'), 'И', 'и'), 'Й', 'й'), 'К', 'к'), 'Л', 'л'), 'М', 'м'), 'Н', 'н'), 'О', 'о'), 'П', 'п'), 'Р', 'р'), 'С', 'с'), 'Т', 'т'), 'У', 'у'), 'Ф', 'ф'), 'Х', 'х'), 'Ц', 'ц'), 'Ч', 'ч'), 'Ш', 'ш'), 'Щ', 'щ'), 'Ъ', 'ъ'), 'Ы', 'ы'), 'Ь', 'ь'), 'Э', 'э'), 'Ю', 'ю'), 'Я', 'я'), 'Ё', 'е'), 'ё', 'е'), 'І', 'и'), 'і', 'и'), 'Ѣ', 'е'), 'ѣ', 'е'), 'Ѳ', 'ф'), 'ѳ', 'ф') || ' ', 'ъ ', ' '))));
+                      AND u.norm IN (l.k1, l.k2));
 DROP TABLE IF EXISTS temp.m_used;
+DROP TABLE IF EXISTS temp.m_look;
 
 INSERT OR IGNORE INTO main.lookup_dropped (kind, value_norm)
 SELECT kind, value_norm FROM temp.m_unused;

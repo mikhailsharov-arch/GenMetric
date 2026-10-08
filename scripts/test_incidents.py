@@ -1113,6 +1113,12 @@ def incident_20261008_chistaya_postavka():
           and "FROM main.lookup_dropped d" in read("db/parish_sync.sql"))
     tu = read("db/test_upgrade.py")
     check("обновление проверяется снимком записей до и после", "snapshot(db) == before" in tu)
+    # Сборка 6585a81 упала на Linux: «parser stack overflow» на вложенной
+    # цепочке replace в сорок уровней. У человека так упало бы обновление.
+    check("в миграции нет глубокой вложенности replace — ключ считается по шагам",
+          "replace(replace(replace(" not in mig and "UPDATE temp.m_used SET norm = replace(norm," in mig)
+    check("обновление базы исполняет и настоящий SQLite программы (тест крейта)",
+          "fn upgrade_runs_in_app_sqlite()" in read("src-tauri/core/src/db.rs"))
     sql = read("db/statements.sql")
     blocks = dict((b.split("\n", 1)[0].strip(), b) for b in sql.split("-- @")[1:])
     check("у пункта с комментарием краткое и полное место — из чистого названия",

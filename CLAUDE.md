@@ -37,7 +37,7 @@
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 21, ошибок 0» (шаг страницы, предохранитель)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 96, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 241, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 243, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -51,7 +51,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 18 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 19 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -311,6 +311,12 @@ Python-тесте, может не собраться в программе.** 0
 rusqlite ответил «no such column». Поймал тест крейта — блоки выгрузки
 (`export_prepare`) исполняются и в `cargo test -p genmetric-core`. Новый блок
 `statements.sql` должен исполняться настоящим Rust: тестом крейта или шагом e2e.
+То же с `migrate.sql`: вложенную цепочку `replace` в сорок уровней SQLite на
+Linux не разобрал («parser stack overflow»), хотя на Mac она проходила.
+Обновление базы теперь гоняет и тест крейта (`db::tests::upgrade_runs_in_app_sqlite`),
+а на настоящей базе — `GENMETRIC_UPGRADE_DB=/путь/копия.sqlite cargo test -p
+genmetric-core upgrade_real -- --ignored --nocapture`. Глубокую вложенность в
+SQL не писать: считать по шагам во временной таблице.
 
 **Асинхронный ответ надо уметь отменять.** Где запрос уходит на каждое нажатие,
 закрытие списка обязано увеличивать счётчик запросов.
