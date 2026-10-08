@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { focusNextField, scrollInList } from "./focus";
 import { report } from "./errors";
+import { typedCase } from "./names";
 
 export type Item = { value: string; tier: number; count: number };
 
@@ -21,6 +22,11 @@ type Props = {
   onLeave?: (value: string, related: EventTarget | null) => void;
   /** Ссылка справа в поле (например, «карточка» у НП), только при непустом значении. */
   action?: { label: string; onClick: () => void };
+  /** Правка регистра: при наборе (`final = false`) и при настоящем уходе из
+   *  поля (`final = true`) — заглавная буква в НП и в полях карточки пункта
+   *  (Роман 07.10.2026). Выбранное из списка не правится: это уже принятое
+   *  написание. */
+  fix?: (text: string, final: boolean) => string;
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -42,7 +48,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -58,6 +64,10 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
   // Заказчик 15.09.2026: «открывается сразу несколько списков, которые
   // приходится протыкивать мышкой».
   const typed = useRef(false);
+  // В поле набирали с тех пор, как в него вошли: только тогда уход из поля
+  // правит регистр. Проход Tab-ом по старой записи со строчным «иваново» не
+  // должен её менять — «набранное раньше не меняется» (ревьюер 08.10.2026).
+  const typedHere = useRef(false);
 
   /**
    * Закрывает список и отменяет уже отправленные запросы.
@@ -197,12 +207,26 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         spellCheck={false}
         onChange={(e) => {
           typed.current = true;
-          onChange(e.target.value);
+          typedHere.current = true;
+          onChange(fix ? typedCase(e, (t) => fix(t, false)) : e.target.value);
         }}
         onKeyDown={onKeyDown}
         onBlur={(e) => {
           closeList();
-          const leaving = pickedValue.current ?? value;
+          let leaving = pickedValue.current ?? value;
+          // Окно программы потеряло фокус (клик в скан) — не уход из поля:
+          // человек вернётся и допишет слово.
+          const real = e.relatedTarget !== null || document.hasFocus();
+          const wasTyped = typedHere.current;
+          if (real) typedHere.current = false;
+          if (fix && wasTyped && pickedValue.current === null && real) {
+            const proper = fix(leaving, true);
+            if (proper !== leaving) {
+              // Список на эту правку не открываем: она не набор с клавиатуры.
+              leaving = proper;
+              onChange(proper);
+            }
+          }
           pickedValue.current = null;
           onLeave?.(leaving, e.relatedTarget);
         }}

@@ -50,3 +50,37 @@ export function eventYearOf(year: number | null, eventMonth: number | null, rite
   if (year === null) return null;
   return prev && riteBeforeEvent(eventMonth, riteMonth) ? year - 1 : year;
 }
+
+/** Запись списка «Набрано», сколько от неё нужно счёту. Список идёт от
+ *  последней записи к первой. */
+export type Counted = { no_male: number | null; no_female: number | null };
+
+/**
+ * Следующий номер записи — по полу (Роман 08.10.2026: «выбираем точный
+ * вариант с привязкой к полу»).
+ *
+ * Счёт родившихся и умерших идёт раздельно по мальчикам и девочкам. «+1 к
+ * прошлому номеру» на его данных попадает в 55 % записей, «+1 к номеру того
+ * же пола» — в 99 %. Пол известен — берём наибольший номер этого пола в году
+ * книги; записей этого пола нет — 1: год начинается с первого номера. Пол
+ * ещё не известен (имя не набрано) — считаем, что он тот же, что у последней
+ * записи; когда имя наберут, номер поправится.
+ *
+ * Наибольший, а не «у последней набранной»: добрали пропущенную запись № 3
+ * после № 40 — следующему положен 41, а не 4 (ревьюер 08.10.2026). Замер на
+ * данных заказчика сделан так же.
+ *
+ * null — сказать нечего (год пуст и пол неизвестен): поле не трогаем.
+ */
+export function nextCount(saved: Counted[], sex: Sex | null): number | null {
+  const numbered = saved.filter((e) => e.no_male !== null || e.no_female !== null);
+  let of: Sex | null = sex;
+  if (of === null) {
+    const last = numbered[0];
+    if (!last) return null;
+    of = last.no_male !== null ? "М" : "Ж";
+  }
+  let top = 0;
+  for (const e of numbered) top = Math.max(top, (of === "М" ? e.no_male : e.no_female) ?? 0);
+  return top + 1;
+}

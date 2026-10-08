@@ -9,6 +9,7 @@ import MarriageForm from "./MarriageForm";
 import DeathForm from "./DeathForm";
 import { ClergyProvider } from "./clergy";
 import { report } from "./errors";
+import { FIELDS } from "./focus";
 import ArchiveBlock from "./ArchiveBlock";
 
 type Startup = {
@@ -110,14 +111,14 @@ export default function App() {
     const back = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (!el?.closest(".savebar") || !((e.key === "Enter" && e.shiftKey) || e.key === "ArrowUp")) return;
-      const fields = Array.from(el.closest(".formroot")?.querySelectorAll<HTMLInputElement>("input[data-field]") ?? [])
+      const fields = Array.from(el.closest(".formroot")?.querySelectorAll<HTMLInputElement>(FIELDS) ?? [])
         .filter((f) => !f.disabled && f.offsetParent !== null);
       const last = fields[fields.length - 1];
       if (!last) return;
       e.preventDefault();
       e.stopPropagation();
       last.focus();
-      last.select();
+      if (typeof last.select === "function") last.select();
     };
     document.addEventListener("keydown", back, true);
     return () => {
@@ -221,7 +222,8 @@ export default function App() {
       <div hidden={screen !== "case"}>
         <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""}
                     onWorkYear={(year) => setWorkYear((prev) => ({ year, n: (prev?.n ?? 0) + 1 }))}
-                    onOpenEntry={openEntry} />
+                    onOpenEntry={openEntry}
+                    viewBlock={<OneColumn on={oneColumn} onToggle={toggleOneColumn} />} />
       </div>
       {/* Причт общий для всех разделов (27.09.2026) — clergy.tsx. Формы
           браков и смертей (25.09, 27.09) так же не размонтируются. */}
@@ -240,8 +242,7 @@ export default function App() {
       )}
       {screen === "about" && info && (
         <section>
-          <OneColumn on={oneColumn} onToggle={toggleOneColumn} />
-          <h2 className="sub-h2">Что внутри сборки</h2>
+          <h2>Что внутри сборки</h2>
           <p className="hint">
             Если эти числа не изменились после установки новой версии — значит
             обновление до базы не доехало, и об этом надо сказать.

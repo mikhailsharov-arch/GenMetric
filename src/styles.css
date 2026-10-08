@@ -441,7 +441,7 @@ button.linkish {
 
 /* Свёрнутый причт: строка на каждого с кнопкой выбора — сменить, не разворачивая. */
 .clergyrow {
-  display: grid; grid-template-columns: 4.5em 1fr auto; gap: 0.5em;
+  display: grid; grid-template-columns: 4.5em 1fr; gap: 0.5em;
   align-items: baseline; position: relative; margin-top: 0.15em;
 }
 .clergyrow .clergysummary { margin-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -739,3 +739,55 @@ button.toggle { white-space: nowrap; }
 .scale-value { min-width: 2.2em; }
 .topbar { gap: 0.4em; }
 .tabs { gap: 0.3em; }
+
+/* ============================================================================
+   Сборка «Набор без стирания» (08.10.2026)
+   ========================================================================== */
+
+/* Свёрнутый причт: выпадающий список на каждого — в обходе клавишами. */
+.clergyselect {
+  width: 100%;
+  min-width: 0;
+  padding: 0.16em 0.4em;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.25;
+  color: var(--ink);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+}
+.clergyselect:focus {
+  background: var(--field-focus);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 78, 121, 0.16);
+}
+.formroot select { scroll-margin: 0.4em 0 4.5em; }
+
+/* Предохранитель «забытая страница»: жёлтая строка над формой, как у правки. */
+.pagewarn {
+  margin: 0 0 0.4em;
+  padding: 0.3em 0.6em;
+  font-size: 0.9em;
+  background: #fff7e0;
+  border: 1px solid #f0d48a;
+  border-radius: 6px;
+}
+
+/* Флажок «звание само» — слева в строке «Добавить восприемника / поручителя». */
+.addrow {
+  align-items: center;
+  gap: 0.6em;
+}
+.addrow .autorank { margin-right: auto; }
+
+/* «Вид формы» на экране «Дело» — между сохранением и выгрузкой. */
+.onecolblock {
+  margin-top: 0.8em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--line);
+}
+
+/* Верхняя строка при крупном шрифте переносится, а не уходит за край окна. */
+.topbar { flex-wrap: wrap; }

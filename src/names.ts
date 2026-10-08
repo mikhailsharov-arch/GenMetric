@@ -54,3 +54,81 @@ export function showNoName(text: string): string {
   if (!m || m[2] === NO_NAME || !noNameWord(m[2])) return text;
   return m[1] + NO_NAME + text.slice(m[0].length);
 }
+
+/** Первая буква строки — заглавная (губерния, уезд, волость в карточке
+ *  пункта; Роман 07.10.2026). Остальное не трогается. */
+export function capFirst(text: string): string {
+  return text.replace(/^(\s*)(\p{Ll})/u, (_m, before: string, letter: string) => before + letter.toUpperCase());
+}
+
+/** Типы пункта из поставки — пока перечень `np_type` не прочитан из базы. */
+export const NP_TYPES = ["д.", "с.", "г.", "погост", "посад", "б.г.", "з.г.", "завод", "починок",
+                         "приселок", "с-цо", "слобода"];
+
+/**
+ * Заглавная буква в названии населённого пункта (Роман 07.10.2026: «точно
+ * так же, как это уже реализовано при вводе ИОФ»).
+ *
+ * Исключение — название, начинающееся с типа пункта: «д.Балахонка,
+ * Заобнорская волость», «починок Смыгарев» — его принятые написания (Роман
+ * 08.10.2026: «делать первую букву заглавной не нужно»).
+ *
+ * `final = false` — идёт набор: пока набранное может оказаться типом («по» —
+ * начало «починок» и «погост»), букву не трогаем; как только это уже не тип
+ * («пок»), первая буква становится заглавной задним числом.
+ * `final = true` — ушли из поля: тип без названия после него («слобода»,
+ * «починок») — это само название, «Слобода».
+ *
+ * У названия после типа заглавной становится его первая буква: «починок
+ * смыгарев» → «починок Смыгарев», «д.балахонка» → «д.Балахонка» — так
+ * написаны его пункты.
+ */
+export function placeCase(text: string, types: string[], final: boolean): string {
+  const lead = /^\s*/.exec(text)![0];
+  const body = text.slice(lead.length);
+  if (body === "" || !/^\p{Ll}/u.test(body)) return text;
+  const low = body.toLowerCase();
+  let maybeType = false;
+  for (const raw of types) {
+    const type = raw.trim().toLowerCase();
+    if (type === "") continue;
+    if (!final && type.startsWith(low)) maybeType = true; // «по» — ещё может стать «починок»
+    if (!low.startsWith(type)) continue;
+    const rest = body.slice(type.length);
+    // После «д.» название идёт сразу, после «починок» — через пробел.
+    const gap = /^\s*/.exec(rest)![0];
+    if (!type.endsWith(".") && gap === "" && rest !== "") continue; // «починковский» — не тип
+    const name = rest.slice(gap.length);
+    if (name === "") {
+      if (final) break; // тип без названия — это само название
+      return text;
+    }
+    return lead + body.slice(0, type.length) + gap + name[0].toUpperCase() + name.slice(1);
+  }
+  if (maybeType) return text;
+  return lead + body[0].toUpperCase() + body.slice(1);
+}
+
+/**
+ * Поправить регистр прямо в поле во время набора — общий приём полей ИОФ, НП
+ * и карточки пункта. Длина текста не меняется, курсор возвращается на место
+ * сразу, до того как React применит состояние: отложенный возврат при быстром
+ * наборе вставлял бы следующую букву не туда.
+ *
+ * Не при стирании: стёрли первую букву «иван», чтобы поправить, — «ван» не
+ * должно тут же стать «Ван» (проверяющий 05.10.2026). И не во время
+ * композиции системного метода ввода — ввод сорвётся (ревьюер 05.10.2026).
+ */
+export function typedCase(e: { target: HTMLInputElement; nativeEvent: Event },
+                          fix: (text: string) => string): string {
+  const el = e.target;
+  const native = e.nativeEvent as InputEvent;
+  if (native.isComposing || (native.inputType ?? "").startsWith("delete")) return el.value;
+  const proper = fix(el.value);
+  if (proper !== el.value) {
+    const at = el.selectionStart;
+    el.value = proper;
+    if (at !== null) el.setSelectionRange(at, at);
+  }
+  return proper;
+}

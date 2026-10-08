@@ -54,12 +54,14 @@ type CaseYear = { year: number; entries: number };
 
 type CaseSaved = { id: number; status: "saved" | "created" | "exists"; existing: string | null };
 
-export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, onOpenEntry }: {
+export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, onOpenEntry, viewBlock }: {
   onSaved: (c: Case) => void; reload: number; parishName: string;
   /** Дело сохранено с этим годом — формы встают на него (спека 2026-10-03, п. 1.2). */
   onWorkYear: (year: number) => void;
   /** «Открыть запись» из списка на сверку. */
   onOpenEntry: (section: number, id: number) => void;
+  /** Блок «Вид формы» — между кнопкой сохранения и выгрузкой. */
+  viewBlock?: React.ReactNode;
 }) {
   // Год открытого дела — отдельно от года в поле: поле можно поменять и
   // сохранить, и тогда новому году заводится своё дело (Роман 03.10.2026:
@@ -336,6 +338,10 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
           <button type="button" className="linkish" onClick={() => void dropYear()}>Убрать дело этого года</button>
         </p>
       )}
+
+      {/* «Всегда в столбик» — между «Сохранить дело» и «Выгрузкой» (Роман
+          07.10.2026). */}
+      {viewBlock}
 
       {c.id > 0 && <ExportPanel mkCase={c} />}
     </section>

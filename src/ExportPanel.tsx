@@ -251,8 +251,13 @@ function FamilioDialog({ mkCase, years, busy, onClose, onExport }: {
             {y.year}
           </label>
         ))}
+        {/* Обе кнопки рядом (Роман 07.10.2026: «чтобы не снимать галочки по
+            одной»). */}
         {chosen.length !== all.length && (
-          <button type="button" className="linkish" onClick={() => setChosen(all)}>Весь приход</button>
+          <button type="button" className="linkish" data-years-all onClick={() => setChosen(all)}>Весь приход</button>
+        )}
+        {chosen.length > 0 && (
+          <button type="button" className="linkish" data-years-none onClick={() => setChosen([])}>Снять все</button>
         )}
       </div>
       {undated && (

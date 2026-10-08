@@ -8,7 +8,9 @@ import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
-import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
+import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
+import { pageOverflow } from "./page";
+import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
 import { feminineSurname, titleCase } from "./names";
@@ -31,7 +33,9 @@ import type { FormProps } from "./formprops";
  * (НП, звание, ИОФ) отвергнута 17.08.2026.
  *
  * Счёт — одно поле, как в Excel. Разделение на «счёт М» и «счёт Ж» было
- * нашей самодеятельностью, заказчик просил вернуть одно.
+ * нашей самодеятельностью, заказчик просил вернуть одно. С 08.10.2026 поле
+ * заполняется само — следующим номером по полу ребёнка (count.ts, nextCount),
+ * и клавиши перехода его обходят.
  *
  * МАТЬ ЗАПОЛНЯЕТСЯ САМА: населённый пункт наследуется от отца, звание —
  * «законная жена его». На 294 записях его работы совпадение 292 и 293 раза
@@ -174,6 +178,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
+  const dayField = useRef<HTMLInputElement>(null);
   // Поиск внутри своей формы: рядом в DOM скрытые браки и смерти со своими
   // «.sexpick» и «Год» (проверяющий 27.09.2026).
   const root = useRef<HTMLDivElement>(null);
@@ -212,8 +217,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // «форма пуста» через них была бы мёртвой (проверяющий 18.09.2026).
     setPage((v) => v ?? last.page);
     if ((last.rite_year ?? last.event_year) !== null) setYear(last.rite_year ?? last.event_year);
-    // Причт восстанавливает общий ClergyProvider (27.09.2026).
-    setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
+    // Причт восстанавливает общий ClergyProvider (27.09.2026). Счёт ставит
+    // себе сам — по списку записей года (эффект ниже).
     setBirthMonth((v) => v ?? last.event_month);
     setRiteMonth((v) => v ?? last.rite_month);
   }
@@ -371,6 +376,30 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     if (editingId === null && illegitimate && childSex) setIllegitimate(true);
   }, [childSex]);
 
+  // --- Счёт сам, по полу (Роман 07.10 и 08.10.2026) ---
+  // После сохранения — следующий номер того же пола; набрали имя, и пол
+  // другой — следующий номер этого пола. Основа — записи года книги из списка
+  // «Набрано». Число, набранное руками или кнопками «+/−», до сохранения не
+  // трогаем; запись на правке — тоже.
+  const countManual = useRef(false);
+  function typeCount(v: number | null) {
+    countManual.current = true;
+    setCount(v);
+  }
+  useEffect(() => {
+    if (editingId !== null || countManual.current) return;
+    // null — год пуст и пол ещё не известен: поле пустое, а не с номером
+    // прошлого года (проверяющий 08.10.2026).
+    setCount(nextCount(saved, childSex ?? null));
+  }, [saved, childSex, editingId]);
+
+  // Предохранитель «забытая страница» — по сохранённым записям года.
+  const pageGuard = editingId === null ? pageOverflow(saved.map((e) => e.page), page) : null;
+
+  // Звание восприемникам по умолчанию — выключается флажком под ними.
+  const [autoRankGod, setAutoRankGod] = useParishFlag(AUTO_RANK_GODPARENT, "звание восприемникам");
+  const godRank = editingId === null && autoRankGod ? "godparent" as const : undefined;
+
   /** Для остальных персон выбор из базы заполняет населённый пункт и звание. */
   function pickInto(set: (fn: (p: Person) => Person) => void) {
     return (hint: PersonHint) =>
@@ -521,7 +550,11 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       root.current?.querySelector<HTMLInputElement>(".row.tight input")?.focus();
       return;
     }
-    const columns = splitCount(count, sexForSave);
+    // Ctrl+Enter сразу после имени: разбор пола мог ещё не дойти до поля
+    // «Счёт», и в нём стоит номер прежнего пола — считаем здесь тем же
+    // правилом, что и эффект. Набранный руками номер остаётся.
+    const auto = editingId === null && !countManual.current ? nextCount(saved, sexForSave) : null;
+    const columns = splitCount(auto ?? count, sexForSave);
     if (columns === null) {
       // Кнопки выбора пола есть только под набранным именем. Счёт без имени
       // ребёнка — отдельный случай, и молчать тут нельзя (ревьюер 13.09.2026).
@@ -571,6 +604,13 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
              `дела, с которым работала форма, больше нет — запись легла в дело ${
                done.fallback_year !== null ? `${done.fallback_year} года` : "без года"}; поставьте ей год, и она перейдёт в своё`);
       onSaved(done.case_id);
+      // Новая запись — сразу в список: счёт следующей считается по нему, а
+      // перечитать список может не удаться (ревьюер 08.10.2026).
+      if (editingId === null)
+        setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
+                           event_day: birthDay, event_month: birthMonth, event_year: null,
+                           rite_month: riteMonth, rite_year: year, child: titleCase(child).trim() || null,
+                           father: father.iof.trim() || null, clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
       refresh();
@@ -706,13 +746,12 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   /**
    * Готовит форму к следующей записи.
    *
-   * Счёт НЕ меняется сам. Счёт родившихся идёт раздельно по мальчикам
-   * и девочкам, поэтому угадать следующий нельзя, а поправленное программой
-   * число надо каждый раз перенабирать. Заказчик 24.08.2026: «счёт в этом поле
-   * не должен меняться, он должен оставаться как последний набранный».
+   * Счёт ставится сам, по полу (эффект выше). До 08.10.2026 он не менялся:
+   * заказчик 24.08.2026 отменил «+1 к прошлому» — счёт раздельный по
+   * мальчикам и девочкам, и число приходилось перенабирать. Вариант «по
+   * полу» он принял сам и попросил убрать поле из обхода клавишами.
    *
-   * Курсор уходит в «Счёт», а не в «Ребёнок»: с него начинается запись
-   * в Excel, и оттуда стрелка вниз ведёт по форме до конца.
+   * Курсор уходит в день рождения — первое поле, которое набирают.
    *
    * Страница, месяц и причт остаются: они меняются реже, чем раз в запись.
    */
@@ -735,8 +774,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     setGodCount(2);
     setBirthDay(null);
     setRiteDay(null);
-    countField.current?.focus();
-    countField.current?.select();
+    countManual.current = false;
+    dayField.current?.focus();
+    dayField.current?.select();
   }
 
   /**
@@ -755,6 +795,14 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="birth formroot">
+      {/* Предохранитель «забытая страница» (Роман 07.10.2026): не останавливает
+          набор и пропадает сам, когда страницу сменили. */}
+      {pageGuard && (
+        <div className="pagewarn" data-page-guard>
+          <b>Вы не забыли сменить номер страницы?</b> На странице «{page}» уже записей: {pageGuard.onPage},
+          обычно — около {Math.round(pageGuard.usual)}.
+        </div>
+      )}
       {editingId !== null && (
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись открыта в форме. «Сохранить
@@ -766,18 +814,21 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         <div className="row tight">
           <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
           <PageField label="Стр." value={page} onChange={setPage} />
+          {/* Вне обхода клавишами: счёт ставится сам, по полу ребёнка (Роман
+              08.10.2026). Мышью и кнопками «+/−» поправить можно. */}
           <NumberField
             label="Счёт"
             value={count}
-            onChange={setCount}
+            onChange={typeCount}
             min={1}
             inputRef={countField}
+            noTab
           />
         </div>
         {/* Даты рождения и крещения — одной строкой, если ширины хватает
             (27.09.2026: минус строка высоты); узко — переносятся. */}
         <div className="row wrap">
-          <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} />
+          <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12} />
           <NumberField label="Крещ., день" value={riteDay} onChange={setRiteDay} min={1} max={31} />
           <NumberField label="месяц" value={riteMonth} onChange={setRiteMonth} min={1} max={12} noTab />
@@ -894,7 +945,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
         onPickPerson={pickInto(setGod1)}
-          defaultRank={editingId === null ? "godparent" : undefined}
+          defaultRank={godRank}
       />
       <PersonBlock
         title="Восприемник 2"
@@ -904,7 +955,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
         onPickPerson={pickInto(setGod2)}
-          defaultRank={editingId === null ? "godparent" : undefined}
+          defaultRank={godRank}
       />
       {godCount >= 3 && (
         <PersonBlock
@@ -915,7 +966,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
           onPickPerson={pickInto(setGod3)}
-          defaultRank={editingId === null ? "godparent" : undefined}
+          defaultRank={godRank}
         />
       )}
       {godCount >= 4 && (
@@ -927,17 +978,25 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
           onPickPerson={pickInto(setGod4)}
-          defaultRank={editingId === null ? "godparent" : undefined}
+          defaultRank={godRank}
         />
       )}
       </div>
-      {godCount < 4 && (
-        <div className="addrow">
+      <div className="addrow">
+        {/* Выключатель подстановки звания восприемникам (Роман 07.10.2026):
+            помнится в приходе; вне обхода клавишами. */}
+        <label className="unknownbox autorank"
+               title="Включено — восприемнику сразу вписывается самое частое в приходе звание">
+          <input type="checkbox" checked={autoRankGod} tabIndex={-1} data-auto-rank
+                 onChange={(e) => setAutoRankGod(e.target.checked)} />
+          звание само
+        </label>
+        {godCount < 4 && (
           <button type="button" className="toggle" onClick={() => setGodCount((n) => n + 1)}>
             Добавить восприемника
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Церковнослужители. В Excel они стоят в той же строке записи —
           колонки 47–55 листа «1»: ИОФ, Звание, Прим., без НП

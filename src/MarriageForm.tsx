@@ -8,6 +8,8 @@ import ClergyBlock from "./ClergyBlock";
 import { useFormClergy } from "./clergy";
 import Suggest from "./Suggest";
 import { dismissWarn, report, warn } from "./errors";
+import { pageOverflow } from "./page";
+import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
 import { setDirty } from "./dirty";
 import { titleCase } from "./names";
 import type { FormProps } from "./formprops";
@@ -449,12 +451,25 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   const common = { placeDefaults, onPlaceRenamed: renamePlace, rankKind: "rank" as const };
   // Автоподстановки — только при наборе новой записи.
   const fresh = editingId === null;
+  // Звание поручителям по умолчанию — выключается флажком под ними (Роман
+  // 07.10.2026); жених — как раньше.
+  const [autoRankWitness, setAutoRankWitness] = useParishFlag(AUTO_RANK_WITNESS, "звание поручителям");
+  // Предохранитель «забытая страница» — по сохранённым записям года.
+  const pageGuard = fresh ? pageOverflow(saved.map((e) => e.page), page) : null;
   /** Родственник выбран из подсказки: НП у него нет, заполняется звание. */
   const pickRelative = (set: (fn: (r: Relative) => Relative) => void) => (hint: PersonHint) =>
     set((r) => ({ ...r, rank: hint.rank ?? r.rank }));
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="marriage formroot">
+      {/* Предохранитель «забытая страница» (Роман 07.10.2026): не останавливает
+          набор и пропадает сам, когда страницу сменили. */}
+      {pageGuard && (
+        <div className="pagewarn" data-page-guard>
+          <b>Вы не забыли сменить номер страницы?</b> На странице «{page}» уже записей: {pageGuard.onPage},
+          обычно — около {Math.round(pageGuard.usual)}.
+        </div>
+      )}
       {editingId !== null && (
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись о браке открыта в форме. «Сохранить
@@ -517,7 +532,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                        }} {...common}
                        // Поручителями были только мужчины (Роман 06.10.2026) —
                        // женских имён, отчеств и фамилий не предлагаем.
-                       gender="М" defaultRank={fresh ? "witness" : undefined}
+                       gender="М" defaultRank={fresh && autoRankWitness ? "witness" : undefined}
                        titleExtra={
                          <button type="button" className="linkish side" tabIndex={-1}
                                  title="Сменить сторону поручителя"
@@ -534,13 +549,19 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                        ) : undefined} />
         ))}
       </div>
-      {witnessCount < WITNESS_MAX && (
-        <div className="addrow">
+      <div className="addrow">
+        <label className="unknownbox autorank"
+               title="Включено — поручителю сразу вписывается самое частое в приходе звание">
+          <input type="checkbox" checked={autoRankWitness} tabIndex={-1} data-auto-rank
+                 onChange={(e) => setAutoRankWitness(e.target.checked)} />
+          звание само
+        </label>
+        {witnessCount < WITNESS_MAX && (
           <button type="button" className="linkish" onClick={() => setWitnessCount((n) => n + 1)}>
             + добавить поручителя
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       <ClergyBlock
         people={[clergy1, clergy2, clergy3]}

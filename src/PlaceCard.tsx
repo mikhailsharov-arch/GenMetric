@@ -4,6 +4,7 @@ import Modal from "./Modal";
 import Suggest from "./Suggest";
 import { report } from "./errors";
 import { focusNextField } from "./focus";
+import { capFirst } from "./names";
 
 /**
  * Карточка населённого пункта при первом вводе (Роман, приоритет 2 от
@@ -125,11 +126,12 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
         </div>
       )}
       <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse />
-      <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse />
-      <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse />
+      {/* Первая буква — заглавная (Роман 07.10.2026). */}
+      <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse fix={capFirst} />
+      <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse fix={capFirst} />
       {/* Волость — со списком уже известных; набранная в карточке губерния,
           уезд и волость запоминаются (Роман 02.10.2026). */}
-      <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse />
+      <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse fix={capFirst} />
       <div className="field">
         <label>Familio</label>
         <div className="fieldbody">

@@ -7,7 +7,8 @@ import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
-import { eventYearOf, riteBeforeEvent, splitCount, type Sex } from "./count";
+import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
+import { pageOverflow } from "./page";
 import { parseAge } from "./age";
 import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
@@ -34,8 +35,8 @@ import type { FormProps } from "./formprops";
  * в шаблоне Familio это отдельная колонка.
  *
  * ВОЗРАСТ набирается как в книге: «5», «3 мес», «2 нед», «1,5 мес» —
- * см. age.ts. Счёт после сохранения не растёт: он раздельный по полу,
- * угадать следующий нельзя (как в рождениях). Возраст стоит над причиной —
+ * см. age.ts. Счёт ставится сам, по полу умершего, и клавиши его обходят
+ * (как в рождениях, 08.10.2026). Возраст стоит над причиной —
  * так идёт запись в книге (Роман 30.09.2026), в Excel было наоборот.
  *
  * ЛИЧНОСТЬ НЕ УСТАНОВЛЕНА (Роман 30.09.2026): «в метрических книгах регулярно
@@ -121,6 +122,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
+  const dayField = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
 
@@ -149,7 +151,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   function resume(last: Brief) {
     setPage((v) => v ?? last.page);
     if ((last.rite_year ?? last.event_year) !== null) setYear(last.rite_year ?? last.event_year);
-    setCount((v) => v ?? last.no_male ?? last.no_female ?? null);
+    // Счёт ставит себе сам — по списку записей года (эффект ниже).
     setDeathMonth((v) => v ?? last.event_month);
     setBurialMonth((v) => v ?? last.rite_month);
   }
@@ -182,19 +184,96 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const autoRank = useRef<string | null>(null);
   /** НП умершего, набранный человеком (не подставленный программой). */
   const placeTyped = autoPlace.current !== null && dead.place === autoPlace.current ? null : dead.place;
-  // Умерший — младенец: живёт у родителей, его НП — в НП родственника (Роман
-  // 06.10.2026). В пустое поле или поверх подставленного раньше; только при
-  // наборе новой записи.
+  // НП умершего — в НП родственника (Роман 06.10.2026 — у младенца; 07.10 —
+  // у любого умершего: на его данных НП совпадают в 562 парах из 565). В
+  // пустое поле или поверх подставленного раньше; только при наборе новой
+  // записи.
   const relPlaceManual = useRef(false);
   const prevDeadPlace = useRef("");
   useEffect(() => {
     const prev = prevDeadPlace.current;
     prevDeadPlace.current = dead.place;
-    if (editingId !== null || relPlaceManual.current || !/младен/i.test(dead.rank)) return;
+    if (editingId !== null || relPlaceManual.current) return;
     // Только в пустое поле или вслед за собой же: НП родителя, пришедший из
     // записи о рождении (выбор младенца из подсказки), не подменяется.
     setRel((r) => (r.place !== dead.place && (r.place === "" || r.place === prev) ? { ...r, place: dead.place } : r));
-  }, [dead.place, dead.rank, editingId]);
+  }, [dead.place, editingId]);
+
+  // --- Одно слово в ИОФ умершего — младенец (Роман 07.10.2026) ---
+  // «Если при вводе ИОФ умершего заполняется только одно слово (имя),
+  // программа должна интерпретировать эту запись как смерть ребенка» — в
+  // пустое звание идёт «сын младенец» или «дочь младенец» по полу. На его
+  // данных так у 520 из 563 умерших с одним словом. При уходе из поля, а не
+  // на каждую букву: пока набирают «Иван Петров», после «Иван» это ещё не
+  // младенец. Дописали отчество — подставленное убирается. Звание, тронутое
+  // руками, не трогаем; запись на правке — тоже.
+  const latestDead = useRef(dead);
+  latestDead.current = dead;
+  const rankManual = useRef(false);
+  const BABY = { "М": "сын младенец", "Ж": "дочь младенец" } as const;
+  const BABY_MAX_YEARS = 8;
+  /** Какое звание положено по правилу: строка, "" — убрать наше, null — не трогать. */
+  function babyRankFor(d: Deceased, sex: Sex | null): string | null {
+    if (editingId !== null || nameless || rankManual.current) return null;
+    const ours = autoRank.current !== null && d.rank === autoRank.current;
+    if (d.rank.trim() && !ours) return null;
+    // Возраст в годах от восьми — уже не младенец («Марфа», 70 лет):
+    // подставленное убираем и не возвращаем.
+    const grown = (parseAge(d.age)?.years ?? 0) >= BABY_MAX_YEARS;
+    const oneWord = d.iof.trim() !== "" && !/\s/.test(d.iof.trim()) && !grown;
+    if (oneWord && sex) return BABY[sex] === d.rank ? null : BABY[sex];
+    // Больше одного слова (или пусто) — наше «младенец» уже не к месту; звание
+    // от выбранного из подсказки ребёнка (у него отец в записи) остаётся.
+    return ours && Object.values(BABY).includes(d.rank as never) && !oneWord && autoRel.current === null ? "" : null;
+  }
+  async function deadLeft() {
+    const text = latestDead.current.iof.trim();
+    if (!text) return;
+    let sex: Sex | null = sexManual;
+    try {
+      const p = await invoke<Parsed>("parse_iof", { text });
+      sex = (p.gender as Sex | null) ?? sexManual;
+    } catch (e) {
+      report("Не удалось разобрать имя умершего", e);
+      return;
+    }
+    const d = latestDead.current;
+    if (d.iof.trim() !== text) return; // пока ждали, набрали другое
+    const rank = babyRankFor(d, sex);
+    if (rank === null) return;
+    autoRank.current = rank || null;
+    setDead((s) => (s.iof.trim() === text ? { ...s, rank } : s));
+  }
+
+  // Пол выбрали кнопками (имени нет в словаре) — ухода из ИОФ при этом нет.
+  useEffect(() => { if (sexManual) void deadLeft(); }, [sexManual]);
+  // Набрали возраст взрослого — подставленное «младенец» уходит.
+  const grownUp = (parseAge(dead.age)?.years ?? 0) >= BABY_MAX_YEARS;
+  useEffect(() => { if (grownUp) void deadLeft(); }, [grownUp]);
+
+  // --- Счёт сам, по полу — как в рождениях (count.ts, nextCount) ---
+  const countManual = useRef(false);
+  function typeCount(v: number | null) {
+    countManual.current = true;
+    setCount(v);
+  }
+  const deadSex: Sex | null = (nameless ? null : (dead.parsed?.gender as Sex | null | undefined) ?? null) ?? sexManual;
+  useEffect(() => {
+    if (editingId !== null || countManual.current) return;
+    // null — год пуст и пол ещё не известен: поле пустое, а не с номером
+    // прошлого года (проверяющий 08.10.2026).
+    setCount(nextCount(saved, deadSex));
+  }, [saved, deadSex, editingId]);
+
+  // Предохранитель «забытая страница» — по сохранённым записям года.
+  const pageGuard = editingId === null ? pageOverflow(saved.map((e) => e.page), page) : null;
+
+  /** НП родственника пуст или подставлен программой от умершего — такого
+   *  родственника выбор ребёнка из подсказки вправе заполнить отцом. Без
+   *  этого отец не подставлялся, когда НП умершего набран до выбора ребёнка
+   *  (ревьюер 08.10.2026): подставленный нами же НП выглядел «занятым». */
+  const relPlaceFree = (r: Relative) =>
+    !r.place.trim() || (!relPlaceManual.current && r.place === latestDead.current.place);
 
   function pickDeceased(hint: PersonHint) {
     pickInto(setDead)(hint);
@@ -225,7 +304,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       } else if (!rankOurs) {
         autoRank.current = null;
       }
-      const relOurs = (rel.iof.trim() === "" && !rel.place.trim() && !rel.rank.trim()
+      const relOurs = (rel.iof.trim() === "" && relPlaceFree(rel) && !rel.rank.trim()
           && (!rel.kinship.trim() || rel.kinship.trim() === KIN_DEFAULT))
         || (wasAuto !== null && rel.iof === wasAuto);
       if (!relOurs) {
@@ -262,7 +341,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
         if (mine !== pickSeq.current) return;
         const wasAuto = autoRel.current;
         const replaceable = (r: Relative) =>
-          (r.iof.trim() === "" && !r.place.trim() && !r.rank.trim()
+          (r.iof.trim() === "" && relPlaceFree(r) && !r.rank.trim()
             && (!r.kinship.trim() || r.kinship.trim() === KIN_DEFAULT))
           || (wasAuto !== null && r.iof === wasAuto);
         if (!f || f.births > 1) {
@@ -337,7 +416,13 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       return;
     }
     const sex: Sex | null = (d.parsed?.gender as Sex | null | undefined) ?? sexManual;
-    const columns = splitCount(count, sex);
+    // Ctrl+Enter прямо из ИОФ: ухода из поля не было — правило младенца
+    // применяем здесь же, итог не зависит от клавиши сохранения.
+    const babyRank = babyRankFor(d, sex);
+    if (babyRank !== null) d = { ...d, rank: babyRank };
+    // И счёт: разбор пола мог ещё не дойти до поля — считаем тем же правилом.
+    const auto = editingId === null && !countManual.current ? nextCount(saved, sex) : null;
+    const columns = splitCount(auto ?? count, sex);
     if (columns === null) {
       const buttons = root.current?.querySelector<HTMLButtonElement>(".sexpick button");
       if (buttons) {
@@ -390,6 +475,13 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
              `дела, с которым работала форма, больше нет — запись легла в дело ${
                done.fallback_year !== null ? `${done.fallback_year} года` : "без года"}; поставьте ей год, и она перейдёт в своё`);
       onSaved(done.case_id);
+      // Новая запись — сразу в список: счёт следующей считается по нему, а
+      // перечитать список может не удаться (ревьюер 08.10.2026).
+      if (editingId === null)
+        setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
+                           event_day: deathDay, event_month: deathMonth, event_year: null,
+                           rite_month: burialMonth, rite_year: year, deceased: d.iof.trim() || null,
+                           clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
       refresh();
@@ -491,6 +583,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     autoPlace.current = null;
     autoRank.current = null;
     relPlaceManual.current = false;
+    rankManual.current = false;
+    countManual.current = false;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -499,8 +593,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     setAskSex(false);
     setDeathDay(null);
     setBurialDay(null);
-    countField.current?.focus();
-    countField.current?.select();
+    dayField.current?.focus();
+    dayField.current?.select();
   }
 
   function hotkeys(e: React.KeyboardEvent<HTMLDivElement>) {
@@ -591,6 +685,14 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="death formroot">
+      {/* Предохранитель «забытая страница» (Роман 07.10.2026): не останавливает
+          набор и пропадает сам, когда страницу сменили. */}
+      {pageGuard && (
+        <div className="pagewarn" data-page-guard>
+          <b>Вы не забыли сменить номер страницы?</b> На странице «{page}» уже записей: {pageGuard.onPage},
+          обычно — около {Math.round(pageGuard.usual)}.
+        </div>
+      )}
       {editingId !== null && (
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись о смерти открыта в форме. «Сохранить
@@ -602,10 +704,12 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
         <div className="row tight">
           <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
           <PageField label="Стр." value={page} onChange={setPage} />
-          <NumberField label="Счёт" value={count} onChange={setCount} min={1} inputRef={countField} />
+          {/* Вне обхода клавишами: счёт ставится сам, по полу умершего (Роман
+              08.10.2026). Мышью и кнопками «+/−» поправить можно. */}
+          <NumberField label="Счёт" value={count} onChange={typeCount} min={1} inputRef={countField} noTab />
         </div>
         <div className="row wrap">
-          <NumberField label="Смерть, день" value={deathDay} onChange={setDeathDay} min={1} max={31} />
+          <NumberField label="Смерть, день" value={deathDay} onChange={setDeathDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12} />
           <NumberField label="Погреб., день" value={burialDay} onChange={setBurialDay} min={1} max={31} />
           <NumberField label="месяц" value={burialMonth} onChange={setBurialMonth} min={1} max={12} noTab />
@@ -615,7 +719,22 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       </section>
 
       <div className="cols">
-        <PersonBlock title="Умерший" person={dead} onChange={(p) => setDead((s) => ({ ...s, ...p }))}
+        <PersonBlock title="Умерший" person={dead}
+                     onChange={(p) => {
+                       // Звание тронуто руками — правило младенца больше не вмешивается.
+                       const prev = latestDead.current;
+                       if (p.rank !== prev.rank) rankManual.current = true;
+                       // Блок отдаёт персону целиком, а звание и НП форма могла
+                       // только что подставить сама (ещё до перерисовки): то, что
+                       // блок не менял, берём из текущего состояния, а не из его
+                       // копии — иначе ответ разбора имени затёр бы подставленное.
+                       setDead((s) => ({
+                         ...s, ...p,
+                         rank: p.rank === prev.rank ? s.rank : p.rank,
+                         place: p.place === prev.place ? s.place : p.place,
+                       }));
+                     }}
+                     onIofLeave={() => void deadLeft()}
                      gender={parsedSex ?? sexManual ?? undefined}
                      onPickPerson={pickDeceased} preferInfant infantRows infantYear={year}
                      // НП, который программа сама подставила от родителя прошлого

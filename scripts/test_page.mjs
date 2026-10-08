@@ -1,6 +1,6 @@
 // Проверка шага по номеру страницы (src/page.ts). Запуск:
 //     node --experimental-strip-types scripts/test_page.mjs
-import { stepPage, normalizePage } from "../src/page.ts";
+import { stepPage, normalizePage, pageOverflow } from "../src/page.ts";
 
 let ok = 0, fail = 0;
 function check(title, got, want) {
@@ -22,6 +22,22 @@ check("ниже нуля не уходит", stepPage("0", -1), "0");
 check("без чисел не меняется", stepPage("об", 1), "об");
 check("нормализация: пробелы срезаются", normalizePage("  938об-939 "), "938об-939");
 check("нормализация: пустое → null", normalizePage("   "), null);
+
+console.log("\nПредохранитель «забытая страница» — Роман 07.10.2026");
+// Шесть страниц по четыре записи — обычно 4; порог 150 % — шестая запись.
+const usual = ["1", "2", "3", "4", "5", "6"].flatMap((p) => [p, p, p, p]);
+const on = (n) => Array(n).fill("7");
+check("на странице 4 записи, набирается пятая — молчит", pageOverflow([...usual, ...on(4)], "7"), null);
+check("на странице 5 записей, набирается шестая — молчит (6 = 150 %)", pageOverflow([...usual, ...on(5)], "7"), null);
+check("на странице 6 записей, набирается седьмая — предупреждает",
+      JSON.stringify(pageOverflow([...usual, ...on(6)], "7")), JSON.stringify({ onPage: 6, usual: 4 }));
+check("сменили страницу — молчит", pageOverflow([...usual, ...on(6)], "8"), null);
+check("других страниц меньше пяти — судить не по чему",
+      pageOverflow([...["1", "2", "3", "4"].flatMap((p) => [p, p]), ...on(9)], "7"), null);
+check("страница на форме не указана — молчит", pageOverflow([...usual, ...on(9)], null), null);
+check("записи без страницы в среднее не идут", pageOverflow([...usual, null, null, null, ...on(4)], "7"), null);
+check("пробелы вокруг номера не мешают",
+      pageOverflow([...usual, ...on(6)], " 7 ") !== null, true);
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

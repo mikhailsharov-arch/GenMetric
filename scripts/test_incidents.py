@@ -961,7 +961,11 @@ def incident_20261006_otvet_na_sborku_05_10():
     # не должно менять старую запись.
     death = read("src/DeathForm.tsx")
     check("звание по умолчанию выключено для записи на правке",
-          birth.count('defaultRank={editingId === null ?') == 5 and marriage.count("defaultRank={fresh ?") == 2
+          'defaultRank={editingId === null ? "father" : undefined}' in birth
+          and birth.count("defaultRank={godRank}") == 4
+          and 'const godRank = editingId === null && autoRankGod ? "godparent" as const : undefined;' in birth
+          and 'defaultRank={fresh ? "groom" : undefined}' in marriage
+          and 'defaultRank={fresh && autoRankWitness ? "witness" : undefined}' in marriage
           and "const fresh = editingId === null;" in marriage)
     check("НП поручителя, НП родственника младенца и фамилия матери — не в записи на правке",
           "if (editingId !== null) return;" in marriage.split("witnessPlaceManual = useRef", 1)[-1][:400]
@@ -993,7 +997,81 @@ def incident_20261006_otvet_na_sborku_05_10():
           and read("src/fonts/OFL.txt") != "")
 
 
+def incident_20261007_otvet_na_sborku_06_10():
+    """
+    07.10.2026, ответ Романа на сборку 06.10 (intent/2026-10-07…): звание по
+    умолчанию у восприемников мешает — «постоянно приходится стирать и
+    исправлять данные за программой» (на его данных самое частое звание
+    подходит восприемнику в 31 % случаев); словарные имена «отодвигают»
+    персон в подсказке; НП умершего не переходил родственнику, если умерший
+    набран, а не выбран; причт — первый только «священник».
+    Спека 2026-10-08-nabor-bez-stiraniya.
+    """
+    birth, death, marriage = read("src/BirthForm.tsx"), read("src/DeathForm.tsx"), read("src/MarriageForm.tsx")
+    flags = read("src/flags.ts")
+    parish = read("src-tauri/core/src/parish.rs")
+    common = parish.split("COMMON_SETTINGS: &[&str] = &[", 1)[-1].split("]", 1)[0]
+    check("выключатели звания помнятся в приходе, а не в общих настройках окна",
+          '"auto_rank_godparent"' in flags and '"auto_rank_witness"' in flags and "auto_rank" not in common)
+    check("выключатель изначально включён: выключено — только явное «0»", 'setOn(v !== "0")' in flags)
+    check("флажки звания — вне обхода клавишами",
+          birth.count("tabIndex={-1} data-auto-rank") == 1 and marriage.count("tabIndex={-1} data-auto-rank") == 1)
+    iof = read("src/IofField.tsx")
+    check("подсказка ИОФ: есть персоны — одна словарная строка",
+          "early && foundPersons.length > 0 ? foundWords.slice(0, 1) : foundWords" in iof)
+    check("НП умершего идёт родственнику у любого умершего, не только у младенца",
+          "!/младен/i.test(dead.rank)" not in death and "editingId !== null || relPlaceManual.current" in death)
+    check("правило младенца — не у записи на правке и не поверх звания, тронутого руками",
+          "if (editingId !== null || nameless || rankManual.current) return null;" in death)
+    check("…и срабатывает при Ctrl+Enter прямо из ИОФ (итог не зависит от клавиши сохранения)",
+          "const babyRank = babyRankFor(d, sex);" in death.split("async function save()", 1)[-1][:2600])
+    check("подставленное формой звание и НП умершего блок персоны не затирает своей копией",
+          "rank: p.rank === prev.rank ? s.rank : p.rank," in death and "place: p.place === prev.place ? s.place : p.place," in death)
+    check("НП родственника, подставленный от умершего, не мешает подставить отца выбранного ребёнка",
+          death.count("relPlaceFree(") == 2 and "!relPlaceManual.current && r.place === latestDead.current.place" in death)
+    check("правило младенца смотрит на возраст: взрослому с одним именем «младенец» не пишется",
+          ">= BABY_MAX_YEARS" in death.split("function babyRankFor", 1)[-1][:700])
+    sug = read("src/Suggest.tsx")
+    check("регистр при уходе из поля правится, только если в поле набирали (старое написание не меняется)",
+          "if (fix && wasTyped && pickedValue.current === null && real) {" in sug and "typedHere.current = true;" in sug)
+    check("счёт — от наибольшего номера пола, а не от последней набранной записи",
+          "top = Math.max(top, (of === \"М\" ? e.no_male : e.no_female) ?? 0);" in read("src/count.ts"))
+    for name, form in (("рождения", birth), ("смерти", death)):
+        check(f"{name}: сохранённая запись сразу попадает в список, по которому считается счёт",
+              "if (editingId === null)\n        setSaved((l) => [{ id: done.id, page, no_male: columns.no_male" in form)
+        check(f"{name}: счёт ставится сам по полу и не трогается у записи на правке и после набора руками",
+              "if (editingId !== null || countManual.current) return;" in form and "nextCount(saved," in form
+              and "countManual.current = false;" in form.split("function next()", 1)[-1][:1400])
+        check(f"{name}: при сохранении счёт считается тем же правилом (Ctrl+Enter сразу после имени)",
+              "editingId === null && !countManual.current ? nextCount(saved, " in form.split("async function save()", 1)[-1])
+        check(f"{name}: поле «Счёт» вне обхода клавишами",
+              "onChange={typeCount}" in form and "noTab" in form.split("onChange={typeCount}", 1)[-1][:120])
+    clergy = read("src/ClergyBlock.tsx")
+    check("причт: первое место — только «священник», остальные — все прочие",
+          'const PRIEST = "священник";' in clergy
+          and "known.filter((h) => (slot === 0 ? isPriest(h.rank) : !isPriest(h.rank)))" in clergy)
+    check("причт: тот, кто стоит в записи, из выпадающего списка не пропадает",
+          "{nowKey && !listed && (" in clergy)
+    check("причт: списки не исчезают, когда выбрано «никого», а выбирать есть из кого",
+          "if (!open && filled.length === 0 && known.length === 0) {" in clergy)
+    check("причт: примечание прежнего человека не переезжает к выбранному",
+          'rank: hint.rank ?? "", note: "" });' in clergy)
+    focus = read("src/focus.ts")
+    check("обход клавишами знает выпадающие списки и не зовёт у них select()",
+          'FIELDS = "input[data-field], select[data-field]"' in focus and 'typeof el.select === "function"' in focus)
+    check("«всегда в столбик» изначально включено и стоит на «Деле»",
+          'setOn(value !== "0");' in read("src/OneColumn.tsx") and "{viewBlock}" in read("src/CaseHeader.tsx")
+          and "<OneColumn" not in read("src/App.tsx").split('{screen === "about" && info && (', 1)[-1])
+    block = read("src/PersonBlock.tsx")
+    check("заглавная буква в НП — с исключением для названий с типа пункта",
+          "fix={(text, final) => placeCase(text, placeTypes(), final)}" in block)
+    check("предохранитель страницы — не у записи на правке, во всех трёх формах",
+          all("pageOverflow(saved.map((e) => e.page), page)" in f for f in (birth, death, marriage))
+          and "const pageGuard = editingId === null ?" in birth and "const pageGuard = fresh ?" in marriage)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261007_otvet_na_sborku_06_10,
     incident_20261006_otvet_na_sborku_05_10,
     incident_20261006_molcha_i_padenie,
     incident_20261005_imya_ne_ukazano,

@@ -13,6 +13,15 @@
  * карточка НП) — только его поля: Enter не должен уводить из окна в форму
  * под ним. Окно помечается атрибутом data-focus-scope.
  */
+/** Поле обхода: строка ввода или выпадающий список (причт, 08.10.2026). */
+export const FIELDS = "input[data-field], select[data-field]";
+
+/** Встать в поле; у строки ввода — выделить текст, у списка выделять нечего. */
+function enter(el: HTMLInputElement): void {
+  el.focus();
+  if (typeof el.select === "function") el.select();
+}
+
 function fieldsAround(current: HTMLElement): HTMLInputElement[] {
   const scope = current.closest("[data-focus-scope]");
   // Открыто окно, а переход просят из формы под ним (отложенный переход
@@ -22,7 +31,7 @@ function fieldsAround(current: HTMLElement): HTMLInputElement[] {
   if (!scope && document.querySelector(".modal")) return [];
   const root: ParentNode = scope ?? document;
   return Array.from(
-    root.querySelectorAll<HTMLInputElement>("input[data-field]"),
+    root.querySelectorAll<HTMLInputElement>(FIELDS),
   ).filter((el) => !el.disabled && el.offsetParent !== null);
 }
 
@@ -42,8 +51,7 @@ export function focusNextField(current: HTMLElement, step: 1 | -1 = 1): void {
 
   const next = fields[index + step];
   if (next) {
-    next.focus();
-    next.select();
+    enter(next);
     return;
   }
   // Последнее поле формы — дальше кнопка «Сохранить»: Enter на ней сохраняет.
@@ -67,11 +75,10 @@ export function focusNextEmptyField(current: HTMLElement): void {
   const fields = stops(fieldsAround(current), current);
   const index = fields.indexOf(current as HTMLInputElement);
   if (index === -1) return;
-  const next = fields.slice(index + 1).find((el) => el.value.trim() === "") ?? fields[index + 1];
-  if (next) {
-    next.focus();
-    next.select();
-  }
+  // Список причта со значением «никого» — не пустое поле, которое ждёт набора.
+  const next = fields.slice(index + 1).find((el) => el.tagName !== "SELECT" && el.value.trim() === "")
+    ?? fields[index + 1];
+  if (next) enter(next);
 }
 
 /**

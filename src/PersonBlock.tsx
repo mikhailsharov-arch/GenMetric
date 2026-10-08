@@ -5,6 +5,8 @@ import IofField, { type Parsed, type PersonHint } from "./IofField";
 import PlaceCard, { type PlaceInfo, type Similar } from "./PlaceCard";
 import { focusNextField } from "./focus";
 import { report } from "./errors";
+import { placeCase } from "./names";
+import { placeTypes } from "./placetypes";
 
 /**
  * Блок одной персоны в записи.
@@ -418,6 +420,8 @@ export default function PersonBlock({
           kind="place"
           value={person.place}
           onChange={(place) => set({ place })}
+          // Заглавная буква, кроме названий с типа пункта (Роман 07.10.2026).
+          fix={(text, final) => placeCase(text, placeTypes(), final)}
           onLeave={(v, related) => void checkPlace(v, related)}
           action={{ label: "карточка", onClick: () => void openPlaceCard() }}
         />

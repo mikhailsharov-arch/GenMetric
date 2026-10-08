@@ -22,7 +22,8 @@ Microsoft) и проходим путь Романа руками робота.
      появляется «Добавлено: персон …»;
   4. подсказка отца видит персону из архива;
   5. запись девочки сохраняется, и в списке «Набрано» у неё «№ ж.»;
-  6. после перезапуска приложения форма продолжает с места: счёт на месте;
+  6. после перезапуска приложения форма продолжает с места; счёт ставится
+     сам по полу ребёнка, причт — выпадающими списками;
   7. сохранённая запись открывается в форму, правится и сохраняется без дублей;
   …
   13. умерший без имени («личность не установлена») сохраняется;
@@ -105,6 +106,18 @@ def error_details(driver):
             b.click()
         out.append(bar.text.replace("\n", " | "))
     return " || ".join(out) or "полосы нет"
+
+
+def clergy_shown(driver, css):
+    """Кто стоит в причте формы `css` — и в развёрнутом (поля), и в свёрнутом
+    (выпадающие списки, 08.10.2026) виде. Текст выбранной строки списка в
+    `.text` элемента может не попасть — читаем значения напрямую."""
+    return driver.execute_script(
+        "const f = document.querySelector(arguments[0]); if (!f) return '';"
+        "const sel = [...f.querySelectorAll('select[data-clergy]')]"
+        "  .map((s) => (s.selectedOptions[0] || {}).textContent || '');"
+        "const inp = [...f.querySelectorAll('.clergyslot input')].map((i) => i.value);"
+        "return sel.concat(inp).join(' | ');", css) or ""
 
 
 def edit_and_save(driver, wait, scope, css, count, expect):
@@ -294,13 +307,20 @@ def run(driver, wait, archive):
         check("звание по умолчанию — строка или пусто", called["rank"] is None or isinstance(called["rank"], str),
               str(called["rank"]))
 
-    print("\n5а. «Всегда в столбик» — общая настройка, переживает перезапуск")
-    click(driver, "//button[@aria-label='О программе']")
+    print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")
+    # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его
+    # явно не выключили (Роман 07.10.2026).
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    time.sleep(0.5)
+    on = driver.execute_script("return document.documentElement.classList.contains('onecol')")
+    pressed = shown(driver, "//button[@data-onecol]").get_attribute("aria-pressed")
+    check("изначально включено: форма в один столбец", bool(on) and pressed == "true",
+          f"класс {on}, кнопка «{pressed}» | {error_details(driver)}")
     click(driver, "//button[@data-onecol]")
     time.sleep(0.8)
     on = driver.execute_script("return document.documentElement.classList.contains('onecol')")
-    pressed = driver.find_element(By.CSS_SELECTOR, "[data-onecol]").get_attribute("aria-pressed")
-    check("включено: форма в один столбец", bool(on) and pressed == "true",
+    pressed = shown(driver, "//button[@data-onecol]").get_attribute("aria-pressed")
+    check("выключили: плотная раскладка", not on and pressed == "false",
           f"класс {on}, кнопка «{pressed}» | {error_details(driver)}")
 
 
@@ -376,35 +396,41 @@ def resumed(driver, wait):
     """После перезапуска форма продолжает с места остановки (заказчик 15.09.2026)."""
     print("\n6. Перезапуск: форма помнит, где остановились")
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".app")))
-    # «Всегда в столбик», включённое в конце первого запуска (шаг 5а), — на
-    # месте: настройка лежит в общем файле приходов и читается через Rust.
+    # «Всегда в столбик», выключенное в конце первого запуска (шаг 5а), так и
+    # осталось выключенным: настройка лежит в общем файле приходов и читается
+    # через Rust. Без неё форма встала бы в столбик — он включён изначально.
     time.sleep(1)
-    check("«всегда в столбик» пережило перезапуск",
-          bool(driver.execute_script("return document.documentElement.classList.contains('onecol')")),
+    check("выключенное «всегда в столбик» пережило перезапуск",
+          not driver.execute_script("return document.documentElement.classList.contains('onecol')"),
           error_details(driver))
-    click(driver, "//button[@aria-label='О программе']")
-    click(driver, "//button[@data-onecol]")
-    time.sleep(0.5)
-    check("выключено — плотная раскладка вернулась",
-          not driver.execute_script("return document.documentElement.classList.contains('onecol')"))
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
     time.sleep(1)
+    # Счёт ставится сам, по полу (Роман 08.10.2026): последняя запись —
+    # девочка № 7, пол следующего ребёнка ещё не известен — в поле 8.
     count = field(driver, "Счёт").get_attribute("value")
-    check("счёт восстановлен: 7", count == "7", f"«{count}»")
+    check("счёт продолжен: после девочки № 7 — 8", count == "8", f"«{count}»")
+    check("поле «Счёт» вне обхода клавишами", field(driver, "Счёт").get_attribute("tabindex") == "-1")
     page = field(driver, "Стр.").get_attribute("value")
     check("страница восстановлена: 939об-940", page == "939об-940", f"«{page}»")
     year = field(driver, "Год").get_attribute("value")
     check("год восстановлен: 1897", year == "1897", f"«{year}»")
     body = driver.find_element(By.TAG_NAME, "body").text
     check("список набранного на месте", "Набрано: 1" in body)
-    check("причт восстановлен (21.09.2026)", "Александр Рождественский" in body)
+    check("причт восстановлен (21.09.2026)", "Александр Рождественский" in clergy_shown(driver, ".birth"),
+          clergy_shown(driver, ".birth"))
+    check("свёрнутый причт — три выпадающих списка",
+          len(driver.find_elements(By.CSS_SELECTOR, ".birth select[data-clergy]")) == 3)
     # Записать ещё одну — с восстановленным причтом (ревьюер 21.09.2026: причт
     # приходит без разбора, и сохранение должно пройти без ошибок).
-    fill(driver, "Счёт", "8")
+    # Счёт руками не набираем: мальчиков в этом году ещё не было — программа
+    # сама поставит 1, как только поймёт пол по имени.
     fill(driver, "Ребёнок", "Иван")
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
     wait.until(EC.text_to_be_present_in_element((By.XPATH, child + "//*[contains(@class,'parsedline')]"), "М"))
+    time.sleep(0.5)
+    count = field(driver, "Счёт").get_attribute("value")
+    check("набрали мальчика — счёт сам стал 1", count == "1", f"«{count}»")
     click(driver, "//button[starts-with(normalize-space(),'Сохранить и следующая')]")
     try:
         wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Набрано: 2"))
@@ -413,18 +439,21 @@ def resumed(driver, wait):
     body = driver.find_element(By.TAG_NAME, "body").text
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
     check("вторая запись после перезапуска сохранена", "Набрано: 2" in body, " | ".join(errorbar))
-    check("у мальчика «№ м. 8»", "№ м. 8" in body)
+    check("у мальчика «№ м. 1»", "№ м. 1" in body)
+    time.sleep(0.5)  # счёт пересчитывается вслед за списком «Набрано»
+    count = field(driver, "Счёт").get_attribute("value")
+    check("после сохранения в поле следующий номер мальчиков — 2", count == "2", f"«{count}»")
 
     print("\n7. Правка сохранённой записи (заказчик 22.09.2026)")
-    # Открываем последнюю (первую в списке — мальчик, счёт 8), меняем счёт на 9.
+    # Открываем последнюю (первую в списке — мальчик, счёт 1), меняем счёт на 9.
     click(driver, "(//table[contains(@class,'saved')]//button[starts-with(normalize-space(),'Открыть')])[1]")
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".editbar")))
     lifted = field(driver, "Ребёнок").get_attribute("value")
     check("запись поднялась в форму: ребёнок «Иван»", lifted == "Иван", f"«{lifted}»")
     # Запись «Иван» сохранена после перезапуска с восстановленным причтом —
     # имя причта обязано быть в базе (инцидент 22.09.2026: терялось).
-    body = driver.find_element(By.TAG_NAME, "body").text
-    check("у записи после перезапуска причт с именем", "Александр Рождественский" in body)
+    check("у записи после перезапуска причт с именем", "Александр Рождественский" in clergy_shown(driver, ".birth"),
+          clergy_shown(driver, ".birth"))
     fill(driver, "Счёт", "9")
     click(driver, "//button[starts-with(normalize-space(),'Сохранить изменения')]")
     try:
@@ -624,7 +653,8 @@ def resumed(driver, wait):
     w5 = shown(driver, m + "section[.//h2[starts-with(normalize-space(),'Поручитель 5')]]").text
     check("пятый поручитель добавлен, сторона «по жениху»", "по жениху" in w5, w5.replace("\n", " | ")[:80])
     # Причт общий: набран в рождениях — есть и в браках.
-    check("причт из рождений виден в браках", "Александр Рождественский" in block)
+    check("причт из рождений виден в браках", "Александр Рождественский" in clergy_shown(driver, ".marriage"),
+          clergy_shown(driver, ".marriage"))
     edit_and_save(driver, wait, m, ".marriage", 5, "№ 5 · ")
 
     print("\n12. Смерти (27.09.2026)")
@@ -648,7 +678,8 @@ def resumed(driver, wait):
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
     check("запись о смерти сохранена", "Набрано смертей: 1" in block, " | ".join(errorbar))
     check("девочка — «№ ж. 3», умершая в строке", "№ ж. 3" in block and "Анна Иванова" in block)
-    check("причт общий и здесь", "Александр Рождественский" in block)
+    check("причт общий и здесь", "Александр Рождественский" in clergy_shown(driver, ".death"),
+          clergy_shown(driver, ".death"))
     edit_and_save(driver, wait, d, ".death", 4, "№ ж. 4")
 
     print("\n13. Умерший без имени (Роман 30.09.2026)")

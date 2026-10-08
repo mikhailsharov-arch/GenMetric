@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { showNoName, titleCase } from "./names";
+import { showNoName, titleCase, typedCase } from "./names";
 import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
@@ -277,7 +277,6 @@ export default function IofField({
         const whole = knownPersons.filter((p) => /\s/.test(p.iof.trim()) || p.place || p.rank);
         const foundPersons = [...kids, ...whole.filter((p) => !kids.some((k) => k.iof === p.iof))];
         setPersons(foundPersons);
-        setWords(foundWords);
         // Тёзки: первая строка — ребёнок, у которого в деле есть полный тёзка.
         // Тогда заранее не выбрана ни одна строка: привычное «имя, Enter»
         // иначе молча подставило бы отца случайной из Марий (ревьюер,
@@ -290,10 +289,17 @@ export default function IofField({
         // втором слове сверху слова словаря, ниже персоны — как у умершего.
         // С третьего слова (фамилия) персоны сверху: их к этому месту одна-две.
         const early = value.trimStart().split(/\s+/).length <= 2;
-        const namesFirst = early && foundWords.length > 0;
+        // Персоны есть — словарь сворачивается в одну строку, самую частую из
+        // подходящих: длинный список имён «отодвигал» персон вниз, и до них
+        // было несколько нажатий стрелки (Роман 07.10.2026). Персон нет —
+        // словарь целиком. «Ещё имена…» не нужна: «проще добрать буквами»
+        // (08.10.2026) — с каждой буквой строка подбирается заново.
+        const shownWords = early && foundPersons.length > 0 ? foundWords.slice(0, 1) : foundWords;
+        setWords(shownWords);
+        const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);
         setActive(twins && !namesFirst ? -1 : 0);
-        setOpen(foundPersons.length + foundWords.length > 0);
+        setOpen(foundPersons.length + shownWords.length > 0);
         setElsewhere(0);
         // НП умершего отсеял всех детей — узнать, есть ли они в приходе
         // вообще: опечатка в НП («Букарина») иначе выглядит как «ребёнка нет».
@@ -642,28 +648,9 @@ export default function IofField({
           onChange={(e) => {
             typed.current = true;
             setLeft(false);
-            // Заглавные буквы — сразу, при наборе (Роман 05.10.2026). Длина
-            // текста не меняется, курсор возвращаем на место.
-            // Правим само поле сразу и ставим курсор на место — до того, как
-            // React применит состояние: отложенный возврат курсора при быстром
-            // наборе вставлял бы следующую букву не туда.
-            // Системный метод ввода (композиция) ещё не закончил слово —
-            // править поле под ним нельзя, ввод сорвётся (ревьюер 05.10.2026).
-            if ((e.nativeEvent as InputEvent).isComposing) {
-              onChange(e.target.value, parsed);
-              return;
-            }
-            const el = e.target, at = el.selectionStart;
-            // Не при стирании: стёрли первую букву «иван», чтобы поправить, —
-            // «ван» не должно тут же стать «Ван» (вышло бы «ИВан»; проверяющий
-            // 05.10.2026). Заглавная встанет со следующей набранной буквой.
-            const erasing = ((e.nativeEvent as InputEvent).inputType ?? "").startsWith("delete");
-            const proper = erasing ? el.value : titleCase(el.value);
-            if (proper !== el.value) {
-              el.value = proper;
-              if (at !== null) el.setSelectionRange(at, at);
-            }
-            onChange(proper, parsed);
+            // Заглавные буквы — сразу, при наборе (Роман 05.10.2026); общий
+            // приём с полем НП — typedCase в names.ts.
+            onChange(typedCase(e, titleCase), parsed);
           }}
           onKeyDown={onKeyDown}
           onBlur={(e) => {
