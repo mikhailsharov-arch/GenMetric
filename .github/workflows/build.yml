@@ -104,6 +104,9 @@ jobs:
       - name: Проверить правило «месяц сам»
         run: node --experimental-strip-types scripts/test_month.mjs
 
+      - name: Проверить слова досье персоны
+        run: node --experimental-strip-types scripts/test_dossier.mjs
+
       - name: Проверить разбор возраста умершего
         run: node --experimental-strip-types scripts/test_age.mjs
 

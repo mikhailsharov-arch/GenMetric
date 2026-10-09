@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ErrorBar from "./ErrorBar";
 import FontScale from "./FontScale";
@@ -8,9 +8,11 @@ import BirthForm from "./BirthForm";
 import MarriageForm from "./MarriageForm";
 import DeathForm from "./DeathForm";
 import { ClergyProvider } from "./clergy";
-import { report } from "./errors";
+import { report, warn } from "./errors";
+import { dirtyForms } from "./dirty";
 import { FIELDS } from "./focus";
 import ArchiveBlock from "./ArchiveBlock";
+import SearchScreen, { type SearchRequest } from "./SearchScreen";
 
 type Startup = {
   error: string | null;
@@ -68,7 +70,48 @@ export default function App() {
     // это узнать, иначе сохранит прежний пустой год (ревьюер 02.10.2026).
     if (mkCase && (caseId !== mkCase.id || mkCase.year === null)) setCaseReload((n) => n + 1);
   }
-  const [screen, setScreen] = useState<"case" | "births" | "marriages" | "deaths" | "about">("case");
+  type Screen = "case" | "births" | "marriages" | "deaths" | "about" | "search";
+  const [screen, setScreen] = useState<Screen>("case");
+
+  // --- Экран «Поиск» (Роман 03.10 и 09.10.2026) ---
+  // Открывается кнопкой на «Деле» и Ctrl+F из любого места. Из блока персоны
+  // формы — сразу с её ИОФ и НП: «в момент ввода часто возникает потребность
+  // что-то быстро проверить… не прерывая и не теряя текущий набор». Формы не
+  // размонтируются, поэтому набранное остаётся; Esc возвращает в то же поле.
+  const [searchReq, setSearchReq] = useState<SearchRequest | null>(null);
+  const cameFrom = useRef<{ screen: Screen; el: HTMLElement | null }>({ screen: "case", el: null });
+  const screenRef = useRef<Screen>(screen);
+  screenRef.current = screen;
+  function openSearch(from?: HTMLElement | null) {
+    const block = from?.closest<HTMLElement>(".formroot .person");
+    const value = (label: string) => Array.from(block?.querySelectorAll<HTMLElement>(".field") ?? [])
+      .find((f) => f.querySelector("label")?.textContent?.trim() === label)?.querySelector("input")?.value ?? "";
+    if (screenRef.current !== "search") cameFrom.current = { screen: screenRef.current, el: from ?? null };
+    setSearchReq((prev) => ({ iof: value("ИОФ"), place: value("НП"), clergy: !!block?.closest(".clergyslot"),
+                              n: (prev?.n ?? 0) + 1 }));
+    setScreen("search");
+  }
+  function closeSearch() {
+    const { screen: back, el } = cameFrom.current;
+    setScreen(back);
+    // Курсор — в то же поле, откуда ушли: набор продолжается с того же места.
+    setTimeout(() => { if (el && el.isConnected && el.offsetParent !== null) el.focus(); }, 0);
+  }
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      // По коду клавиши, а не по букве: в русской раскладке это «а».
+      // Клавиша без кода (так её шлёт драйвер сквозной проверки) — по номеру:
+      // у физической F он 70 в любой раскладке.
+      const isF = e.code === "KeyF" || (!e.code && e.keyCode === 70);
+      if (!isF || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      // Свой поиск вместо поиска по странице, который есть у окна программы.
+      e.preventDefault();
+      if (document.querySelector(".modal")) return;
+      openSearch(document.activeElement as HTMLElement | null);
+    };
+    document.addEventListener("keydown", on, true);
+    return () => document.removeEventListener("keydown", on, true);
+  }, []);
 
   useEffect(() => {
     invoke<Startup>("startup_state")
@@ -167,7 +210,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={screen === "search" ? "app wide" : "app"}>
       <ErrorBar />
       {/* Заголовок, вкладки и размер шрифта — одной строкой. Высота — самый
           дефицитный ресурс: заказчику нужна вся запись на экране без прокрутки,
@@ -223,7 +266,37 @@ export default function App() {
         <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""}
                     onWorkYear={(year) => setWorkYear((prev) => ({ year, n: (prev?.n ?? 0) + 1 }))}
                     onOpenEntry={openEntry}
-                    viewBlock={<OneColumn on={oneColumn} onToggle={toggleOneColumn} />} />
+                    viewBlock={<>
+                      {/* Кнопка поиска — здесь, а не в верхней строке окна: она
+                          занята целиком (Роман 09.10.2026, ответ 4Б). */}
+                      <div className="findblock">
+                        <button type="button" className="toggle" data-find-person onClick={() => openSearch(null)}>
+                          Найти персону <span className="kbd">Ctrl+F</span>
+                        </button>
+                        <p className="hint">
+                          Все записи прихода, где встречается человек: дети, браки, смерть, у кого был восприемником
+                          и поручителем. Ctrl+F из блока персоны при наборе ищет сразу её.
+                        </p>
+                      </div>
+                      <OneColumn on={oneColumn} onToggle={toggleOneColumn} />
+                    </>} />
+      </div>
+      <div hidden={screen !== "search"}>
+        <SearchScreen active={screen === "search"} request={searchReq} onBack={closeSearch}
+                      onOpenEntry={(section, id) => {
+                        // Форма раздела занята — отказ здесь же, не уходя с
+                        // поиска: иначе человек оказывался на форме без курсора
+                        // и без поиска (проверяющий 09.10.2026). Сама форма
+                        // проверяет то же ещё раз.
+                        const form = ["", "Рождения", "Браки", "Смерти"][section];
+                        if (dirtyForms().includes(form)) {
+                          warn(`В форме «${form}» есть несохранённое`,
+                               "сохраните или очистите набранное (или закончите правку открытой записи) — и откройте запись из поиска снова");
+                          return;
+                        }
+                        openEntry(section, id);
+                      }}
+                      backTitle={cameFrom.current.screen === "case" || cameFrom.current.screen === "about" ? "Закрыть (Esc)" : "К набору (Esc)"} />
       </div>
       {/* Причт общий для всех разделов (27.09.2026) — clergy.tsx. Формы
           браков и смертей (25.09, 27.09) так же не размонтируются. */}

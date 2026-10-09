@@ -1623,3 +1623,24 @@ SELECT coalesce((SELECT CASE WHEN trim(coalesce(p.comment, '')) <> ''
             THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END
                    FROM place p WHERE p.name = trim(c.village) LIMIT 1), c.village, '')
   FROM mk_case c ORDER BY c.updated_at DESC, c.id DESC LIMIT 1;
+
+-- @search_mentions
+-- Поиск персоны и её досье (Роман 03.10 и 09.10.2026: «вбить интересующего
+-- человека и мгновенно увидеть всё о нем»). Запрос отдаёт упоминания прихода
+-- со всем, что нужно строке досье; отбор по словам ИОФ делает программа
+-- (search.rs): lower() и LIKE в SQLite кириллицу не понимают, а
+-- нормализованных колонок у упоминаний нет. Только чтение.
+-- Год — год события (у записи «событие в предыдущем году» он на единицу
+-- меньше года книги): по нему и отбор «от — до», и строка досье — иначе
+-- строка 1899 года пряталась бы отбором «до 1899» (проверяющий 09.10.2026).
+SELECT m.id, m.entry_id, m.role_code, m.sort_order,
+       m.first_name, m.patronymic, m.surname, m.first_name_modern, m.patronymic_modern,
+       m.gender, m.rank, coalesce(p.name, '') AS place,
+       m.age_years, m.age_months, m.age_weeks, m.age_days, m.age_text,
+       m.death_cause, m.marriage_order, m.kinship, m.note,
+       e.section, coalesce(e.event_year, e.rite_year) AS year,
+       e.event_day, e.event_month, e.page, e.note AS entry_note
+  FROM person_mention m
+  JOIN entry e ON e.id = m.entry_id
+  LEFT JOIN place p ON p.id = m.place_id
+ ORDER BY m.entry_id, m.sort_order, m.id;

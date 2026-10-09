@@ -941,6 +941,26 @@ fn suggest_spouse(app: State<App>, husband: String, place: Option<String>) -> Re
     })
 }
 
+/// Экран «Поиск»: найденные персоны — один ИОФ в одном НП (search.rs).
+#[tauri::command]
+fn search_persons(app: State<App>, filter: genmetric_core::search::Filter)
+    -> Result<genmetric_core::search::Found, String>
+{
+    with_conn(&app, &format!("Поиск персоны «{}»", filter.query), |conn| {
+        genmetric_core::search::find(conn, &filter)
+    })
+}
+
+/// Досье выбранной персоны: все записи, где стоит её ИОФ в этом НП.
+#[tauri::command]
+fn person_dossier(app: State<App>, key: String, place: String, filter: genmetric_core::search::Filter)
+    -> Result<genmetric_core::search::Dossier, String>
+{
+    with_conn(&app, &format!("Досье «{key}»"), |conn| {
+        genmetric_core::search::dossier(conn, &key, &place, &filter)
+    })
+}
+
 #[derive(Serialize)]
 struct PlaceCheck {
     known: bool,
@@ -1692,6 +1712,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             startup_state,
+            search_persons,
+            person_dossier,
             read_log,
             db_info,
             lookup_summary,

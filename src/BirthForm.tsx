@@ -693,8 +693,13 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   });
 
   function formDirty(): boolean {
+    // Не только ИОФ: день, НП и звание без имени — тоже набранное. «Открыть»
+    // запись из поиска посреди набора иначе молча стирало их (проверяющий
+    // 09.10.2026). Вероисповедание не в счёт — оно стоит изначально.
     return [child, father.iof, mother.iof, god1.iof, god2.iof, god3.iof, god4.iof]
-      .some((v) => v.trim().length > 0);
+      .some((v) => v.trim().length > 0)
+      || birthDay !== null || riteDay !== null
+      || [father, mother, god1, god2, god3, god4].some((p) => p.place.trim() !== "" || p.rank.trim() !== "");
   }
 
   type MentionOut = {

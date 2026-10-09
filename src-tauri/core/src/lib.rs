@@ -11,6 +11,7 @@ pub mod export;
 pub mod import;
 pub mod parish;
 pub mod records;
+pub mod search;
 pub mod text;
 pub mod xlsx;
 

@@ -50,6 +50,7 @@ from selenium import webdriver
 from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
                                         TimeoutException, WebDriverException)
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.edge.service import Service as EdgeService
@@ -526,6 +527,107 @@ def run(driver, wait, archive):
     state, value = toggled("document.querySelector('.birth [data-fold-open=\"birth_godparents\"]').click();",
                            fold_state, "fold_birth_godparents", 0, "0")
     check("восприемники развёрнуты", state == 0 and value == "0", f"{state} / {value}")
+
+    print("\n5д. Поиск персоны и досье — настоящий Rust и клавиши в WebView2")
+    # Запись шага 5: ребёнок Мария, четвёртый восприемник «Пётр Сидоров», причт
+    # «Александр Рождественский». Команды зовём как окно: новый запрос
+    # search_mentions и отбор в крейте через настоящий rusqlite.
+    called = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "const f = (query, extra) => Object.assign({query, place: null, own: true, part: true, clergy: false,"
+        "                                            year_from: null, year_to: null}, extra || {});"
+        "(async () => {"
+        "  const found = await call('search_persons', {filter: f('сид пет')});"
+        "  const none = await call('search_persons', {filter: f('рождеств')});"
+        "  const clergy = await call('search_persons', {filter: f('рождеств', {clergy: true})});"
+        "  const years = await call('search_persons', {filter: f('сид пет', {year_from: 1700, year_to: 1701})});"
+        "  const hit = found.persons[0];"
+        "  const dossier = hit ? await call('person_dossier', {key: hit.key, place: hit.place, filter: f('')}) : null;"
+        "  return {found, none: none.total, clergy: clergy.persons.map((p) => p.iof), years: years.total, dossier};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("поиск и досье отвечают без ошибки", "error" not in called, str(called)[:400])
+    if "error" not in called:
+        persons = [(p.get("iof"), p.get("mentions")) for p in called["found"]["persons"]]
+        check("«сид пет» находит восприемника «Пётр Сидоров» — слова в любом порядке и не целиком",
+              len(persons) == 1 and persons[0][0].replace("ё", "е").startswith("Петр Сидор") and persons[0][1] == 1, str(persons)[:200])
+        check("причт без переключателя не ищется, с переключателем — находится; отбор по годам действует",
+              called["none"] == 0 and len(called["clergy"]) == 1 and called["years"] == 0,
+              f"{called['none']} / {called['clergy']} / {called['years']}")
+        d = called["dossier"] or {}
+        ev = (d.get("events") or [{}])[0]
+        near = [(m.get("role_code"), m.get("iof")) for m in ev.get("others", [])]
+        check("досье: одно событие — восприемник у Марии, год 1897, страница разворотом",
+              d.get("mentions") == 1 and ev.get("me", {}).get("role_code") == "godparent4"
+              and ("child", "Мария") in near and ev.get("year") == 1897 and ev.get("page") == "939об-940",
+              f"{str(d)[:300]}")
+        check("причта среди «рядом в записи» нет", not any(r.startswith("clergy") for r, _ in near), str(near))
+
+    # Ctrl+F настоящими клавишами: свой экран вместо поиска по странице,
+    # который есть у окна WebView2. Курсор — в поле формы.
+    def search_shown():
+        return bool(driver.execute_script(
+            "const s = document.querySelector('[data-search]'); return !!s && s.offsetParent !== null;"))
+
+    def wait_for(cond, seconds=8):
+        for _ in range(int(seconds / 0.2)):
+            if cond():
+                return True
+            time.sleep(0.2)
+        return cond()
+
+    start = field(driver, "Ребёнок")
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].focus();", start)
+    # Что именно дошло до страницы — в журнал: без этого по «экран не открылся»
+    # не понять, клавиша не дошла или программа её не узнала.
+    driver.execute_script(
+        "window.__lastKey = null;"
+        "document.addEventListener('keydown', (e) => { window.__lastKey ="
+        " {key: e.key, code: e.code, keyCode: e.keyCode, ctrl: e.ctrlKey}; }, true);")
+    # Через действия драйвера, а не send_keys: только так у события есть код
+    # клавиши (code), а буква зависит от раскладки (ревьюер 09.10.2026).
+    # Событие идёт сразу в страницу — перехватит ли окно WebView2 настоящий
+    # Ctrl+F своим поиском по странице, этот шаг не покажет: это вопрос Роману.
+    ActionChains(driver).key_down(Keys.CONTROL).send_keys("f").key_up(Keys.CONTROL).perform()
+    opened = wait_for(search_shown)
+    if not opened:
+        # Запасной путь: то же сочетание прежним способом (событие без code).
+        print(f"  [инфо]   после действий драйвера экран не открылся, клавиша: {driver.execute_script('return window.__lastKey')}")
+        start.send_keys(Keys.CONTROL, "f")
+        opened = wait_for(search_shown, 4)
+    check("Ctrl+F открывает экран «Поиск»", opened,
+          f"последняя клавиша: {driver.execute_script('return window.__lastKey')} | {error_details(driver)}")
+    if search_shown():
+        box = driver.find_element(By.CSS_SELECTOR, "[data-search-query]")
+        box.send_keys("петр сидоров")
+        got = wait_for(lambda: bool(driver.find_elements(By.CSS_SELECTOR, "[data-dossier] table.events tr")))
+        text = driver.execute_script(
+            "const d = document.querySelector('[data-dossier]'); return d ? d.innerText.replace(/\\s+/g, ' ') : '';") or ""
+        check("набрали «петр сидоров» — досье с событием «восприемник»",
+              got and "восприемник" in text and "Мария" in text, text[:300] or error_details(driver))
+        driver.find_element(By.CSS_SELECTOR, "[data-search-query]").send_keys(Keys.ESCAPE)
+        check("Esc возвращает в форму, в то же поле",
+              wait_for(lambda: not search_shown()) and driver.execute_script(
+                  "const a = document.activeElement; const f = a && a.closest('.field');"
+                  "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"),
+              error_details(driver))
+    if search_shown():
+        # Не оставлять следующим шагам чужой экран.
+        driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+        time.sleep(0.5)
+
+    # Кнопка на «Деле» — главный вход (ответ заказчика 4Б): открывает экран,
+    # «Закрыть» возвращает на «Дело».
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    wait_for(lambda: bool(driver.execute_script(
+        "const b = document.querySelector('[data-find-person]'); return !!b && b.offsetParent !== null;")))
+    driver.execute_script("const b = document.querySelector('[data-find-person]'); b.scrollIntoView({block: 'center'}); b.click();")
+    check("кнопка «Найти персону» на «Деле» открывает экран «Поиск»", wait_for(search_shown), error_details(driver))
+    if search_shown():
+        driver.execute_script("document.querySelector('[data-search-close]').click();")
+        check("«Закрыть» возвращает на «Дело»", wait_for(lambda: not search_shown()), error_details(driver))
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    time.sleep(0.5)
 
     print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")
     # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его

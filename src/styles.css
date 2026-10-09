@@ -824,3 +824,90 @@ button.toggle { white-space: nowrap; }
 /* Свёрнутый блок спрятан, а не убран: атрибут hidden должен победить
    display у .cols, .addrow и блока персоны. */
 .formroot [hidden] { display: none !important; }
+
+/* ==========================================================================
+   Экран «Поиск»: персона и её досье (09.10.2026)
+   ========================================================================== */
+
+/* На весь экран (Роман 03.10.2026): формам хватает 64em, досье — тесно. */
+.app.wide { max-width: none; }
+
+.findblock {
+  margin-top: 0.8em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--line);
+}
+.findblock .toggle { margin-bottom: 0.3em; }
+
+.searchhead { display: flex; align-items: baseline; gap: 0.8em; }
+.searchhead h2 { margin: 0; flex: 1; }
+.searchhead .toggle { width: auto; }
+.searchfields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 0.8em; margin-top: 0.3em; }
+@media (min-width: 40em) { .searchfields { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+.searchopts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3em 1.2em; margin-top: 0.3em; }
+.searchyears { display: inline-flex; align-items: center; gap: 0.35em; font-size: 0.82rem; color: var(--muted); }
+.searchyears input { width: 3.6em; padding: 0.1em 0.3em; text-align: center; }
+
+/* Список слева, досье справа; на узком окне — друг под другом. */
+.searchbody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5em; align-items: start; }
+@media (min-width: 52em) {
+  .searchbody { grid-template-columns: minmax(16em, 24em) minmax(0, 1fr); }
+  .searchlist { position: sticky; top: 0.4em; max-height: calc(100vh - 1em); overflow-y: auto; }
+}
+.searchpersons { list-style: none; margin: 0; padding: 0; max-height: 16em; overflow-y: auto; }
+@media (min-width: 52em) { .searchpersons { max-height: none; } }
+.searchpersons li {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.6em;
+  padding: 0.2em 0.5em;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.searchpersons li:hover { background: var(--field); }
+.searchpersons li.on { background: var(--accent); color: #fff; }
+.searchpersons li.on .sub, .searchpersons li.on .tier { color: #fff; opacity: 0.85; }
+.searchpersons .sub { margin-left: 0.5em; font-size: 0.82rem; color: var(--muted); }
+.searchpersons .tier { flex: none; font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+
+.dossier h2 .sub { display: inline; margin-left: 0.5em; font-weight: normal; }
+.dossier h3 { margin: 0.5em 0 0.2em; font-size: 0.9rem; color: var(--accent); }
+.dossier .when { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.dossier .sub { color: var(--muted); font-size: 0.82rem; }
+.dossierfamily p { margin: 0.15em 0; }
+.dossierfamily ul { margin: 0 0 0.3em; padding-left: 1.2em; list-style: none; }
+.dossierfamily li { margin: 0.1em 0; }
+.dossier .who { font-size: inherit; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); }
+.dossier .who:hover { color: var(--accent); }
+table.events { width: 100%; border-collapse: collapse; }
+table.events td {
+  padding: 0.25em 0.5em 0.25em 0;
+  vertical-align: top;
+  border-top: 1px solid var(--line);
+  line-height: 1.35;
+}
+table.events td.when, table.events td.page, table.events td:last-child { width: 1%; white-space: nowrap; }
+table.events td.page { color: var(--muted); font-size: 0.82rem; }
+/* Участие в чужих событиях — тише своих: глаз сразу видит «свою» жизнь. */
+table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; color: var(--muted); }
+
+/* Узкое досье (узкое окно или крупный шрифт): строка события — блоком, дата
+   над текстом; таблица в три неразрывные колонки не помещалась (проверяющий
+   09.10.2026). По ширине самого досье, а не окна: так правило следует и за
+   масштабом. */
+.dossier { container: dossier / inline-size; }
+.dossier .who { white-space: normal; text-align: left; }
+@container dossier (max-width: 38em) {
+  table.events, table.events tbody, table.events tr { display: block; }
+  table.events tr {
+    padding: 0.25em 0;
+    border-top: 1px solid var(--line);
+  }
+  table.events td {
+    display: block;
+    width: auto;
+    padding: 0;
+    border-top: 0;
+    white-space: normal;
+  }
+  table.events td.when, table.events td.page, table.events td:last-child { width: auto; white-space: normal; }
+  table.events td.page, table.events td:last-child { display: inline-block; margin-right: 0.8em; }
+}

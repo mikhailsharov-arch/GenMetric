@@ -293,6 +293,20 @@ def main() -> int:
         check("у незнакомого мужа жены нет",
               db.execute(sql["spouse_lookup"], {"husband_norm": norm("Иван Петров"), "place": None}).fetchone() is None)
 
+        print("\n9г. Запрос поиска персоны отдаёт всё, что нужно строке досье (Роман 09.10.2026)")
+        cur = db.execute(sql["search_mentions"])
+        cols = [c[0] for c in cur.description]
+        found = cur.fetchall()
+        check("колонки: роль, ИОФ в двух написаниях, НП, возраст, причина, родство, раздел, год, дата, страница",
+              all(c in cols for c in ("role_code", "first_name", "first_name_modern", "patronymic_modern", "place",
+                                      "age_text", "death_cause", "kinship", "marriage_order", "section", "year",
+                                      "event_day", "event_month", "page", "entry_note")), ", ".join(cols))
+        check("упоминания всех записей на месте, по одному на строку",
+              len(found) == one("SELECT count(*) FROM person_mention")[0] and len(found) > 0, str(len(found)))
+        check("разделы и годы приходят из записи",
+              {r[cols.index("section")] for r in found} <= {1, 2, 3}
+              and any(r[cols.index("year")] is not None for r in found))
+
         print("\n9в. Звание по умолчанию родственникам в браке (Роман 09.10.2026)")
         eid = one("SELECT id FROM entry ORDER BY id LIMIT 1")[0]
         for role, rank in (("groom_relative", "крестьянин"), ("bride_relative", "крестьянин"),

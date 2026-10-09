@@ -351,7 +351,9 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   });
 
   function formDirty(): boolean {
-    return [groom, bride, groomRel, brideRel, ...witnesses].some((p) => p.iof.trim().length > 0);
+    // Не только ИОФ: день, НП и звание без имени — тоже набранное (BirthForm).
+    return [groom, bride, groomRel, brideRel, ...witnesses]
+      .some((p) => p.iof.trim().length > 0 || p.place.trim() !== "" || p.rank.trim() !== "") || day !== null;
   }
 
   async function openEntry(id: number) {
