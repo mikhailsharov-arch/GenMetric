@@ -7,6 +7,7 @@ import { focusNextField } from "./focus";
 import { report } from "./errors";
 import { placeCase } from "./names";
 import { placeTypes } from "./placetypes";
+import { CONFESSION_LOCK, useParishFlag } from "./flags";
 
 /**
  * Блок одной персоны в записи.
@@ -101,15 +102,31 @@ type Props = {
   noIof?: boolean;
   /** Звание по умолчанию — самое частое в приходе у этой роли и пола (Роман
    *  06.10.2026, вариант А). Не задано — не подставлять: мать, невеста,
-   *  родственники, умерший и любая запись, открытая на правку. */
-  defaultRank?: "father" | "groom" | "godparent" | "witness";
+   *  умерший и любая запись, открытая на правку. Родственникам жениха и
+   *  невесты — с 09.10.2026 («relative»). */
+  defaultRank?: "father" | "groom" | "godparent" | "witness" | "relative";
   /** Enter в ИОФ ведёт к первому пустому полю (мать в рождениях). */
   enterToEmpty?: boolean;
   /** Уход из поля ИОФ. */
   onIofLeave?: () => void;
   /** Мать: «законная жена его» в подсказке персон — как есть. */
   keepWifeRank?: boolean;
+  /** Блок свёрнут (Fold.tsx): он остаётся в окне, но не на экране — его
+   *  состояние (тронутое руками звание, пометки сверки) переживает
+   *  сворачивание, а обход клавишами скрытые поля пропускает сам. */
+  hidden?: boolean;
 };
+
+/** Поле вероисповедания с замком (Роман 03.10.2026, задача 5). Отдельным
+ *  компонентом: настройку читают только блоки, где это поле есть. Замок один
+ *  на приход — закрыли у отца, закрыто у всех. */
+function ConfessionField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const [locked, setLocked] = useParishFlag(CONFESSION_LOCK, "замок вероисповедания", false);
+  return (
+    <Suggest label={label} kind="confession" value={value} onChange={onChange}
+             lock={{ on: locked, toggle: () => setLocked(!locked) }} />
+  );
+}
 
 /** Самое частое звание роли и пола; ответ держится минуту — частоты меняются
  *  медленно, а спрашивают его на каждой записи у нескольких персон. */
@@ -204,7 +221,7 @@ export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
   inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
-  defaultRank, enterToEmpty, onIofLeave, keepWifeRank,
+  defaultRank, enterToEmpty, onIofLeave, keepWifeRank, hidden,
 }: Props) {
   const latest = useRef(person);
   latest.current = person;
@@ -227,20 +244,26 @@ export default function PersonBlock({
   // После «Исправить название» (Esc) не открывается снова, пока название
   // не изменится.
   const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[]; existing?: PlaceInfo;
-                                                lastVolost?: string } | null>(null);
+                                                lastVolost?: string; twin?: boolean } | null>(null);
   const placeSkip = useRef(false);
   useEffect(() => { placeSkip.current = false; }, [person.place]);
   const placeRef = useRef<HTMLInputElement | null>(null);
   const placeNow = useRef(person.place);
   placeNow.current = person.place;
 
-  async function checkPlace(name: string, related: EventTarget | null) {
+  async function checkPlace(name: string, related: EventTarget | null, typed: boolean) {
     const text = name.trim();
     // Не при потере фокуса окном и не поверх другого окна — см. IofField.
     if ((related === null && !document.hasFocus()) || document.querySelector(".modal")) return;
     if (!text || placeSkip.current || placeCard) return;
     try {
-      const r = await invoke<{ known: boolean; similar: Similar[]; last_volost: string }>("place_check", { name: text });
+      const r = await invoke<{ known: boolean; canonical?: string | null; similar: Similar[]; last_volost: string }>("place_check", { name: text });
+      // Известный пункт набран по-своему («заборье (нежитино)») — в поле
+      // встаёт написание справочника: иначе в память персон легло бы
+      // набранное, и подсказка разошлась бы с пунктом. Только набранное в
+      // этот заход в поле: проход по старой записи её не меняет.
+      if (r.known && typed && r.canonical && r.canonical !== text && placeNow.current.trim() === text)
+        set({ place: r.canonical });
       // Пока ждали ответ, поле могло измениться — карточка на прежнее не нужна.
       if (r.known || placeNow.current.trim() !== text || document.querySelector(".modal")) return;
       // Форма уже скрыта (ушли на другую вкладку) — карточку не показывать.
@@ -396,7 +419,7 @@ export default function PersonBlock({
   );
 
   return (
-    <Frame className={compact ? "person flat" : "person"}>
+    <Frame className={compact ? "person flat" : "person"} hidden={hidden}>
       {/* «+ примечание» — в строке заголовка, а не отдельной строкой под
           персоной: минус строка высоты у каждой персоны (Роман 27.09.2026:
           «сэкономить место за счёт дизайна»). */}
@@ -425,15 +448,22 @@ export default function PersonBlock({
           onChange={(place) => set({ place })}
           // Заглавная буква, кроме названий с типа пункта (Роман 07.10.2026).
           fix={(text, final) => placeCase(text, placeTypes(), final)}
-          onLeave={(v, related) => void checkPlace(v, related)}
+          onLeave={(v, related, typed) => void checkPlace(v, related, typed)}
           action={{ label: "карточка", onClick: () => void openPlaceCard() }}
         />
       )}
       {placeCard && (
         <PlaceCard
+          // Карточка тёзки — новое окно со своим состоянием полей.
+          key={placeCard.twin ? "twin" : "card"}
           name={placeCard.name}
           similar={placeCard.similar}
           existing={placeCard.existing}
+          twin={placeCard.twin}
+          onTwin={placeCard.existing
+            ? () => setPlaceCard({ name: placeCard.existing!.clean || placeCard.existing!.name, similar: [],
+                                   lastVolost: placeCard.existing!.volost ?? "", twin: true })
+            : undefined}
           lastVolost={placeCard.lastVolost}
           defaults={placeDefaults ?? { guberniya: "", uyezd: "" }}
           onPick={placeDone}
@@ -465,9 +495,8 @@ export default function PersonBlock({
       {(withConfession || extra) && (
         <div className={withConfession && extra ? "pair trio" : "pair"}>
           {withConfession && (
-            <Suggest
+            <ConfessionField
               label={confessionLabel ?? "Вероисповедания"}
-              kind="confession"
               value={person.confession}
               onChange={(confession) => set({ confession })}
             />

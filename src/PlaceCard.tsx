@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import Suggest from "./Suggest";
-import { report, warn } from "./errors";
+import { dismissWarn, report, warn } from "./errors";
 import { focusNextField } from "./focus";
 import { capFirst, placeLabel, splitPlaceLabel } from "./names";
 
@@ -44,12 +44,18 @@ type Props = {
    *  только у карточки села прихода (её открывает экран «Дело»). У карточки
    *  из формы записи так нельзя: пункт чужого прихода получил бы уезд дела. */
   fillBare?: boolean;
+  /** Новый пункт с тем же названием, что у известного (Роман 09.10.2026:
+   *  «нужен понятный механизм принудительного создания новой карточки для
+   *  тёзки»): `name` — чистое название, комментарий обязателен и идёт первым. */
+  twin?: boolean;
+  /** Кнопка «Другой пункт с тем же названием» в карточке известного пункта. */
+  onTwin?: () => void;
   onPick: (name: string) => void;
   onSaved: (name: string) => void;
   onCancel: () => void;
 };
 
-export default function PlaceCard({ name, similar, defaults, existing, lastVolost, defaultType, fillBare, onPick, onSaved, onCancel }: Props) {
+export default function PlaceCard({ name, similar, defaults, existing, lastVolost, defaultType, fillBare, twin, onTwin, onPick, onSaved, onCancel }: Props) {
   // Название правится только у известного пункта (Роман 25.09.2026: «вдруг
   // пользователь допустил ошибку в названии»); у нового оно уже в заголовке.
   // Название в карточке — чистое; комментарий деревни-тёзки — отдельным
@@ -59,9 +65,9 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   // образцу подсказки: хвост в скобках раскладывается в поле комментария,
   // иначе скобки ушли бы в выгрузку как часть названия (ревьюер 08.10.2026).
   // Скобки — часть названия? Человек сотрёт комментарий и допишет название.
-  const typed = existing ? { name: "", comment: "" } : splitPlaceLabel(name);
+  const typed = existing ? { name: "", comment: "" } : twin ? { name, comment: "" } : splitPlaceLabel(name);
   const [title, setTitle] = useState(existing?.clean ?? existing?.name ?? typed.name);
-  const [comment, setComment] = useState(existing?.comment ?? typed.comment);
+  const [commentRaw, setComment] = useState(existing?.comment ?? typed.comment);
   // Название нового пункта правится в карточке, только если его разложили.
   const titleEditable = !!existing || typed.comment !== "";
   // Известный пункт без единой подробности (заведён одним названием: село
@@ -79,15 +85,35 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
   const urlField = useRef<HTMLInputElement>(null);
+  const commentField = useRef<HTMLInputElement>(null);
 
   async function save() {
     if (busy) return;
+    // Тёзка без комментария — тот же пункт, что уже есть: различать нечем.
+    // Комментарий набрали сразу со скобками — «(Горки)»: скобки программа
+    // ставит сама, с лишними вышел бы пункт «Бухарино ((Горки))».
+    const comment = commentRaw.trim().replace(/^\((.*)\)$/, "$1").trim();
+    if (twin && !comment) {
+      warn("Впишите комментарий", "по нему программа отличит этот пункт от одноимённого — например, чей приход или волость");
+      commentField.current?.focus();
+      return;
+    }
     setBusy(true);
     try {
       const cleanName = (titleEditable ? title : name).trim();
-      const card = { name: cleanName, comment: comment.trim(), np_type: npType, guberniya, uyezd, volost, familio_url: url };
+      const card = { name: cleanName, comment, np_type: npType, guberniya, uyezd, volost, familio_url: url };
+      // Тёзка с комментарием, который уже занят: place_save молча вернул бы
+      // прежний пункт, а набранные тип, уезд и волость пропали бы без слова
+      // (ревьюер 09.10.2026).
+      if (twin && await invoke<PlaceInfo | null>("place_get", { name: placeLabel(cleanName, comment) })) {
+        warn("Такой пункт уже есть", `«${placeLabel(cleanName, comment)}» уже заведён — впишите другой комментарий`);
+        commentField.current?.focus();
+        return;
+      }
       if (existing) await invoke("place_update", { id: existing.id, card });
       else await invoke<number>("place_save", { card });
+      // Подсказка «впишите комментарий» или «такой пункт уже есть» своё отслужила.
+      dismissWarn();
       onSaved(placeLabel(cleanName, comment));
     } catch (e) {
       // «Такой пункт уже есть» — не поломка, а подсказка: присылать нечего
@@ -100,9 +126,40 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
     }
   }
 
+  // Комментарий — для деревень с одинаковым названием: «Хмельничное» из
+  // Столпина и «Хмельничное» из Нежитина. Нужен редко, поэтому вне обхода
+  // Enter (без data-field): обычная карточка заполняется теми же нажатиями,
+  // что и раньше. Tab и мышь в поле ведут. У карточки тёзки он обязателен и
+  // стоит первым: с него карточка и начинается.
+  const commentRow = (
+    <div className="field">
+      <label title="Для деревень с одинаковым названием. Виден в подсказке и в поле НП, в выгрузки не идёт.">Коммент.</label>
+      <div className="fieldbody">
+        <input data-place-comment ref={commentField} value={commentRaw} onChange={(e) => setComment(e.target.value)}
+               {...(twin ? { "data-field": "", "data-autofocus": "" } : {})}
+               placeholder="для тёзок: чей приход или волость" autoComplete="off" spellCheck={false}
+               onKeyDown={(e) => {
+                 if (e.key !== "Enter") return;
+                 e.preventDefault();
+                 if (twin) focusNextField(e.currentTarget, e.shiftKey ? -1 : 1);
+                 else urlField.current?.focus();
+               }} />
+      </div>
+    </div>
+  );
+
   return (
-    <Modal title={existing ? `Населённый пункт: «${name}»` : `Новый населённый пункт: «${name}»`}
-           kind={existing ? "place-edit" : "place"} onClose={onCancel}>
+    <Modal title={existing ? `Населённый пункт: «${name}»` : twin ? `Ещё один пункт с названием «${name}»` : `Новый населённый пункт: «${name}»`}
+           kind={existing ? "place-edit" : twin ? "place-twin" : "place"} onClose={onCancel}>
+      {twin && (
+        <>
+          <p className="hint" data-twin-hint>
+            Пункт с таким названием уже есть. Впишите комментарий, по которому вы их различите, — в программе
+            новый пункт будет называться «{name} (комментарий)», в выгрузки пойдёт чистое «{name}».
+          </p>
+          {commentRow}
+        </>
+      )}
       {existing && (
         <p className="hint">
           Поправьте, что нужно, включая название, — Enter ведёт по полям, на последнем
@@ -139,7 +196,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
           </ul>
         </>
       )}
-      {!existing && (
+      {!existing && !twin && (
         <p className="hint">
           {similar.length ? "Или заполните карточку нового:" : "Такого названия в справочнике нет — заполните карточку:"}
           {" "}губерния и уезд подставлены из дела, волость — от последнего заведённого пункта; ссылку можно оставить пустой.
@@ -150,7 +207,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
           (проверяющий 08.10.2026). */}
       {!existing && typed.comment !== "" && (
         <p className="hint" data-split-hint>
-          <b>Скобки вынесены в комментарий:</b> в выгрузку пойдёт «{title.trim()}», а «{comment.trim() || typed.comment}» останется
+          <b>Скобки вынесены в комментарий:</b> в выгрузку пойдёт «{title.trim()}», а «{commentRaw.trim() || typed.comment}» останется
           пометкой для деревень-тёзок. Если скобки — часть названия, сотрите комментарий и допишите их в название.
         </p>
       )}
@@ -171,18 +228,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
       {/* Волость — со списком уже известных; набранная в карточке губерния,
           уезд и волость запоминаются (Роман 02.10.2026). */}
       <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse fix={capFirst} />
-      {/* Комментарий — для деревень с одинаковым названием: «Хмельничное» из
-          Столпина и «Хмельничное» из Нежитина. Нужен редко, поэтому вне обхода
-          Enter (без data-field): обычная карточка заполняется теми же
-          нажатиями, что и раньше. Tab и мышь в поле ведут. */}
-      <div className="field">
-        <label title="Для деревень с одинаковым названием. Виден в подсказке и в поле НП, в выгрузки не идёт.">Коммент.</label>
-        <div className="fieldbody">
-          <input data-place-comment value={comment} onChange={(e) => setComment(e.target.value)}
-                 placeholder="для тёзок: чей приход или волость" autoComplete="off" spellCheck={false}
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); urlField.current?.focus(); } }} />
-        </div>
-      </div>
+      {!twin && commentRow}
       <div className="field">
         <label>Familio</label>
         <div className="fieldbody">
@@ -211,7 +257,13 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
         <button type="button" className="primary" disabled={busy} onClick={() => void save()}>
           {busy ? "Сохраняю…" : existing ? "Сохранить изменения" : "Сохранить населённый пункт"}
         </button>
-        <button type="button" className="toggle" onClick={onCancel}>{existing ? "Отменить (Esc)" : "Исправить название (Esc)"}</button>
+        {existing && onTwin && (
+          <button type="button" className="toggle" data-place-twin onClick={onTwin}
+                  title="Завести ещё один пункт с этим же названием — например, деревню другого прихода">
+            Другой пункт с тем же названием
+          </button>
+        )}
+        <button type="button" className="toggle" onClick={onCancel}>{existing || twin ? "Отменить (Esc)" : "Исправить название (Esc)"}</button>
       </div>
     </Modal>
   );

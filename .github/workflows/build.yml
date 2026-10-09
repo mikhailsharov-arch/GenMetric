@@ -101,6 +101,9 @@ jobs:
       - name: Проверить шаг по номеру страницы
         run: node --experimental-strip-types scripts/test_page.mjs
 
+      - name: Проверить правило «месяц сам»
+        run: node --experimental-strip-types scripts/test_month.mjs
+
       - name: Проверить разбор возраста умершего
         run: node --experimental-strip-types scripts/test_age.mjs
 
@@ -204,6 +207,17 @@ jobs:
       - name: Показать, что получилось
         shell: bash
         run: find "${{ matrix.bundles }}" -type f \( -name "*.exe" -o -name "*.dmg" \) -print
+
+      # Шрифт Inter вшит в программу; его лицензия (OFL) обязана ехать вместе
+      # с ней. В ресурсах конфигурации она записана с 06.10.2026, но доехала
+      # ли до собранной программы — не проверял никто (ревьюер 06.10.2026).
+      # Сборщик кладёт ресурсы рядом с программой, оттуда их берёт установщик.
+      - name: Лицензия шрифта лежит рядом с собранной программой
+        shell: bash
+        run: |
+          found=$(find src-tauri/target -type f -name "Inter-OFL.txt" -path "*release*" -print -quit)
+          echo "$found"
+          test -n "$found" || { echo "Inter-OFL.txt в собранной программе не найден"; exit 1; }
 
       # --- сквозная проверка на настоящем Windows ---------------------------
       # 13.09.2026 Роман получил сборку, где кнопка «Загрузить архив» не

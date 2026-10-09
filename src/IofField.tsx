@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { showNoName, titleCase, typedCase } from "./names";
+import { feminineSurname, showNoName, titleCase, typedCase } from "./names";
 import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
@@ -299,7 +299,15 @@ export default function IofField({
         // было несколько нажатий стрелки (Роман 07.10.2026). Персон нет —
         // словарь целиком. «Ещё имена…» не нужна: «проще добрать буквами»
         // (08.10.2026) — с каждой буквой строка подбирается заново.
-        const shownWords = early && foundPersons.length > 0 ? foundWords.slice(0, 1) : foundWords;
+        // Женщине фамилия — в женском роде (Роман 09.10.2026: у невесты
+        // «Щербаков» из списка «так и остается в мужском роде»). Фильтр в
+        // запросе прячет мужскую форму, только когда женская уже известна;
+        // остальное склоняем здесь тем же правилом, что фамилию матери.
+        const sexed = kind === "surname" && askedGender === "Ж"
+          ? foundWords.map((w) => ({ ...w, value: feminineSurname(w.value) }))
+              .filter((w, i, all) => all.findIndex((x) => x.value === w.value) === i)
+          : foundWords;
+        const shownWords = early && foundPersons.length > 0 ? sexed.slice(0, 1) : sexed;
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);
@@ -380,7 +388,11 @@ export default function IofField({
       notes.push(docNote(c.kind, toks[c.index]));
       toks[c.index] = c.word;
     }
-    const text = toks.join(" ");
+    // Слово только что выбрано из подсказки, человек набирает дальше: пробел
+    // после слова остаётся, иначе следующее слово слипалось с заменённым —
+    // «ВуколовБаженов» (Роман 09.10.2026). При уходе из поля хвост не нужен.
+    const typingOn = document.activeElement === inputEl.current && /\s$/.test(valueRef.current);
+    const text = toks.join(" ") + (typingOn ? " " : "");
     justPicked.current = true;
     if (onResolvedRef.current) onResolvedRef.current(text, notes.join("; "));
     else onChangeRef.current(text, null);
@@ -440,7 +452,13 @@ export default function IofField({
     const el = inputEl.current;
     // Фокус — в следующее поле, и ещё одна сверка того же значения: после
     // имени могло остаться несверенное отчество. Оба — после перерисовки.
-    if (el) setTimeout(() => { focusNextField(el); void checkOnLeave(); }, 0);
+    // И правило ухода из поля (фамилия отца — матери): при уходе оно
+    // отступило перед окном, а после выбора в окне его никто не звал — фамилия
+    // появлялась только после возврата в поле (Роман 09.10.2026).
+    if (el) setTimeout(() => {
+      focusNextField(el);
+      void checkOnLeave().then(() => { if (!modalOpen()) onLeaveRef.current?.(); });
+    }, 0);
   }
 
   async function resolvePick(target: string) {

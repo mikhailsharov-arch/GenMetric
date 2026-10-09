@@ -791,3 +791,36 @@ button.toggle { white-space: nowrap; }
 
 /* Верхняя строка при крупном шрифте переносится, а не уходит за край окна. */
 .topbar { flex-wrap: wrap; }
+
+/* ==========================================================================
+   Сборка «Точность подстановок и удобство формы» (09.10.2026)
+   ========================================================================== */
+
+/* Замок поля (вероисповедание): значок в поле, закрытое поле — приглушено. */
+.fieldbody .browse.lock { font-size: 0.72em; padding-top: 0.25em; filter: grayscale(1); opacity: 0.45; }
+.fieldbody .browse.lock.on { opacity: 0.85; }
+.fieldbody input.locked { color: var(--muted); background: transparent; cursor: default; }
+
+/* Замок причта — флажок в строке заголовка свёрнутого причта. */
+.clergyline .clergylock { margin-left: auto; }
+.clergyselect:disabled { color: var(--muted); background: transparent; opacity: 1; }
+
+/* Свёрнутый блок формы: одна строка — заголовок, что в нём стоит, «развернуть». */
+.person.folded { padding-top: 0.2em; padding-bottom: 0.2em; }
+.foldline { display: flex; align-items: baseline; gap: 0.5em; min-width: 0; }
+.foldline h2 { margin: 0; flex: none; }
+.foldline .foldsummary {
+  flex: 1; min-width: 0; font-size: 0.82rem; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.foldline .foldsummary.has { color: var(--ink); }
+
+/* Строка «добавить поручителя» с флажком «звание само» — не выше ссылки в
+   ней: флажок добавлял форме браков три пикселя (техдолг 08.10.2026). */
+.addrow .unknownbox { line-height: 1; }
+.addrow .unknownbox input { width: 0.9em; height: 0.9em; }
+.addrow .unknownbox { max-height: 1.06em; }
+
+/* Свёрнутый блок спрятан, а не убран: атрибут hidden должен победить
+   display у .cols, .addrow и блока персоны. */
+.formroot [hidden] { display: none !important; }

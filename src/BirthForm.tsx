@@ -10,11 +10,13 @@ import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow } from "./page";
+import { eventMonthFor, riteMonthFor } from "./month";
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
 import { feminineSurname, titleCase } from "./names";
 import type { FormProps } from "./formprops";
+import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
 /**
  * Форма ввода записи о рождении.
@@ -106,10 +108,41 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   /** Месяц рождения подставляется в месяц крещения — в одну сторону
    *  (Роман 28.09.2026: «в большинстве записей месяцы совпадают»). */
   function changeBirthMonth(v: number | null) {
+    monthManual.current = true;
     setBirthMonth(v);
     // Только пока обряд пуст или совпадал с событием: исправленный руками
     // месяц крещения правка месяца рождения не затирает (ревьюер #38).
-    setRiteMonth((r) => (r === null || r === birthMonth ? v : r));
+    if (autoMonths() && !riteMonthManual.current && v !== null) setRiteMonth(riteMonthFor(birthDay, v, riteDay));
+    else setRiteMonth((r) => (r === null || r === birthMonth ? v : r));
+  }
+  // --- Месяц сам (Роман 09.10.2026, month.ts) ---
+  // День рождения меньше, чем в последней записи года, — следующий месяц;
+  // день крещения меньше дня рождения — крещение в следующем месяце. Месяц,
+  // набранный руками, до сохранения не трогаем; запись на правке — тоже.
+  const monthManual = useRef(false);
+  const riteMonthManual = useRef(false);
+  const autoMonths = () => editingRef.current === null;
+  function typeBirthDay(v: number | null) {
+    setBirthDay(v);
+    if (!autoMonths()) return;
+    let month = birthMonth;
+    if (!monthManual.current) {
+      const guess = eventMonthFor(savedRef.current[0], v);
+      if (guess !== null) {
+        month = guess;
+        setBirthMonth(guess);
+      }
+    }
+    if (!riteMonthManual.current && month !== null) setRiteMonth(riteMonthFor(v, month, riteDay));
+  }
+  function typeRiteDay(v: number | null) {
+    setRiteDay(v);
+    if (autoMonths() && !riteMonthManual.current && birthMonth !== null)
+      setRiteMonth(riteMonthFor(birthDay, birthMonth, v));
+  }
+  function typeRiteMonth(v: number | null) {
+    riteMonthManual.current = true;
+    setRiteMonth(v);
   }
   // Месяцы больше не «декабрь → январь» — отметка «в предыдущем году»
   // теряет смысл и снимается, чтобы не всплыть отмеченной позже.
@@ -176,6 +209,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
                                birthMonth: number | null; riteMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
+  const editingRef = useRef(editingId);
+  editingRef.current = editingId;
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
@@ -291,7 +328,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       rank: m.rank || MOTHER_RANK,
     }));
     invoke<{ iof: string; place: string | null; rank: string | null } | null>(
-      "suggest_spouse", { husband: hint.iof },
+      // НП мужа — чтобы не пришла жена его тёзки из другой деревни (Роман 09.10.2026).
+      "suggest_spouse", { husband: hint.iof, place: hint.place ?? (latestFather.current.place.trim() || null) },
     )
       .then((wife) => {
         if (!wife) return;
@@ -400,6 +438,12 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [autoRankGod, setAutoRankGod] = useParishFlag(AUTO_RANK_GODPARENT, "звание восприемникам");
   const godRank = editingId === null && autoRankGod ? "godparent" as const : undefined;
 
+  // Сворачиваемые блоки (Роман 03.10.2026): помнятся в приходе, свёрнутый
+  // показывает, что в нём стоит, и в обходе клавишами не участвует.
+  const [fatherFolded, foldFather] = useFold("birth_father", "Отец");
+  const [motherFolded, foldMother] = useFold("birth_mother", "Мать");
+  const [godsFolded, foldGods] = useFold("birth_godparents", "Восприемники");
+
   /** Для остальных персон выбор из базы заполняет населённый пункт и звание. */
   function pickInto(set: (fn: (p: Person) => Person) => void) {
     return (hint: PersonHint) =>
@@ -454,6 +498,13 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       await new Promise((r) => setTimeout(r, 0));
       mother = latestMother.current;
     }
+    // Свёрнутый блок: поля ИОФ на экране нет, и разбор имени никто не
+    // обновлял — жена, подставленная по отцу, пришла бы с разбором пустой
+    // строки и сохранилась без имени (стенд 09.10.2026). Разбираем заново.
+    const stale = (p: Person, folded: boolean) => (folded ? { ...p, parsed: null } : p);
+    father = stale(father, fatherFolded);
+    mother = stale(mother, motherFolded);
+    [god1, god2, god3, god4] = [god1, god2, god3, god4].map((g) => stale(g, godsFolded));
     try {
       [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3] = await Promise.all(
         [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3].map(withParsed));
@@ -496,7 +547,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       warn(`Имя ${unknown[0]} «${unknown[1].first_name}» не сверено со справочником`,
              unknown[0] === "причта"
                ? "нажмите «Изменить» у причта и выйдите из поля ИОФ — откроется окно сверки (ревьюер 23.09.2026: свёрнутый причт поля не показывает)"
-               : "выйдите из поля ИОФ — откроется окно сверки; выберите имя из словаря");
+               : "выйдите из поля ИОФ — откроется окно сверки; выберите имя из словаря (свёрнутый блок сначала разверните)");
       return;
     }
     const sexForSave: Sex | null = (parsedChild?.gender as Sex | null | undefined) ?? childSexManual;
@@ -776,6 +827,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     setBirthDay(null);
     setRiteDay(null);
     countManual.current = false;
+    monthManual.current = false;
+    riteMonthManual.current = false;
     dayField.current?.focus();
     dayField.current?.select();
   }
@@ -829,10 +882,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         {/* Даты рождения и крещения — одной строкой, если ширины хватает
             (27.09.2026: минус строка высоты); узко — переносятся. */}
         <div className="row wrap">
-          <NumberField label="Рожд., день" value={birthDay} onChange={setBirthDay} min={1} max={31} inputRef={dayField} />
+          <NumberField label="Рожд., день" value={birthDay} onChange={typeBirthDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12} />
-          <NumberField label="Крещ., день" value={riteDay} onChange={setRiteDay} min={1} max={31} />
-          <NumberField label="месяц" value={riteMonth} onChange={setRiteMonth} min={1} max={12} noTab />
+          <NumberField label="Крещ., день" value={riteDay} onChange={typeRiteDay} min={1} max={31} />
+          <NumberField label="месяц" value={riteMonth} onChange={typeRiteMonth} min={1} max={12} noTab />
         </div>
         <NextYear eventMonth={birthMonth} riteMonth={riteMonth} year={year} rite="крещение"
                   checked={riteNextYear} onChange={setRiteNextYear} />
@@ -864,7 +917,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
                    const first = root.current?.querySelector<HTMLInputElement>(".childline input[data-field]");
                    if (first) focusNextField(first);
                  }} />
-          незаконнорожд.
+          незаконнорожд./прим.
         </label>
         </div>
         {entryNote && (
@@ -907,7 +960,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
 
       {/* Отец | мать и восприемники парами — на широкой форме (27.09.2026). */}
       <div className="cols">
-      <PersonBlock
+      {fatherFolded && (
+        <FoldLine block="birth_father" title="Отец" summary={foldSummary([father])} onOpen={() => foldFather(false)} />
+      )}
+      <PersonBlock hidden={fatherFolded}
         title="Отец"
         person={father}
         onChange={setFather}
@@ -919,8 +975,12 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         gender="М"
         defaultRank={editingId === null ? "father" : undefined}
         onPickPerson={pickFather}
+        titleAfter={<FoldLink block="birth_father" onFold={() => foldFather(true)} />}
       />
-      <PersonBlock
+      {motherFolded && (
+        <FoldLine block="birth_mother" title="Мать" summary={foldSummary([mother])} onOpen={() => foldMother(false)} />
+      )}
+      <PersonBlock hidden={motherFolded}
         title="Мать"
         person={mother}
         onChange={setMother}
@@ -935,9 +995,14 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         keepWifeRank
         onIofLeave={motherLeft}
         onPickPerson={pickInto(setMother)}
+        titleAfter={<FoldLink block="birth_mother" onFold={() => foldMother(true)} />}
       />
       </div>
-      <div className="cols">
+      {godsFolded && (
+        <FoldLine block="birth_godparents" title="Восприемники"
+                  summary={foldSummary([god1, god2, god3, god4])} onOpen={() => foldGods(false)} />
+      )}
+      <div className="cols" hidden={godsFolded}>
       <PersonBlock
         title="Восприемник 1"
         person={god1}
@@ -984,7 +1049,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         />
       )}
       </div>
-      <div className="addrow">
+      <div className="addrow" hidden={godsFolded}>
         {/* Выключатель подстановки звания восприемникам (Роман 07.10.2026):
             помнится в приходе; вне обхода клавишами. */}
         <label className="unknownbox autorank"
@@ -993,6 +1058,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
                  onChange={(e) => setAutoRankGod(e.target.checked)} />
           звание само
         </label>
+        <FoldLink block="birth_godparents" onFold={() => foldGods(true)} />
         {godCount < 4 && (
           <button type="button" className="toggle" onClick={() => setGodCount((n) => n + 1)}>
             Добавить восприемника

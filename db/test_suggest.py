@@ -286,6 +286,25 @@ def main() -> int:
               db.execute("SELECT count(*) FROM person_index WHERE iof = 'Арсений Харитонов Шошин'").fetchone()[0] == 4)
         got = db.execute(sql["person_suggest"], {"prefix": "арсений харитонов%", "limit": 6, "gender": "Ж"}).fetchall()
         check("по полу роли строка по-прежнему отсеивается", got == [], str(got))
+
+        print("\n6б. Строка без НП не показывается рядом с той же персоной с НП (Роман 09.10.2026)")
+        # «Александр Флегонтов Златоустовский… показывается дважды: одна запись
+        # с заполненным НП, вторая — без». Без НП человек попадает в память
+        # причтом. Строка без НП прячется, её частота уходит строкам с НП.
+        db.executemany(
+            "INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?,?,?,?,?,?)",
+            [("Александр Флегонтов Златоустовский", "александр флегонтов златоустовский", "", "псаломщик", "М", 4),
+             ("Александр Флегонтов Златоустовский", "александр флегонтов златоустовский", "Бухарино", "псаломщик", "М", 1),
+             ("Александр Рождественский", "александр рождественский", "", "священник", "М", 2)])
+        for block in ("person_suggest", "person_suggest_infant"):
+            got = db.execute(sql[block], {"prefix": "александр%", "limit": 6, "gender": "М"}).fetchall()
+            check(f"{block}: с НП — одна строка, частота с учётом спрятанной",
+                  [(r[0], r[1], r[4]) for r in got if "Златоустовский" in r[0]]
+                  == [("Александр Флегонтов Златоустовский", "Бухарино", 5)], str(got))
+            check(f"{block}: персона, у которой НП нет вовсе, остаётся",
+                  [(r[0], r[1]) for r in got if "Рождественский" in r[0]] == [("Александр Рождественский", None)], str(got))
+        check("память персон не переписана: обе строки на месте",
+              db.execute("SELECT count(*) FROM person_index WHERE iof LIKE 'Александр Флегонтов%'").fetchone()[0] == 2)
         db.executemany("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?,?,?,?,?,?)",
                        [("Анна Иванова Шошина", "анна иванова шошина", "Бухарино", "законная жена его", "Ж", 3)])
         db.execute("INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, wife_rank, uses) "

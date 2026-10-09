@@ -677,6 +677,13 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 Some(name) if !name.is_empty() => Some(place_id_for(conn, name)?),
                 _ => None,
             };
+            // В память персон, пар и частот идёт написание справочника, а не
+            // набранное: Ctrl+Enter прямо из поля НП сохраняет «березовка
+            // (нежитино)» как есть — поле привести его не успело, — и одна
+            // персона получала в подсказке два написания пункта, а поиск жены
+            // по НП мужа промахивался (ревьюер 09.10.2026). Сам пункт записи
+            // от клавиши не зависел никогда — он ищется по ключу.
+            let place_name = place_spelling(conn, person.place.as_deref())?;
 
             conn.execute(&statement("mention_insert")?, rusqlite::named_params! {
                 ":entry_id": entry_id, ":role_code": person.role_code,
@@ -714,7 +721,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                            else if person.gender.as_deref() == Some("Ж") { "rank_f" } else { "rank_m" };
                 remember(conn, kind, rank, case_id, parish)?;
             }
-            if let Some(place) = person.place.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if let Some(place) = place_name.as_deref() {
                 remember(conn, "place", place, case_id, parish)?;
             }
             // Вероисповедание — тоже в частоты: без них подсказка шла по
@@ -761,7 +768,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             if !iof.is_empty() && person.role_code != "deceased" && !nameless {
                 conn.execute(&statement("person_remember")?, rusqlite::named_params! {
                     ":iof": iof, ":iof_norm": normalize(&iof),
-                    ":place": person.place, ":rank": person.rank, ":gender": person.gender,
+                    ":place": place_name, ":rank": person.rank, ":gender": person.gender,
                 }).map_err(|e| e.to_string())?;
             }
         }
@@ -775,9 +782,14 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             // Супруг без имени («***») в память пар не идёт: иначе выбор мужа
             // подставлял бы жену со звёздочками (ревьюер 05.10.2026).
             if !husband.is_empty() && !wife.is_empty() && !no_first_name(f) && !no_first_name(m) {
+                // Та же жена, теперь с фамилией, — дополнить строку, не заводить вторую.
+                let wife_place = place_spelling(conn, m.place.as_deref())?;
+                conn.execute(&statement("spouse_extend")?, rusqlite::named_params! {
+                    ":husband_norm": normalize(&husband), ":wife_iof": wife, ":wife_place": wife_place,
+                }).map_err(|e| e.to_string())?;
                 conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
                     ":husband_norm": normalize(&husband), ":wife_iof": wife,
-                    ":wife_place": m.place, ":wife_rank": m.rank,
+                    ":wife_place": wife_place, ":wife_rank": m.rank,
                 }).map_err(|e| e.to_string())?;
             }
         }
@@ -792,7 +804,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             if !husband.is_empty() && !wife.is_empty() && !no_first_name(g) && !no_first_name(b) {
                 conn.execute(&statement("spouse_remember")?, rusqlite::named_params! {
                     ":husband_norm": normalize(&husband), ":wife_iof": wife,
-                    ":wife_place": g.place, ":wife_rank": Option::<String>::None,
+                    ":wife_place": place_spelling(conn, g.place.as_deref())?, ":wife_rank": Option::<String>::None,
                 }).map_err(|e| e.to_string())?;
             }
         }
@@ -813,6 +825,19 @@ pub fn person_iof(p: &PersonInput) -> String {
         .filter_map(|v| v.as_deref().map(str::trim).filter(|s| !s.is_empty()))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Название пункта так, как оно стоит в справочнике: набранное «березовка
+/// (нежитино)» → «Берёзовка (Нежитино)». Пункта ещё нет или название пусто —
+/// как набрано (без пробелов по краям) или ничего.
+pub fn place_spelling(conn: &Connection, typed: Option<&str>) -> Result<Option<String>, String> {
+    let Some(name) = typed.map(str::trim).filter(|v| !v.is_empty()) else { return Ok(None) };
+    let known: Option<String> = conn
+        .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": normalize(name) },
+                   |r| r.get(1))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(Some(known.unwrap_or_else(|| name.to_string())))
 }
 
 /// Находит населённый пункт по названию или заводит новый.
@@ -933,6 +958,100 @@ mod tests {
         std::mem::drop(conn);
         let _ = std::fs::remove_file(path);
     }
+    /// Жена по мужу с учётом НП, память пар без второй строки, строка
+    /// подсказки без НП (спека 2026-10-09, пп. 1, 2, 16). Запросы исполняет
+    /// настоящий rusqlite — как в программе.
+    #[test]
+    fn spouse_by_place_and_person_rows() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
+        if !seed.exists() {
+            eprintln!("нет resources/seed.sqlite — тест пропущен");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("genmetric-spouse-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(&seed, &path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let case = Case { id: 0, archive: None, fond: None, opis: None, delo: None, church: Some("Ц".into()),
+                          village: Some("Тестово".into()), uyezd: None, guberniya: None, year: Some(1897), indexer: None };
+        save_case(&conn, &case, false).unwrap();
+        let person = |role: &str, first: &str, patr: &str, surname: Option<&str>, place: Option<&str>, sex: &str| PersonInput {
+            role_code: role.into(), sort_order: 10, surname: surname.map(Into::into), first_name: Some(first.into()),
+            patronymic: Some(patr.into()), surname_modern: None, first_name_modern: None,
+            patronymic_modern: None, maiden_surname: None, gender: Some(sex.into()),
+            rank: None, confession: None, place: place.map(Into::into), note: None, uncertain: None, age_years: None,
+            marriage_order: None, kinship: None, age_months: None, age_weeks: None, age_days: None,
+            age_text: None, death_cause: None,
+        };
+        let birth = |persons: Vec<PersonInput>| EntryInput {
+            id: None, case_id: 1, section: 1, page: None, no_male: Some(1), no_female: None,
+            event_day: None, event_month: None, event_year: Some(1897), rite_day: None, rite_month: None,
+            rite_year: Some(1897), note: None, uncertain: None, persons,
+        };
+        // Два тёзки «Иван Капитонов»: в Фетинине жена Анна, в Воспице — Олимпиада (дважды).
+        save_entry(&conn, &birth(vec![person("father", "Иван", "Капитонов", None, Some("Фетинино"), "М"),
+                                      person("mother", "Анна", "Петрова", None, Some("Фетинино"), "Ж")])).unwrap();
+        for _ in 0..2 {
+            save_entry(&conn, &birth(vec![person("father", "Иван", "Капитонов", None, Some("Воспица"), "М"),
+                                          person("mother", "Олимпиада", "Иванова", None, Some("Воспица"), "Ж")])).unwrap();
+        }
+        let wife = |place: Option<&str>| -> Option<String> {
+            conn.query_row(&statement("spouse_lookup").unwrap(),
+                           rusqlite::named_params! { ":husband_norm": normalize("Иван Капитонов"), ":place": place },
+                           |r| r.get(0)).optional().unwrap()
+        };
+        assert_eq!(wife(Some("Фетинино")).as_deref(), Some("Анна Петрова"), "жена из пункта мужа, а не самая частая");
+        assert_eq!(wife(Some("Воспица")).as_deref(), Some("Олимпиада Иванова"));
+        assert_eq!(wife(Some("Малово")), None, "в этом пункте жены нет — чужую не подставляем");
+        assert_eq!(wife(None), None, "НП мужа неизвестен, жёны из разных пунктов — не угадываем");
+
+        // Жена получила фамилию отца — строка памяти дополняется, второй нет.
+        save_entry(&conn, &birth(vec![person("father", "Пётр", "Сидоров", Some("Томилин"), Some("Малово"), "М"),
+                                      person("mother", "Мария", "Иванова", None, Some("Малово"), "Ж")])).unwrap();
+        save_entry(&conn, &birth(vec![person("father", "Пётр", "Сидоров", Some("Томилин"), Some("Малово"), "М"),
+                                      person("mother", "Мария", "Иванова", Some("Томилина"), Some("Малово"), "Ж")])).unwrap();
+        // Тёзка мужа из другого пункта с женой-тёзкой: чужую строку не трогаем.
+        save_entry(&conn, &birth(vec![person("father", "Пётр", "Сидоров", Some("Томилин"), Some("Воспица"), "М"),
+                                      person("mother", "Мария", "Иванова", Some("Орлова"), Some("Воспица"), "Ж")])).unwrap();
+        let rows: Vec<(String, i64)> = conn
+            .prepare("SELECT wife_iof, uses FROM spouse_index WHERE husband_norm = ?1 AND wife_place = 'Малово'").unwrap()
+            .query_map([normalize("Пётр Сидоров Томилин")], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+            .map(Result::unwrap).collect();
+        assert_eq!(rows, vec![("Мария Иванова Томилина".to_string(), 2)], "одна жена, одна строка");
+
+        // Название пункта набрано по-своему (Ctrl+Enter прямо из поля НП): в
+        // память персон и пар идёт написание справочника.
+        save_entry(&conn, &birth(vec![person("father", "Семён", "Иванов", None, Some("воспица"), "М"),
+                                      person("mother", "Дарья", "Петрова", None, Some(" ВОСПИЦА "), "Ж")])).unwrap();
+        let spelled = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(spelled("SELECT place FROM person_index WHERE iof = 'Семён Иванов'"), "Воспица");
+        assert_eq!(spelled("SELECT wife_place FROM spouse_index WHERE wife_iof = 'Дарья Петрова'"), "Воспица");
+        assert_eq!(wife(Some("Воспица")).as_deref(), Some("Олимпиада Иванова"), "прежние пары не задеты");
+
+        // Подсказка: строка без НП спрятана, когда у того же ИОФ есть строка с НП.
+        for (place, rank) in [("", "псаломщик"), ("Борисоглебское", "псаломщик"), ("", "дьячок")] {
+            conn.execute("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?1, ?2, ?3, ?4, 'М', 3)",
+                         rusqlite::params!["Александр Флегонтов Златоустовский",
+                                           normalize("Александр Флегонтов Златоустовский"), place, rank]).unwrap();
+        }
+        conn.execute("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES ('Александр Рождественский', ?1, '', 'священник', 'М', 1)",
+                     [normalize("Александр Рождественский")]).unwrap();
+        for (block, sql) in [("person_suggest", statement("person_suggest").unwrap()),
+                             ("person_suggest_infant", statement("person_suggest_infant").unwrap())] {
+            let got: Vec<(String, Option<String>, i64)> = conn
+                .prepare(&sql).unwrap()
+                .query_map(rusqlite::named_params! { ":prefix": "александр%", ":limit": 10, ":gender": "М" },
+                           |r| Ok((r.get(0)?, r.get(1)?, r.get(4)?))).unwrap()
+                .map(Result::unwrap).collect();
+            assert_eq!(got, vec![
+                ("Александр Флегонтов Златоустовский".to_string(), Some("Борисоглебское".to_string()), 9),
+                ("Александр Рождественский".to_string(), None, 1),
+            ], "{block}");
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// «Имя не указано» и фамилии прихода (спека 2026-10-05, часть Б).
     #[test]
     fn no_name_and_surnames() {

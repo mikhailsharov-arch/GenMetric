@@ -1021,12 +1021,13 @@ def incident_20261007_otvet_na_sborku_06_10():
     common = parish.split("COMMON_SETTINGS: &[&str] = &[", 1)[-1].split("]", 1)[0]
     check("выключатели звания помнятся в приходе, а не в общих настройках окна",
           '"auto_rank_godparent"' in flags and '"auto_rank_witness"' in flags and "auto_rank" not in common)
-    check("выключатель изначально включён: выключено — только явное «0»", 'setOn(v !== "0")' in flags)
+    check("выключатель изначально включён: выключено — только явное «0»",
+          'initial = true' in flags and 'initial : v !== "0"' in flags)
     check("флажки звания — вне обхода клавишами",
           birth.count("tabIndex={-1} data-auto-rank") == 1 and marriage.count("tabIndex={-1} data-auto-rank") == 1)
     iof = read("src/IofField.tsx")
     check("подсказка ИОФ: есть персоны — одна словарная строка",
-          "early && foundPersons.length > 0 ? foundWords.slice(0, 1) : foundWords" in iof)
+          "early && foundPersons.length > 0 ? sexed.slice(0, 1) : sexed" in iof)
     check("НП умершего идёт родственнику у любого умершего, не только у младенца",
           "!/младен/i.test(dead.rank)" not in death and "editingId !== null || relPlaceManual.current" in death)
     check("правило младенца — не у записи на правке и не поверх звания, тронутого руками",
@@ -1112,7 +1113,8 @@ def incident_20261008_chistaya_postavka():
           "INSERT OR IGNORE INTO main.lookup_dropped" in cleanup
           and "FROM main.lookup_dropped d" in read("db/parish_sync.sql"))
     tu = read("db/test_upgrade.py")
-    check("обновление проверяется снимком записей до и после", "snapshot(db) == before" in tu)
+    check("обновление проверяется снимком записей до и после — по всем колонкам",
+          "snapshot(db, snap_columns)[1] == before" in tu and 'PRAGMA table_info({t})' in tu)
     # Сборка 6585a81 упала на Linux: «parser stack overflow» на вложенной
     # цепочке replace в сорок уровней. У человека так упало бы обновление.
     check("в миграции нет глубокой вложенности replace — ключ считается по шагам",
@@ -1145,7 +1147,87 @@ def incident_20261008_chistaya_postavka():
           "SCHEMA_VERSION = 10" in build and "SCHEMA_VERSION: i64 = 10" in read("src-tauri/core/src/db.rs"))
 
 
+def incident_20261009_otvet_na_sborku_08_10():
+    """
+    09.10.2026, Роман: отцу подставлялась жена его тёзки из другой деревни;
+    персона показывалась в подсказке дважды — с НП и без; фамилия отца не
+    дописывалась матери после окна сверки; выбранная из списка фамилия
+    невесты оставалась в мужском роде; после замены отчества слова слипались
+    («ВуколовБаженов»). Спека 2026-10-09-tochnost-i-udobstvo.
+    """
+    import sqlite3
+    sql = {}
+    name = None
+    for line in read("db/statements.sql").splitlines():
+        if line.startswith("-- @"):
+            name = line[4:].strip()
+            sql[name] = []
+        elif name:
+            sql[name].append(line)
+    sql = {k: "\n".join(v) for k, v in sql.items()}
+    db = sqlite3.connect(":memory:")
+    db.executescript(read("db/schema.sql"))
+    remember = lambda husband, wife, place, n=1: [db.execute(sql["spouse_remember"], {
+        "husband_norm": husband, "wife_iof": wife, "wife_place": place, "wife_rank": None}) for _ in range(n)]
+    remember("иван капитонов", "Анна Петрова", "Фетинино")
+    remember("иван капитонов", "Олимпиада Иванова", "Воспица", 5)
+    wife = lambda place: (db.execute(sql["spouse_lookup"], {"husband_norm": "иван капитонов", "place": place}).fetchone()
+                          or [None])[0]
+    check("жена — из пункта мужа, а не самая частая у его тёзок", wife("Фетинино") == "Анна Петрова", str(wife("Фетинино")))
+    check("в пункте мужа жены нет или НП мужа неизвестен при жёнах из разных пунктов — никого",
+          wife("Малово") is None and wife(None) is None)
+    check("форма передаёт НП мужа в поиск жены", "husband: hint.iof, place: hint.place ?? (latestFather.current.place.trim() || null)" in read("src/BirthForm.tsx"))
+    main_rs = read("src-tauri/src/main.rs")
+    check("команда принимает НП мужа и отдаёт его запросу",
+          "fn suggest_spouse(app: State<App>, husband: String, place: Option<String>)" in main_rs
+          and '":husband_norm": normalize(&husband), ":place": place' in main_rs)
+
+    db.executemany("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?,?,?,?,?,?)",
+                   [("А Ф З", "а ф з", "", "псаломщик", "М", 4), ("А Ф З", "а ф з", "Борисоглебское", "псаломщик", "М", 1),
+                    ("А Р", "а р", "", "священник", "М", 1)])
+    for block in ("person_suggest", "person_suggest_infant"):
+        got = [(r[0], r[1]) for r in db.execute(sql[block], {"prefix": "а%", "limit": 9, "gender": "М"})]
+        check(f"{block}: строка без НП спрятана при строке с НП; персона вовсе без НП видна",
+              sorted(got, key=str) == sorted([("А Ф З", "Борисоглебское"), ("А Р", None)], key=str), str(got))
+    db.close()
+
+    iof = read("src/IofField.tsx")
+    after = iof.split("function afterResolve()", 1)[-1].split("async function resolvePick", 1)[0]
+    check("после выбора в окне сверки зовётся правило ухода из поля (фамилия отца — матери)",
+          "onLeaveRef.current?.()" in after and "checkOnLeave().then" in after)
+    check("женщине фамилия из подсказки — в женском роде, тем же правилом, что матери",
+          'kind === "surname" && askedGender === "Ж"' in iof and "feminineSurname(w.value)" in iof)
+    apply = iof.split("function applyWords(", 1)[-1].split("async function checkOnLeave", 1)[0]
+    check("замена слова словарным при продолжающемся наборе оставляет пробел после слова",
+          "document.activeElement === inputEl.current" in apply and 'toks.join(" ") + (typingOn ? " " : "")' in apply)
+
+    birth, death = read("src/BirthForm.tsx"), read("src/DeathForm.tsx")
+    check("месяц сам — только в новой записи и пока месяц не набран руками (рождения и смерти)",
+          all("const autoMonths = () => editingRef.current === null;" in f and "if (!monthManual.current)" in f
+              and "monthManual.current = false;" in f for f in (birth, death))
+          and "eventMonthFor" not in read("src/MarriageForm.tsx"))
+    clergy = read("src/ClergyBlock.tsx")
+    check("закреплённый причт: списки недоступны — обход клавишами их пропускает",
+          "disabled={locked}" in clergy and "!el.disabled" in read("src/focus.ts"))
+    check("замки и свёрнутые блоки — настройки прихода, не общие",
+          not any(k in read("src-tauri/core/src/parish.rs").split("COMMON_SETTINGS", 1)[-1].split(";", 1)[0]
+                  for k in ("clergy_lock", "confession_lock", "fold_")))
+    check("свёрнутый блок перед сохранением разбирается заново (иначе жена по отцу сохранялась без имени)",
+          "stale(mother, motherFolded)" in birth and "if (relFolded) r = { ...r, parsed: null };" in death
+          and "stale(g, groomFolded)" in read("src/MarriageForm.tsx"))
+    marriage = read("src/MarriageForm.tsx")
+    check("звание родственникам в браке — под флажком «звание само», только в новой записи",
+          'const relativeRank = fresh && autoRankWitness ? "relative" as const : undefined;' in marriage
+          and marriage.count("defaultRank={relativeRank}") == 2
+          and '"relative" => "%_relative"' in main_rs
+          and "role_code <> 'deceased_relative'" in read("db/statements.sql"))
+    card = read("src/PlaceCard.tsx")
+    check("пункт-тёзка заводится из карточки известного пункта и без комментария не сохраняется",
+          "data-place-twin" in card and "if (twin && !comment)" in card)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261009_otvet_na_sborku_08_10,
     incident_20261008_chistaya_postavka,
     incident_20261007_otvet_na_sborku_06_10,
     incident_20261006_otvet_na_sborku_05_10,

@@ -85,7 +85,7 @@ def main() -> int:
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
                      "person_remember", "person_suggest", "person_suggest_infant", "infant_suggest", "birth_father",
-                     "case_current", "case_years", "case_for_year", "case_adopt_year", "case_copy_for_year", "case_spread_parish", "spouse_remember", "spouse_lookup",
+                     "case_current", "case_years", "case_for_year", "case_adopt_year", "case_copy_for_year", "case_spread_parish", "spouse_remember", "spouse_lookup", "spouse_extend",
                      "clergy_remember", "clergy_list", "last_clergy", "entry_get", "mentions_of_entry"):
         check(f"блок {required} на месте", required in sql)
 
@@ -285,13 +285,67 @@ def main() -> int:
             "husband_norm": norm("Никита Алексеев"), "wife_iof": "Евлампия Васильева",
             "wife_place": "Чертеж Малый", "wife_rank": "законная жена его"})
         wife = db.execute(sql["spouse_lookup"],
-                          {"husband_norm": norm("Никита Алексеев")}).fetchone()
+                          {"husband_norm": norm("Никита Алексеев"), "place": None}).fetchone()
         check("жена находится по мужу", wife is not None and wife[0] == "Евлампия Васильева")
         check("с ней приходят её населённый пункт и звание",
               wife[1] == "Чертеж Малый" and wife[2] == "законная жена его")
         check("пара не задвоилась", one("SELECT count(*) FROM spouse_index")[0] == 1)
         check("у незнакомого мужа жены нет",
-              db.execute(sql["spouse_lookup"], {"husband_norm": norm("Иван Петров")}).fetchone() is None)
+              db.execute(sql["spouse_lookup"], {"husband_norm": norm("Иван Петров"), "place": None}).fetchone() is None)
+
+        print("\n9в. Звание по умолчанию родственникам в браке (Роман 09.10.2026)")
+        eid = one("SELECT id FROM entry ORDER BY id LIMIT 1")[0]
+        for role, rank in (("groom_relative", "крестьянин"), ("bride_relative", "крестьянин"),
+                           ("groom_relative", "умерший крестьянин"), ("deceased_relative", "солдат"),
+                           ("deceased_relative", "солдат"), ("deceased_relative", "солдат")):
+            db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, gender, rank) "
+                       "VALUES (?, ?, 99, 'Тест', 'М', ?)", (eid, role, rank))
+        got = db.execute(sql["rank_default"], {"role": "%_relative", "gender": "М"}).fetchone()
+        check("самое частое звание родственников жениха и невесты; родственник умершего не в счёт",
+              got is not None and got[0] == "крестьянин", str(got))
+        db.execute("DELETE FROM person_mention WHERE first_name = 'Тест' AND sort_order = 99")
+
+        print("\n9а. Жена — с учётом НП мужа (Роман 09.10.2026: «жена его полного тёзки из другой деревни»)")
+        lookup = lambda husband, place: db.execute(
+            sql["spouse_lookup"], {"husband_norm": norm(husband), "place": place}).fetchone()
+        for wife_iof, place, times in (("Анна Петрова", "Фетинино", 1), ("Олимпиада Иванова", "Воспица", 3)):
+            for _ in range(times):
+                db.execute(sql["spouse_remember"], {"husband_norm": norm("Иван Капитонов"), "wife_iof": wife_iof,
+                                                    "wife_place": place, "wife_rank": "законная жена его"})
+        check("муж из Фетинина — жена из Фетинина, хотя у тёзки из Воспицы записей больше",
+              (lookup("Иван Капитонов", "Фетинино") or [None])[0] == "Анна Петрова")
+        check("муж из Воспицы — его жена", (lookup("Иван Капитонов", "Воспица") or [None])[0] == "Олимпиада Иванова")
+        check("в пункте мужа жены нет — чужую не подставляем", lookup("Иван Капитонов", "Малово") is None)
+        check("НП мужа неизвестен, жёны из разных пунктов — не угадываем", lookup("Иван Капитонов", None) is None)
+        check("жена одна — приходит и без НП мужа", (lookup("Никита Алексеев", None) or [None])[0] == "Евлампия Васильева")
+        db.execute(sql["spouse_remember"], {"husband_norm": norm("Михаил Иванов Орлов"), "wife_iof": "Дарья Петрова",
+                                            "wife_place": None, "wife_rank": None})
+        check("жена без пункта (пара из брака, НП жениха не набран) годится мужу с любым НП",
+              (lookup("Михаил Иванов Орлов", "Бухарино") or [None])[0] == "Дарья Петрова")
+        # Жена пришла из памяти без фамилии, форма дописала фамилию отца.
+        before = one("SELECT count(*) FROM spouse_index")[0]
+        for wife_iof in ("Мария Иванова", "Мария Иванова Томилина", "Мария Иванова Томилина"):
+            args = {"husband_norm": norm("Пётр Сидоров Томилин"), "wife_iof": wife_iof, "wife_place": "Малово"}
+            db.execute(sql["spouse_extend"], args)
+            db.execute(sql["spouse_remember"], {**args, "wife_rank": "законная жена его"})
+        rows = db.execute("SELECT wife_iof, uses FROM spouse_index WHERE husband_norm = ?",
+                          (norm("Пётр Сидоров Томилин"),)).fetchall()
+        check("та же жена с фамилией — строка дополнена, второй не заведено",
+              [tuple(r) for r in rows] == [("Мария Иванова Томилина", 3)] and one("SELECT count(*) FROM spouse_index")[0] == before + 1,
+              str([tuple(r) for r in rows]))
+        # Тёзка мужа из другой деревни, жена с тем же именем и отчеством: чужую строку не трогаем.
+        db.execute(sql["spouse_extend"], {"husband_norm": norm("Иван Капитонов"), "wife_iof": "Анна Петрова Сидорова",
+                                          "wife_place": "Воспица"})
+        check("строка жены тёзки из другого пункта не переписана",
+              (lookup("Иван Капитонов", "Фетинино") or [None])[0] == "Анна Петрова")
+        db.execute(sql["spouse_remember"], {"husband_norm": norm("Михаил Иванов Орлов"), "wife_iof": "Дарья Петрова",
+                                            "wife_place": "Бухарино", "wife_rank": None})
+        check("НП мужа неизвестен, а жёны — одна без пункта и одна с пунктом: спора нет",
+              lookup("Михаил Иванов Орлов", None) is not None)
+        db.execute(sql["spouse_extend"], {"husband_norm": norm("Пётр Сидоров Томилин"), "wife_iof": "Мария Ивановаа Томилина",
+                                          "wife_place": "Малово"})
+        check("другая жена («Мария Ивановаа…») прежнюю строку не переписывает",
+              one("SELECT count(*) FROM spouse_index WHERE wife_iof = 'Мария Иванова Томилина'")[0] == 1)
 
         print("\n9б. Запись о браке (25.09.2026)")
         # Состав — как лист «2» Excel Романа: жених и невеста (НП, звание, ИОФ,

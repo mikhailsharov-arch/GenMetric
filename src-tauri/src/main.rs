@@ -446,6 +446,9 @@ fn rank_default(app: State<App>, role: String, gender: Option<String>) -> Result
         "groom" => "groom",
         "godparent" => "godparent%",
         "witness" => "witness%",
+        // Родственники жениха и невесты (Роман 09.10.2026); родственника
+        // умершего исключает сам запрос (rank_default).
+        "relative" => "%_relative",
         other => return Err(format!("Неизвестная роль для звания по умолчанию: {other}")),
     };
     with_conn(&app, "Звание по умолчанию", |conn| {
@@ -924,11 +927,13 @@ fn list_clergy(app: State<App>, limit: Option<i64>) -> Result<Vec<ClergyHint>, S
 
 /// Жена по мужу: выбор отца заполняет мать.
 #[tauri::command]
-fn suggest_spouse(app: State<App>, husband: String) -> Result<Option<SpouseHint>, String> {
+fn suggest_spouse(app: State<App>, husband: String, place: Option<String>) -> Result<Option<SpouseHint>, String> {
+    // НП мужа — чтобы не подставить жену его тёзки из другой деревни.
+    let place = place.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     with_conn(&app, "Поиск жены", |conn| {
         conn.query_row(
             &statement("spouse_lookup")?,
-            rusqlite::named_params! { ":husband_norm": normalize(&husband) },
+            rusqlite::named_params! { ":husband_norm": normalize(&husband), ":place": place },
             |r| Ok(SpouseHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)? }),
         )
         .optional()
@@ -939,6 +944,9 @@ fn suggest_spouse(app: State<App>, husband: String) -> Result<Option<SpouseHint>
 #[derive(Serialize)]
 struct PlaceCheck {
     known: bool,
+    /// Написание известного пункта в справочнике — поле НП приводит к нему
+    /// набранное («заборье (нежитино)» → «Заборье (Нежитино)»).
+    canonical: Option<String>,
     similar: Vec<Similar>,
     /// Волость последнего пункта, заведённого человеком, — в карточку нового.
     last_volost: String,
@@ -952,16 +960,15 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
     with_conn(&app, &format!("Проверка НП «{name}»"), |conn| {
         let norm = normalize(&name);
         if norm.is_empty() {
-            return Ok(PlaceCheck { known: true, similar: vec![], last_volost: String::new() });
+            return Ok(PlaceCheck { known: true, canonical: None, similar: vec![], last_volost: String::new() });
         }
-        let known = conn
+        let known: Option<String> = conn
             .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
-                       |r| r.get::<_, i64>(0))
+                       |r| r.get::<_, String>(1))
             .optional()
-            .map_err(|e| e.to_string())?
-            .is_some();
-        if known {
-            return Ok(PlaceCheck { known: true, similar: vec![], last_volost: String::new() });
+            .map_err(|e| e.to_string())?;
+        if known.is_some() {
+            return Ok(PlaceCheck { known: true, canonical: known, similar: vec![], last_volost: String::new() });
         }
         let last_volost: String = conn
             .query_row(&statement("place_last_volost")?, [], |r| r.get(0))
@@ -996,7 +1003,7 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
                 similar.push(s);
             }
         }
-        Ok(PlaceCheck { known: false, similar, last_volost })
+        Ok(PlaceCheck { known: false, canonical: None, similar, last_volost })
     })
 }
 

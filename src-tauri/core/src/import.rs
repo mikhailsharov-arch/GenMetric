@@ -82,8 +82,14 @@ const SHEETS: [(&str, &str, &str); 3] = [("1", "Рождения", "рожден
 /// Пункты записей к этому моменту уже заведены одними названиями; здесь они
 /// получают подробности, а пункты листа, которых в записях нет, заводятся.
 /// Листа нет (наша собственная выгрузка в Excel) — шаг пропускается.
-fn import_places(conn: &Connection, bytes: &[u8]) -> Result<(), String> {
-    let Ok(sheet) = read_sheet(bytes, "НП") else { return Ok(()) };
+///
+/// Возвращает оговорки для отчёта (строка листа и текст): пункт файла,
+/// одноимённый уже известному пункту с другими подробностями, остаётся с
+/// прежними — раньше это происходило молча.
+fn import_places(conn: &Connection, bytes: &[u8]) -> Result<Vec<(u32, String)>, String> {
+    let Ok(sheet) = read_sheet(bytes, "НП") else { return Ok(Vec::new()) };
+    let kept = statement("place_import_kept")?;
+    let mut notes = Vec::new();
     let find = statement("place_find")?;
     let fill = statement("place_import_fill")?;
     let insert = statement("place_import_insert")?;
@@ -105,10 +111,26 @@ fn import_places(conn: &Connection, bytes: &[u8]) -> Result<(), String> {
             .optional().map_err(e)?;
         match id {
             Some(id) => {
-                conn.execute(&fill, rusqlite::named_params! {
+                let filled = conn.execute(&fill, rusqlite::named_params! {
                     ":id": id, ":np_type": np_type, ":guberniya": guberniya, ":uyezd": uyezd, ":volost": volost,
                     ":short_location": short, ":full_location": full, ":familio_url": url,
                 }).map_err(e)?;
+                if filled == 0 {
+                    let have: (String, String, String, String) = conn
+                        .query_row(&kept, rusqlite::named_params! { ":id": id },
+                                   |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                        .map_err(e)?;
+                    let file = [&np_type, &guberniya, &uyezd, &volost].map(|v| normalize(v.as_deref().unwrap_or("")));
+                    let base = [&have.0, &have.1, &have.2, &have.3].map(|v| normalize(v));
+                    // Расходится только то, что в файле заполнено и у пункта другое.
+                    if file.iter().zip(base.iter()).any(|(f, b)| !f.is_empty() && f != b) {
+                        let was = [have.0.as_str(), have.2.as_str(), have.3.as_str()]
+                            .iter().filter(|v| !v.trim().is_empty()).cloned().collect::<Vec<_>>().join(", ");
+                        notes.push((*r, format!(
+                            "пункт «{name}» уже есть в справочнике с другими подробностями ({}) — подробности из файла не перенесены; если это другая деревня, заведите её тёзкой с комментарием",
+                            if was.is_empty() { "без типа и уезда" } else { &was })));
+                    }
+                }
             }
             None => {
                 // OR IGNORE тут нет нарочно: строка листа с теми же названием,
@@ -126,7 +148,7 @@ fn import_places(conn: &Connection, bytes: &[u8]) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    Ok(notes)
 }
 
 /// Текст ячейки. Число `read_sheet` отдаёт с «#»: «#873», «#1.5».
@@ -853,7 +875,10 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
         }
     }
 
-    import_places(conn, bytes)?;
+    for (row, text) in import_places(conn, bytes)? {
+        review("note", &text, "НП", row, None)?;
+        report.notes.push(format!("лист «НП», строка {row}: {text}"));
+    }
 
     report.persons = count("SELECT count(*) FROM person_mention WHERE role_code NOT LIKE 'clergy%'")?;
     report.places = count("SELECT count(*) FROM place")? - places_before;
@@ -1029,6 +1054,31 @@ mod tests {
         // Не индексатор — понятная ошибка, а не пустой приход.
         let err = inspect(include_bytes!("../../../db/export/familio_template.xlsx")).unwrap_err();
         assert!(err.contains("не индексатор"), "{err}");
+    }
+
+    /// Пункт листа «НП», одноимённый уже известному пункту с другими
+    /// подробностями (деревня другого прихода из общего файла): подробности
+    /// не подменяются, а в отчёте и в списке на сверку — строка об этом.
+    #[test]
+    fn same_named_place_is_reported() {
+        let Some(seed) = seed() else { return };
+        let bytes = include_bytes!("../../../db/fixtures/indexer.xlsx");
+        let (path, conn) = fresh("twin-place", &seed);
+        conn.execute("INSERT INTO place (name, name_norm, np_type, uyezd, origin) VALUES ('Верхнее Тестово', ?1, 'д.', 'Чужой', 'user')",
+                     [normalize("Верхнее Тестово")]).unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        let rep = import_into(&conn, bytes).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        let about: Vec<&String> = rep.notes.iter().filter(|n| n.contains("Верхнее Тестово")).collect();
+        assert_eq!(about.len(), 1, "{:?}", rep.notes);
+        assert!(about[0].starts_with("лист «НП», строка 4:") && about[0].contains("Чужой"), "{}", about[0]);
+        let num = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(num("SELECT count(*) FROM place WHERE name = 'Верхнее Тестово' AND uyezd = 'Чужой' AND np_type = 'д.'"), 1,
+                   "подробности известного пункта не подменены");
+        assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'note' AND sheet = 'НП' AND row = 4"), 1);
+        assert!(!rep.notes.iter().any(|n| n.contains("Тестово Малое")), "пункт без подробностей заполнен молча: {:?}", rep.notes);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
     }
 
     /// Опечатка в колонке «Год»: год одной строки фикстуры переписан на 1990.

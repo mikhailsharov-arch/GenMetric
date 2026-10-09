@@ -176,7 +176,7 @@ def main() -> int:
         got = [r[0] for r in db.execute(sql["person_suggest"],
                                         {"prefix": "кузьма%", "limit": 5, "gender": "М"})]
         check("персона из архива предлагается", "Кузьма Петров" in got, ", ".join(got))
-        got = db.execute(sql["spouse_lookup"], {"husband_norm": "кузьма петров"}).fetchone()
+        got = db.execute(sql["spouse_lookup"], {"husband_norm": "кузьма петров", "place": None}).fetchone()
         check("невеста из архива подставляется по жениху", got and got[0] == "Марфа Павлова")
 
         db.close()

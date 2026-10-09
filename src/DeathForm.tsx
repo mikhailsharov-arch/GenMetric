@@ -9,6 +9,7 @@ import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow } from "./page";
+import { eventMonthFor, riteMonthFor } from "./month";
 import { parseAge } from "./age";
 import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
@@ -16,6 +17,7 @@ import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
 import { titleCase } from "./names";
 import type { FormProps } from "./formprops";
+import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
 /**
  * Форма ввода записи о смерти (27.09.2026) — по образцу рождений и браков.
@@ -94,9 +96,40 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   /** Месяц смерти подставляется в месяц погребения — в одну сторону
    *  (Роман 28.09.2026: «в большинстве записей месяцы совпадают»). */
   function changeDeathMonth(v: number | null) {
+    monthManual.current = true;
     setDeathMonth(v);
     // Исправленный руками месяц погребения не затирается (ревьюер #38).
-    setBurialMonth((r) => (r === null || r === deathMonth ? v : r));
+    if (autoMonths() && !burialMonthManual.current && v !== null) setBurialMonth(riteMonthFor(deathDay, v, burialDay));
+    else setBurialMonth((r) => (r === null || r === deathMonth ? v : r));
+  }
+  // --- Месяц сам (Роман 09.10.2026, month.ts) ---
+  // День смерти меньше, чем в последней записи года, — следующий месяц; день
+  // погребения меньше дня смерти — погребение в следующем месяце. Месяц,
+  // набранный руками, до сохранения не трогаем; запись на правке — тоже.
+  const monthManual = useRef(false);
+  const burialMonthManual = useRef(false);
+  const autoMonths = () => editingRef.current === null;
+  function typeDeathDay(v: number | null) {
+    setDeathDay(v);
+    if (!autoMonths()) return;
+    let month = deathMonth;
+    if (!monthManual.current) {
+      const guess = eventMonthFor(savedRef.current[0], v);
+      if (guess !== null) {
+        month = guess;
+        setDeathMonth(guess);
+      }
+    }
+    if (!burialMonthManual.current && month !== null) setBurialMonth(riteMonthFor(v, month, burialDay));
+  }
+  function typeBurialDay(v: number | null) {
+    setBurialDay(v);
+    if (autoMonths() && !burialMonthManual.current && deathMonth !== null)
+      setBurialMonth(riteMonthFor(deathDay, deathMonth, v));
+  }
+  function typeBurialMonth(v: number | null) {
+    burialMonthManual.current = true;
+    setBurialMonth(v);
   }
   useEffect(() => {
     if (!riteBeforeEvent(deathMonth, burialMonth)) setBurialNextYear(false);
@@ -114,12 +147,16 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [clergy1, clergy2, clergy3] = clergyState.people;
 
   const [editingId, setEditingId] = useState<number | null>(null);
+  const editingRef = useRef(editingId);
+  editingRef.current = editingId;
   /** Год, сохранённый на «Деле», пока запись была открыта на правку: после
    *  правки форма встаёт на него, а не на год до правки. */
   const yearWhileEditing = useRef<number | null>(null);
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
                                deathMonth: number | null; burialMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
@@ -389,6 +426,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   async function save() {
     let d = dead, r = rel, cl = [clergy1, clergy2, clergy3];
     try {
+      // Свёрнутый родственник: поля ИОФ на экране нет, разбор мог устареть.
+      if (relFolded) r = { ...r, parsed: null };
       [d, r] = await Promise.all([withParsed(d), withParsed(r)]) as [Deceased, Relative];
       cl = await Promise.all(cl.map(withParsed));
     } catch (e) {
@@ -403,7 +442,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       warn(`Имя ${unknown[0]} «${unknown[1].parsed?.first_name}» не сверено со справочником`,
            unknown[0] === "причта"
              ? "нажмите «Изменить» у причта и выйдите из поля ИОФ — откроется окно сверки"
-             : "выйдите из поля ИОФ — откроется окно сверки и предложит имя из справочника");
+             : "выйдите из поля ИОФ — откроется окно сверки и предложит имя из справочника (свёрнутый блок сначала разверните)");
       return;
     }
     if (!d.iof.trim() && !nameless) {
@@ -586,6 +625,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     relPlaceManual.current = false;
     rankManual.current = false;
     countManual.current = false;
+    monthManual.current = false;
+    burialMonthManual.current = false;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -683,6 +724,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   );
 
   const common = { placeDefaults, onPlaceRenamed: renamePlace, rankKind: "rank" as const };
+  // Сворачиваемый блок (Роман 03.10.2026): помнится в приходе. Умерший не
+  // сворачивается — без него записи нет.
+  const [relFolded, foldRel] = useFold("death_relative", "Родственник");
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="death formroot">
@@ -710,10 +754,10 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
           <NumberField label="Счёт" value={count} onChange={typeCount} min={1} inputRef={countField} noTab />
         </div>
         <div className="row wrap">
-          <NumberField label="Смерть, день" value={deathDay} onChange={setDeathDay} min={1} max={31} inputRef={dayField} />
+          <NumberField label="Смерть, день" value={deathDay} onChange={typeDeathDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12} />
-          <NumberField label="Погреб., день" value={burialDay} onChange={setBurialDay} min={1} max={31} />
-          <NumberField label="месяц" value={burialMonth} onChange={setBurialMonth} min={1} max={12} noTab />
+          <NumberField label="Погреб., день" value={burialDay} onChange={typeBurialDay} min={1} max={31} />
+          <NumberField label="месяц" value={burialMonth} onChange={typeBurialMonth} min={1} max={12} noTab />
         </div>
         <NextYear eventMonth={deathMonth} riteMonth={burialMonth} year={year} rite="погребение"
                   checked={burialNextYear} onChange={setBurialNextYear} />
@@ -744,7 +788,11 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
                      infantPlace={placeTyped}
                      {...common} extra={deadExtra}
                      noIof={nameless} titleAfter={namelessBox} />
-        <PersonBlock title="Родственник" person={rel}
+        {relFolded && (
+          <FoldLine block="death_relative" title="Родственник" summary={foldSummary([rel])} onOpen={() => foldRel(false)} />
+        )}
+        <PersonBlock hidden={relFolded} title="Родственник" person={rel}
+                     titleAfter={<FoldLink block="death_relative" onFold={() => foldRel(true)} />}
                      onChange={(p) => {
                        // НП родственника, набранный руками, от умершего больше не подменяется.
                        if (p.place !== rel.place) relPlaceManual.current = p.place !== "";

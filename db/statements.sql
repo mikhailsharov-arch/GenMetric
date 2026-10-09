@@ -146,7 +146,7 @@ VALUES (:entry_id, :role_code, :sort_order, :surname, :first_name, :patronymic,
 -- Правило «лучшей строки» одно на всю программу (place_find, place_get,
 -- выгрузка, migrate.sql, parish_sync.sql): сначала строка с полным местом,
 -- затем с типом, затем не из архива, затем самая ранняя.
-SELECT id FROM place WHERE name_norm = :name_norm
+SELECT id, name FROM place WHERE name_norm = :name_norm
  ORDER BY (full_location IS NULL OR trim(full_location) = ''),
           (np_type IS NULL OR trim(np_type) = ''), (origin = 'archive'), id LIMIT 1;
 
@@ -289,6 +289,14 @@ UPDATE place
    AND trim(coalesce(familio_url, '')) = ''
    AND (trim(coalesce(short_location, '')) = '' OR short_location = name)
    AND (trim(coalesce(full_location, '')) = '' OR full_location = name);
+
+-- @place_import_kept
+-- Пункт листа «НП» уже известен и со своими подробностями (пришёл из общего
+-- файла приходов — одноимённая деревня другого прихода): подробности файла
+-- его не меняют, но молчать об этом нельзя — строка идёт в отчёт импорта.
+-- Здесь — что у пункта стоит сейчас, для сравнения с файлом.
+SELECT coalesce(np_type, ''), coalesce(guberniya, ''), coalesce(uyezd, ''), coalesce(volost, '')
+  FROM place WHERE id = :id;
 
 -- @place_import_insert
 -- …и пункт листа «НП», которого в записях нет: справочник индексатора
@@ -442,8 +450,12 @@ SELECT coalesce(volost, '') FROM place WHERE origin = 'user' ORDER BY id DESC LI
 -- 06.10.2026, вариант А). По упоминаниям роли, а не по общим частотам
 -- перечня: иначе восприемнице досталось бы «законная жена его» — матерей в
 -- приходе больше всех. :role — шаблон LIKE («godparent%», «father»).
+-- Родственники жениха и невесты (Роман 09.10.2026) — шаблон «%_relative»;
+-- родственник умершего под него тоже подходит, а звание у него другое
+-- («отец», «муж» живых против родителей брачующихся) — исключён явно.
 SELECT trim(rank) FROM person_mention
- WHERE role_code LIKE :role AND trim(coalesce(rank, '')) <> ''
+ WHERE role_code LIKE :role AND role_code <> 'deceased_relative'
+   AND trim(coalesce(rank, '')) <> ''
    AND (:gender IS NULL OR gender = :gender)
  GROUP BY trim(rank)
  ORDER BY count(*) DESC, max(id) DESC
@@ -688,16 +700,25 @@ ON CONFLICT(iof, place, rank) DO UPDATE SET
 -- званиями сворачиваются здесь, звание — последнее набранное (непустое, если
 -- такое есть), частота — сумма. Оконными функциями, без коррелированного
 -- подзапроса: он на большой памяти персон стоил бы секунд на букву.
+-- Строка без НП прячется, когда у того же ИОФ есть строка с НП (Роман
+-- 09.10.2026: «показывается дважды: одна запись с заполненным НП, вторая —
+-- без. По логике они должны были слиться»). Без НП человек попадает в память
+-- причтом — у причта НП нет. Частота спрятанной строки прибавляется строкам
+-- с НП. Память и здесь не переписывается.
 SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
-               sum(p.uses) OVER (PARTITION BY p.iof, p.place) AS uses,
+               sum(p.uses) OVER (PARTITION BY p.iof, p.place)
+                 + CASE WHEN p.place <> ''
+                        THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
+                        ELSE 0 END AS uses,
+               max(p.place <> '') OVER (PARTITION BY p.iof) AS has_place,
                row_number() OVER (PARTITION BY p.iof, p.place
                                   ORDER BY (p.rank = ''), coalesce(p.last_used_at, '') DESC, p.id DESC) AS rn
           FROM person_index p
          WHERE p.iof_norm LIKE :prefix ESCAPE '\'
            AND (:gender IS NULL OR p.gender IS NULL OR p.gender = :gender))
- WHERE rn = 1
+ WHERE rn = 1 AND (place <> '' OR has_place = 0)
  ORDER BY uses DESC, iof
  LIMIT :limit;
 
@@ -714,16 +735,25 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
 -- званиями сворачиваются здесь, звание — последнее набранное (непустое, если
 -- такое есть), частота — сумма. Оконными функциями, без коррелированного
 -- подзапроса: он на большой памяти персон стоил бы секунд на букву.
+-- Строка без НП прячется, когда у того же ИОФ есть строка с НП (Роман
+-- 09.10.2026: «показывается дважды: одна запись с заполненным НП, вторая —
+-- без. По логике они должны были слиться»). Без НП человек попадает в память
+-- причтом — у причта НП нет. Частота спрятанной строки прибавляется строкам
+-- с НП. Память и здесь не переписывается.
 SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
-               sum(p.uses) OVER (PARTITION BY p.iof, p.place) AS uses,
+               sum(p.uses) OVER (PARTITION BY p.iof, p.place)
+                 + CASE WHEN p.place <> ''
+                        THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
+                        ELSE 0 END AS uses,
+               max(p.place <> '') OVER (PARTITION BY p.iof) AS has_place,
                row_number() OVER (PARTITION BY p.iof, p.place
                                   ORDER BY (p.rank = ''), coalesce(p.last_used_at, '') DESC, p.id DESC) AS rn
           FROM person_index p
          WHERE p.iof_norm LIKE :prefix ESCAPE '\'
            AND (:gender IS NULL OR p.gender IS NULL OR p.gender = :gender))
- WHERE rn = 1
+ WHERE rn = 1 AND (place <> '' OR has_place = 0)
  ORDER BY iof IN (SELECT trim(coalesce(nullif(trim(m.first_name), ''), '') || coalesce(' ' || nullif(trim(m.patronymic), ''), '') || coalesce(' ' || nullif(trim(m.surname), ''), '')) FROM person_mention m
                    WHERE m.role_code = 'child') DESC,
           uses DESC, iof
@@ -845,6 +875,27 @@ SELECT iof, nullif(rank, '') AS rank, uses FROM clergy_index
  ORDER BY uses DESC, last_used_at DESC, iof
  LIMIT :limit;
 
+-- @spouse_extend
+-- Жена пришла из памяти без фамилии («Олимпиада Иванова»), форма дописала ей
+-- фамилию отца — это та же жена, а не вторая: прежняя строка дополняется,
+-- иначе у мужа в памяти оказывались две жены (техдолг 06.10.2026). Только
+-- если строки с полным ИОФ ещё нет. Исполняется перед spouse_remember.
+-- И только строка того же пункта (или без пункта): у тёзки мужа из другой
+-- деревни может быть жена с тем же именем и отчеством — её строку трогать
+-- нельзя (ревьюер 09.10.2026).
+UPDATE spouse_index SET wife_iof = :wife_iof
+ WHERE husband_norm = :husband_norm
+   AND substr(:wife_iof, 1, length(wife_iof) + 1) = wife_iof || ' '
+   AND instr(wife_iof, ' ') > 0
+   AND coalesce(wife_place, '') IN ('', coalesce(:wife_place, ''))
+   AND NOT EXISTS (SELECT 1 FROM spouse_index x
+                    WHERE x.husband_norm = :husband_norm AND x.wife_iof = :wife_iof)
+   AND id = (SELECT min(y.id) FROM spouse_index y
+              WHERE y.husband_norm = :husband_norm
+                AND substr(:wife_iof, 1, length(y.wife_iof) + 1) = y.wife_iof || ' '
+                AND instr(y.wife_iof, ' ') > 0
+                AND coalesce(y.wife_place, '') IN ('', coalesce(:wife_place, '')));
+
 -- @spouse_remember
 -- Кто чья жена. Заполняется, когда в записи о рождении есть и отец, и мать.
 INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, wife_rank, uses, last_used_at)
@@ -857,10 +908,20 @@ ON CONFLICT(husband_norm, wife_iof) DO UPDATE SET
 -- @spouse_lookup
 -- Жена по мужу. Заказчик: «как только ты выбираешь существующую персону,
 -- то и НП, и его звание, и все данные его жены тут же должны быть заполнены».
+-- С учётом НП мужа (Роман 09.10.2026: «к отцу может подтянуться жена его
+-- полного тёзки из другой деревни»). НП мужа в памяти пар нет, но есть НП
+-- жены, а он тот же: мать получает НП отца, жене после венчания записан НП
+-- жениха. Жена из того же пункта — первой; жена без пункта годится; жена
+-- из другого пункта — нет. НП мужа неизвестен, а жёны у этого ИОФ из разных
+-- пунктов — не угадываем, не подставляем никого.
 SELECT wife_iof, wife_place, wife_rank, uses
   FROM spouse_index
  WHERE husband_norm = :husband_norm
- ORDER BY uses DESC
+   AND (CASE WHEN :place IS NULL
+             THEN (SELECT count(DISTINCT nullif(coalesce(x.wife_place, ''), '')) FROM spouse_index x
+                    WHERE x.husband_norm = :husband_norm) <= 1
+             ELSE coalesce(wife_place, '') IN ('', :place) END)
+ ORDER BY (coalesce(wife_place, '') = coalesce(:place, '')) DESC, uses DESC
  LIMIT 1;
 
 -- @wife_husband_rank

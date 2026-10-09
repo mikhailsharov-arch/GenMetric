@@ -412,6 +412,121 @@ def run(driver, wait, archive):
         check("«законная жена его» в подсказке — «крестьянская жена», в поле матери — как есть",
               ranks == ["крестьянская жена"] and as_is == ["законная жена его"], f"{ranks} / {as_is}")
 
+    print("\n5г. Сборка 09.10: жена по НП мужа, замки и свёрнутые блоки — настоящий Rust и WebView2")
+    # Жена ищется по ИОФ мужа и его НП (Роман 09.10.2026: «жена его полного
+    # тёзки из другой деревни»): новый параметр команды и новый запрос.
+    # В архиве сквозной проверки у Никиты Алексеева жена — Евлампия Васильева.
+    called = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  const any = await call('suggest_spouse', {husband: 'Никита Алексеев', place: null});"
+        "  const same = any && any.place ? await call('suggest_spouse', {husband: 'Никита Алексеев', place: any.place}) : null;"
+        "  const other = await call('suggest_spouse', {husband: 'Никита Алексеев', place: 'Заборье (Нежитино)'});"
+        "  const known = await call('place_check', {name: 'заборье (нежитино)'});"
+        "  const relative = await call('rank_default', {role: 'relative', gender: 'М'});"
+        "  return {any, same, other, known, relative};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("поиск жены с НП мужа и проверка пункта отвечают без ошибки", "error" not in called, str(called)[:400])
+    if "error" not in called:
+        wife = (called["any"] or {}).get("iof")
+        check("жена находится по мужу", wife == "Евлампия Васильева", str(called["any"])[:200])
+        check("с НП мужа — та же жена; с чужим НП — никого",
+              (called["same"] or {}).get("iof") == wife and called["other"] is None,
+              f"{called['same']} / {called['other']}")
+        check("звание по умолчанию для родственника в браке — строка или пусто",
+              called["relative"] is None or isinstance(called["relative"], str), str(called["relative"]))
+        check("проверка пункта отдаёт написание справочника",
+              called["known"].get("known") is True and called["known"].get("canonical") == "Заборье (Нежитино)",
+              str(called["known"])[:200])
+
+    # Замки и сворачивание — щелчками в окне, настройка читается из прихода.
+    def setting(key):
+        return driver.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI_INTERNALS__.invoke('get_setting', {key: arguments[0]}).then(done, (e) => done('ошибка: ' + e));", key)
+
+    def toggled(js_click, js_state, key, want_state, want_value):
+        """Щёлкнуть и дождаться и перерисовки, и записи настройки — до 8 с, без
+        пауз на глаз (урок 08.10.2026: чтение сразу после действия — гонка).
+        Возвращает (состояние на экране, настройка) — какими они стали."""
+        driver.execute_script(js_click)
+        state = value = None
+        for _ in range(40):
+            state = driver.execute_script(js_state)
+            value = setting(key)
+            if state == want_state and value == want_value:
+                break
+            time.sleep(0.2)
+        return state, value
+
+    lock_click = "document.querySelector('.birth [data-clergy-lock]').click();"
+    lock_state = "return document.querySelectorAll('.birth select.clergyselect:disabled').length;"
+    third_js = "const s = document.querySelector(\".birth select[data-clergy='2']\"); return s ? [s.value, s.options.length] : null;"
+    if driver.execute_script("return !!document.querySelector('.birth [data-clergy-lock]');"):
+        # Список причта с клавиатуры в WebView2: стрелка меняет человека, не
+        # раскрывая список (до 09.10.2026 это проверял только стенд в Chromium).
+        # Выбирать есть из кого, только если в памяти причта есть не священник
+        # (шаг 5 сохранил причт без звания) — иначе проверка стрелок пропускается
+        # с пометкой, а не роняет сборку по посторонней причине.
+        was, options = driver.execute_script(third_js)
+        if options >= 2 and was == "":
+            def third_value(want_empty):
+                for _ in range(25):
+                    got = driver.execute_script(third_js)[0]
+                    if (got == "") == want_empty:
+                        return got
+                    time.sleep(0.2)
+                return driver.execute_script(third_js)[0]
+            driver.execute_script(
+                "const s = document.querySelector(\".birth select[data-clergy='2']\");"
+                "s.scrollIntoView({block: 'center'}); s.focus();")
+            driver.switch_to.active_element.send_keys(Keys.ARROW_DOWN)
+            picked = third_value(False)
+            driver.switch_to.active_element.send_keys(Keys.ARROW_UP)
+            back = third_value(True)
+            check("стрелки в списке причта меняют церковнослужителя и возвращают «никого»",
+                  picked != "" and back == "", f"«{was}» → «{picked}» → «{back}»")
+            if back != "":
+                # Не оставлять следующим шагам лишнего третьего причта.
+                driver.execute_script(
+                    "const s = document.querySelector(\".birth select[data-clergy='2']\");"
+                    "const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;"
+                    "set.call(s, ''); s.dispatchEvent(new Event('change', {bubbles: true}));")
+                third_value(True)
+            driver.switch_to.active_element.send_keys(Keys.ENTER)
+            on_save = False
+            for _ in range(15):
+                on_save = driver.execute_script("return !!(document.activeElement && document.activeElement.closest('.savebar'));")
+                if on_save:
+                    break
+                time.sleep(0.2)
+            check("Enter с последнего списка ведёт на «Сохранить»", bool(on_save))
+        else:
+            print(f"  [инфо]   стрелки в списке причта не проверены: в третьем списке строк {options}, выбрано «{was}»")
+        state, value = toggled(lock_click, lock_state, "clergy_lock", 3, "1")
+        check("причт закреплён: три списка недоступны, настройка в приходе", state == 3 and value == "1", f"{state} / {value}")
+        state, value = toggled(lock_click, lock_state, "clergy_lock", 0, "0")
+        check("замок снят: списки доступны", state == 0 and value == "0", f"{state} / {value}")
+    else:
+        check("в свёрнутом причте есть флажок «закрепить»", False, clergy_shown(driver, ".birth"))
+
+    conf_click = ("document.querySelector('.birth button.lock')"
+                  ".dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));")
+    conf_state = "return [...document.querySelectorAll('.birth input.locked')].filter((i) => i.readOnly).length;"
+    state, value = toggled(conf_click, conf_state, "confession_lock", 2, "1")
+    check("замок вероисповедания: закрыто у отца и у матери, настройка в приходе", state == 2 and value == "1", f"{state} / {value}")
+    state, value = toggled(conf_click, conf_state, "confession_lock", 0, "0")
+    check("замок вероисповедания открыт", state == 0 and value == "0", f"{state} / {value}")
+
+    fold_state = "return document.querySelectorAll('.birth [data-fold=\"birth_godparents\"]').length;"
+    state, value = toggled("document.querySelector('.birth [data-fold-close=\"birth_godparents\"]').click();",
+                           fold_state, "fold_birth_godparents", 1, "1")
+    check("восприемники свёрнуты в строку, настройка в приходе", state == 1 and value == "1", f"{state} / {value}")
+    state, value = toggled("document.querySelector('.birth [data-fold-open=\"birth_godparents\"]').click();",
+                           fold_state, "fold_birth_godparents", 0, "0")
+    check("восприемники развёрнуты", state == 0 and value == "0", f"{state} / {value}")
+
     print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")
     # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его
     # явно не выключили (Роман 07.10.2026).

@@ -19,7 +19,11 @@ type Props = {
   browse?: boolean;
   /** Уход из поля (Enter, Tab, клик мимо) — с текущим значением. Поле НП
    *  по нему проверяет, известен ли пункт, и открывает карточку. */
-  onLeave?: (value: string, related: EventTarget | null) => void;
+  onLeave?: (value: string, related: EventTarget | null, typed: boolean) => void;
+  /** Замок поля (вероисповедание, Роман 03.10.2026): «только чтение и вне
+   *  Tab, состояние помнится». Закрытое поле не правится, клавиши перехода
+   *  его обходят; значок замка в поле открывает и закрывает. */
+  lock?: { on: boolean; toggle: () => void };
   /** Ссылка справа в поле (например, «карточка» у НП), только при непустом значении. */
   action?: { label: string; onClick: () => void };
   /** Правка регистра: при наборе (`final = false`) и при настоящем уходе из
@@ -48,7 +52,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -208,7 +212,11 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           else if (ref) ref.current = el;
         }}
         data-field
-        className={action && value.trim() ? "withaction" : browse ? "withbrowse" : undefined}
+        readOnly={lock?.on}
+        tabIndex={lock?.on ? -1 : undefined}
+        data-skip={lock?.on ? "" : undefined}
+        className={[action && value.trim() ? "withaction" : browse || lock ? "withbrowse" : "", lock?.on ? "locked" : ""]
+          .filter(Boolean).join(" ") || undefined}
         value={value}
         placeholder={placeholder}
         autoComplete="off"
@@ -236,7 +244,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
             }
           }
           pickedValue.current = null;
-          onLeave?.(leaving, e.relatedTarget);
+          onLeave?.(leaving, e.relatedTarget, wasTyped && real);
         }}
       />
       {browse && (
@@ -253,6 +261,21 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           }}
         >
           ▾
+        </button>
+      )}
+      {lock && (
+        <button
+          type="button"
+          className={lock.on ? "browse lock on" : "browse lock"}
+          tabIndex={-1}
+          data-lock={lock.on ? "1" : "0"}
+          title={lock.on
+            ? "Поле закрыто: не правится, клавиши его обходят. Нажмите, чтобы открыть"
+            : "Закрыть поле: значение останется, клавиши будут его обходить"}
+          aria-label={lock.on ? "Открыть поле" : "Закрыть поле"}
+          onMouseDown={(e) => { e.preventDefault(); lock.toggle(); }}
+        >
+          {lock.on ? "🔒" : "🔓"}
         </button>
       )}
       {action && value.trim() && (

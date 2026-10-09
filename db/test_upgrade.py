@@ -268,16 +268,28 @@ def upgrade(user_db: Path, seed_db: Path) -> None:
     conn.close()
 
 
-def snapshot(db) -> list:
-    """Набранное: записи и упоминания с названием пункта (не номером — слияние
-    двойников пунктов номер меняет законно). Обновление обязано оставить это
-    как было; исключение — починка счёта девочек 21.09.2026, она в снимок не
-    входит."""
-    return db.execute(
-        "SELECT e.id, e.section, e.page, e.event_day, e.event_month, e.event_year, e.note, "
-        "       m.role_code, m.sort_order, m.first_name, m.patronymic, m.surname, m.gender, m.rank, "
-        "       m.confession, m.note, (SELECT p.name FROM place p WHERE p.id = m.place_id) "
+# Колонки, которые обновление меняет законно: счёт девочек и отметка времени
+# при его починке (21.09.2026), дело записи (дело — на год книги, 02.10.2026)
+# и номер пункта (слияние двойников — вместо него в снимке название пункта).
+SNAPSHOT_SKIP = {"entry": {"no_male", "no_female", "case_id", "updated_at"}, "person_mention": {"place_id"}}
+
+
+def snapshot(db, columns: dict | None = None) -> tuple:
+    """Набранное: записи и упоминания — ВСЕ колонки, какие были в базе до
+    обновления (до 09.10.2026 снимок брал полтора десятка колонок по списку, и
+    порча любой другой — возраста, родства, девичьей фамилии — прошла бы
+    мимо). Пункт — названием, не номером. Возвращает (колонки, строки);
+    снимок «после» берётся по колонкам снимка «до»: новые колонки обновление
+    добавляет пустыми, сравнивать их не с чем."""
+    if columns is None:
+        columns = {t: [r[1] for r in db.execute(f"PRAGMA table_info({t})") if r[1] not in SNAPSHOT_SKIP[t]]
+                   for t in ("entry", "person_mention")}
+    e = ", ".join(f"e.{c}" for c in columns["entry"])
+    m = ", ".join(f"m.{c}" for c in columns["person_mention"])
+    rows = db.execute(
+        f"SELECT {e}, {m}, (SELECT p.name FROM place p WHERE p.id = m.place_id) "
         "  FROM entry e LEFT JOIN person_mention m ON m.entry_id = e.id ORDER BY e.id, m.id").fetchall()
+    return columns, rows
 
 
 def main() -> int:
@@ -308,7 +320,10 @@ def main() -> int:
                          ).fetchone()[0] == 2)
         check("у человека есть набранная запись",
               db.execute("SELECT count(*) FROM entry").fetchone()[0] == 6)
-        before = snapshot(db)
+        snap_columns, before = snapshot(db)
+        check("снимок «до» берёт все колонки записей и упоминаний",
+              len(snap_columns["entry"]) >= 10 and len(snap_columns["person_mention"]) >= 15,
+              f"{len(snap_columns['entry'])} и {len(snap_columns['person_mention'])}")
         db.close()
 
         upgrade(user, seed)
@@ -436,7 +451,7 @@ def main() -> int:
               one("SELECT count(*) FROM lookup_dropped WHERE value_norm = 'отставной канонир'") == 1
               and int(one("SELECT value FROM setting WHERE key = 'cleanup_lookups'")) >= 4)
         check("записи, упоминания и их тексты не изменились",
-              snapshot(db) == before, "снимок записей до и после обновления различается")
+              snapshot(db, snap_columns)[1] == before, f"строк {len(snapshot(db, snap_columns)[1])} и {len(before)}; различия: " + str(sorted({(snap_columns["entry"] + snap_columns["person_mention"] + ["place"])[i] for a, b in zip(snapshot(db, snap_columns)[1], before) for i in range(len(a)) if a[i] != b[i]})))
         check("появилась колонка комментария пункта (схема 10)",
               "comment" in [r[1] for r in db.execute("PRAGMA table_info(place)")])
         check("разбор ИОФ заработает: «Никита» не подменяется",
@@ -495,7 +510,7 @@ def main() -> int:
               db.execute("SELECT count(*) FROM lookup WHERE value='мещанин города Юрьевца'").fetchone()[0] == 1)
         check("повторная уборка ничего больше не убрала и записей не тронула",
               db.execute("SELECT count(*) FROM lookup WHERE kind='rank_m'").fetchone()[0] == 54
-              and snapshot(db) == before)
+              and snapshot(db, snap_columns)[1] == before)
         check("и не задвоило имена",
               db.execute("SELECT count(*) FROM name_dict").fetchone()[0] == 3112)
         check("повторная починка ничего не нашла и счётчик не вырос",

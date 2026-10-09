@@ -13,6 +13,7 @@ import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
 import { setDirty } from "./dirty";
 import { titleCase } from "./names";
 import type { FormProps } from "./formprops";
+import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
 /**
  * Форма ввода записи о браке (25.09.2026) — по образцу рождений.
@@ -237,6 +238,12 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   async function save() {
     let g = groom, b = bride, gr = groomRel, br = brideRel;
     let ws = witnesses.slice(0, witnessCount), cl = [clergy1, clergy2, clergy3];
+    // Свёрнутый блок: поля ИОФ на экране нет, разбор имени мог устареть —
+    // разбираем заново (BirthForm, стенд 09.10.2026).
+    const stale = <T extends Person>(p: T, folded: boolean): T => (folded ? { ...p, parsed: null } : p);
+    g = stale(g, groomFolded); b = stale(b, brideFolded);
+    gr = stale(gr, groomRelFolded); br = stale(br, brideRelFolded);
+    ws = ws.map((w) => stale(w, witnessesFolded));
     try {
       [g, b, gr, br] = await Promise.all([g, b, gr, br].map(withParsed)) as [Spouse, Spouse, Relative, Relative];
       ws = await Promise.all(ws.map(withParsed));
@@ -255,7 +262,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       warn(`Имя ${unknown[0]} «${unknown[1].parsed?.first_name}» не сверено со справочником`,
              unknown[0] === "причта"
                ? "нажмите «Изменить» у причта и выйдите из поля ИОФ — откроется окно сверки"
-               : "выйдите из поля ИОФ — откроется окно сверки и предложит имя из справочника");
+               : "выйдите из поля ИОФ — откроется окно сверки и предложит имя из справочника (свёрнутый блок сначала разверните)");
       return;
     }
     if (!g.iof.trim() && !b.iof.trim()) {
@@ -455,11 +462,23 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   // Звание поручителям по умолчанию — выключается флажком под ними (Роман
   // 07.10.2026); жених — как раньше.
   const [autoRankWitness, setAutoRankWitness] = useParishFlag(AUTO_RANK_WITNESS, "звание поручителям");
+  // Родственникам жениха и невесты — тоже, под тем же флажком (Роман
+  // 09.10.2026: «пошли браки, где постоянно указывается отец и жениху и
+  // невесте — крестьянин. Так что надо сделать»). Звание появляется только
+  // вместе с набранным ИОФ: в записи без родственника поле остаётся пустым.
+  const relativeRank = fresh && autoRankWitness ? "relative" as const : undefined;
   // Предохранитель «забытая страница» — по сохранённым записям года.
   const pageGuard = fresh ? pageOverflow(saved.map((e) => e.page), page) : null;
   /** Родственник выбран из подсказки: НП у него нет, заполняется звание. */
   const pickRelative = (set: (fn: (r: Relative) => Relative) => void) => (hint: PersonHint) =>
     set((r) => ({ ...r, rank: hint.rank ?? r.rank }));
+
+  // Сворачиваемые блоки (Роман 03.10.2026): помнятся в приходе.
+  const [groomFolded, foldGroom] = useFold("marriage_groom", "Жених");
+  const [groomRelFolded, foldGroomRel] = useFold("marriage_groom_relative", "Родственник жениха");
+  const [brideFolded, foldBride] = useFold("marriage_bride", "Невеста");
+  const [brideRelFolded, foldBrideRel] = useFold("marriage_bride_relative", "Родственник невесты");
+  const [witnessesFolded, foldWitnesses] = useFold("marriage_witnesses", "Поручители");
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="marriage formroot">
@@ -496,31 +515,55 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
           другом в том же порядке. */}
       <div className="cols">
         <div className="col">
-          <PersonBlock title="Жених" person={groom} onChange={(p) => setGroom((s) => ({ ...s, ...p }))}
+          {groomFolded && (
+            <FoldLine block="marriage_groom" title="Жених" summary={foldSummary([groom])} onOpen={() => foldGroom(false)} />
+          )}
+          <PersonBlock hidden={groomFolded} title="Жених" person={groom} onChange={(p) => setGroom((s) => ({ ...s, ...p }))}
                        gender="М" withConfession confessionLabel="Вероисп."
                        defaultRank={fresh ? "groom" : undefined}
                        onPickPerson={pickInto(setGroom)} {...common}
+                       titleAfter={<FoldLink block="marriage_groom" onFold={() => foldGroom(true)} />}
                        extra={spouseExtra(groom, setGroom)} />
-          <PersonBlock title="Родственник жениха" person={groomRel} noPlace
+          {groomRelFolded && (
+            <FoldLine block="marriage_groom_relative" title="Родственник жениха"
+                      summary={foldSummary([groomRel])} onOpen={() => foldGroomRel(false)} />
+          )}
+          <PersonBlock hidden={groomRelFolded} title="Родственник жениха" person={groomRel} noPlace
                        onChange={(p) => setGroomRel((s) => ({ ...s, ...p }))}
                        gender={kinGender(groomRel.kinship)} {...common}
+                       defaultRank={relativeRank}
                        onPickPerson={pickRelative(setGroomRel)}
+                       titleAfter={<FoldLink block="marriage_groom_relative" onFold={() => foldGroomRel(true)} />}
                        before={relativeBefore(groomRel, setGroomRel)} />
         </div>
         <div className="col">
-          <PersonBlock title="Невеста" person={bride} onChange={(p) => setBride((s) => ({ ...s, ...p }))}
+          {brideFolded && (
+            <FoldLine block="marriage_bride" title="Невеста" summary={foldSummary([bride])} onOpen={() => foldBride(false)} />
+          )}
+          <PersonBlock hidden={brideFolded} title="Невеста" person={bride} onChange={(p) => setBride((s) => ({ ...s, ...p }))}
                        gender="Ж" withConfession confessionLabel="Вероисп."
                        onPickPerson={pickInto(setBride)} {...common}
+                       titleAfter={<FoldLink block="marriage_bride" onFold={() => foldBride(true)} />}
                        extra={spouseExtra(bride, setBride)} />
-          <PersonBlock title="Родственник невесты" person={brideRel} noPlace
+          {brideRelFolded && (
+            <FoldLine block="marriage_bride_relative" title="Родственник невесты"
+                      summary={foldSummary([brideRel])} onOpen={() => foldBrideRel(false)} />
+          )}
+          <PersonBlock hidden={brideRelFolded} title="Родственник невесты" person={brideRel} noPlace
                        onChange={(p) => setBrideRel((s) => ({ ...s, ...p }))}
                        gender={kinGender(brideRel.kinship)} {...common}
+                       defaultRank={relativeRank}
                        onPickPerson={pickRelative(setBrideRel)}
+                       titleAfter={<FoldLink block="marriage_bride_relative" onFold={() => foldBrideRel(true)} />}
                        before={relativeBefore(brideRel, setBrideRel)} />
         </div>
       </div>
 
-      <div className="cols">
+      {witnessesFolded && (
+        <FoldLine block="marriage_witnesses" title="Поручители"
+                  summary={foldSummary(witnesses.slice(0, witnessCount))} onOpen={() => foldWitnesses(false)} />
+      )}
+      <div className="cols" hidden={witnessesFolded}>
         {witnesses.slice(0, witnessCount).map((w, i) => (
           <PersonBlock key={w.uid} title={`Поручитель ${i + 1}`} person={w}
                        onChange={(p) => changeWitness(i, p)}
@@ -550,13 +593,14 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                        ) : undefined} />
         ))}
       </div>
-      <div className="addrow">
+      <div className="addrow" hidden={witnessesFolded}>
         <label className="unknownbox autorank"
-               title="Включено — поручителю сразу вписывается самое частое в приходе звание">
+               title="Включено — поручителю и родственнику жениха или невесты сразу вписывается самое частое в приходе звание этой роли">
           <input type="checkbox" checked={autoRankWitness} tabIndex={-1} data-auto-rank
                  onChange={(e) => setAutoRankWitness(e.target.checked)} />
           звание само
         </label>
+        <FoldLink block="marriage_witnesses" onFold={() => foldWitnesses(true)} />
         {witnessCount < WITNESS_MAX && (
           <button type="button" className="linkish" onClick={() => setWitnessCount((n) => n + 1)}>
             + добавить поручителя

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import PersonBlock, { type Person } from "./PersonBlock";
 import { report } from "./errors";
 import { focusNextField } from "./focus";
+import { CLERGY_LOCK, useParishFlag } from "./flags";
 
 /**
  * Церковнослужители записи.
@@ -82,6 +83,30 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
       .catch((e) => report("Не удалось запомнить, свёрнут ли причт", e));
   }
   const [pickerFor, setPickerFor] = useState<0 | 1 | 2 | null>(null);
+  // Замок (Роман и второй тестировщик 09.10.2026): «когда причт заморожен —
+  // списки исключаются из обхода клавишами… а случайное нажатие стрелок не
+  // меняет зафиксированных людей». Недоступный список обход пропускает сам
+  // (focus.ts). Помнится в приходе; изначально снят.
+  const [locked, setLocked] = useParishFlag(CLERGY_LOCK, "закрепить причт", false);
+  const lockBox = (
+    <label className="unknownbox clergylock"
+           title="Закреплён — списки причта не меняются и клавиши их обходят: после последнего поля Enter ведёт сразу на «Сохранить»">
+      {/* Щелчок не забирает фокус у поля формы; если курсор стоял в списке,
+          который стал недоступен, — на «Сохранить», куда и ведёт обход. */}
+      <input type="checkbox" checked={locked} tabIndex={-1} data-clergy-lock
+             onMouseDown={(e) => e.preventDefault()}
+             onChange={(e) => {
+               setLocked(e.target.checked);
+               const root = e.currentTarget.closest(".formroot");
+               setTimeout(() => {
+                 const a = document.activeElement as HTMLSelectElement | null;
+                 if (!a || a === document.body || a.disabled)
+                   root?.querySelector<HTMLButtonElement>(".savebar button")?.focus();
+               }, 0);
+             }} />
+      закрепить
+    </label>
+  );
 
   useEffect(() => {
     invoke<ClergyHint[]>("list_clergy", { limit: 100 })
@@ -144,6 +169,7 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
         data-clergy={i}
         className="clergyselect"
         aria-label={`${TITLES[i]} церковнослужитель`}
+        disabled={locked}
         value={nowKey}
         onChange={(e) => {
           const key = e.target.value;
@@ -225,6 +251,7 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
       <section className="person">
         <div className="clergyline">
           <h2 className="inline">Церковнослужители</h2>
+          {lockBox}
           <button type="button" className="linkish" onClick={() => setOpen(true)}>
             Изменить
           </button>
