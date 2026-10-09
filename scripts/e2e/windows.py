@@ -549,8 +549,13 @@ def run(driver, wait, archive):
     check("поиск и досье отвечают без ошибки", "error" not in called, str(called)[:400])
     if "error" not in called:
         persons = [(p.get("iof"), p.get("mentions")) for p in called["found"]["persons"]]
+        # В списке он стоит в современном написании, а его даёт словарь имён:
+        # «Сидоров» там — «Исидорович». Сверяем не написание, а то, что нашёлся
+        # один человек с одним упоминанием и что в записи он «Пётр Сидоров»
+        # (сборка 09.10.2026 упала на ожидании «Петр Сидор…» в списке).
+        in_entry = (((called["dossier"] or {}).get("events") or [{}])[0].get("me") or {}).get("iof")
         check("«сид пет» находит восприемника «Пётр Сидоров» — слова в любом порядке и не целиком",
-              len(persons) == 1 and persons[0][0].replace("ё", "е").startswith("Петр Сидор") and persons[0][1] == 1, str(persons)[:200])
+              len(persons) == 1 and persons[0][1] == 1 and in_entry == "Пётр Сидоров", f"{persons} / в записи: {in_entry}")
         check("причт без переключателя не ищется, с переключателем — находится; отбор по годам действует",
               called["none"] == 0 and len(called["clergy"]) == 1 and called["years"] == 0,
               f"{called['none']} / {called['clergy']} / {called['years']}")
