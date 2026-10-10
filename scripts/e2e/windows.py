@@ -568,6 +568,28 @@ def run(driver, wait, archive):
               f"{str(d)[:300]}")
         check("причта среди «рядом в записи» нет", not any(r.startswith("clergy") for r, _ in near), str(near))
 
+    # Подсказка детей в смертях (техдолг с 03.10.2026: в сквозной проверке её
+    # не было): ребёнок из записи о рождении шага 5 — отдельной строкой с годом
+    # рождения; запросы infant_suggest и birth_father идут через настоящий
+    # rusqlite, который строг к именам параметров.
+    infants = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  const list = await call('suggest_infant', {prefix: 'Мар', limit: 6, gender: null, year: 1897, place: null});"
+        "  const girls = await call('suggest_infant', {prefix: 'Мар', limit: 6, gender: 'М', year: 1897, place: null});"
+        "  const late = await call('suggest_infant', {prefix: 'Мар', limit: 6, gender: null, year: 1905, place: null});"
+        "  const father = await call('birth_father', {iof: 'Мария', year: 1897, place: null});"
+        "  return {list, girls: girls.length, late: late.length, father};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("подсказка детей и отец из рождения отвечают без ошибки", "error" not in infants, str(infants)[:400])
+    if "error" not in infants:
+        born = [(i.get("iof"), i.get("born")) for i in infants["list"]]
+        check("подсказка детей: «Мар» находит Марию из рождений 1897 года",
+              any(iof == "Мария" and "1897" in (b or "") for iof, b in born), str(born))
+        check("подсказка детей: отбор по полу и окно в два года действуют",
+              infants["girls"] == 0 and infants["late"] == 0, f"{infants['girls']} / {infants['late']}")
+
     # Ctrl+F настоящими клавишами: свой экран вместо поиска по странице,
     # который есть у окна WebView2. Курсор — в поле формы.
     def search_shown():
@@ -996,11 +1018,23 @@ def resumed(driver, wait):
     fill(driver, "Причина", "понос", dead)
     fill(driver, "Возраст", "1,5 мес", dead)
     time.sleep(0.8)  # разбор ИОФ — асинхронный
+    # Память поиска (10.10.2026): упоминания прихода лежат в памяти программы.
+    # Спрашиваем поиск до сохранения — память прочитана, умерших в ней нет —
+    # и после: новая запись обязана найтись без перезапуска.
+    dead_found = (
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('search_persons', {filter: {query: 'анна иванова', place: null,"
+        "  own: true, part: false, clergy: false, year_from: 1886, year_to: 1886}})"
+        ".then((r) => done(r.total), (e) => done('ошибка: ' + e));")
+    before_save = driver.execute_async_script(dead_found)
     click(driver, d + "button[starts-with(normalize-space(),'Сохранить и следующая')]")
     try:
         wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".death"), "Набрано смертей: 1"))
     except TimeoutException:
         pass
+    after_save = driver.execute_async_script(dead_found)
+    check("поиск видит запись, сохранённую после его прошлого ответа (память поиска сбрасывается)",
+          before_save == 0 and after_save == 1, f"до сохранения {before_save}, после {after_save}")
     block = driver.find_element(By.CSS_SELECTOR, ".death").text
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
     check("запись о смерти сохранена", "Набрано смертей: 1" in block, " | ".join(errorbar))

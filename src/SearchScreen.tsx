@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { report } from "./errors";
 import { focusNextField } from "./focus";
-import { dateOf, describe, family, nameless, personTail, roleKind, type DossierEvent, type Mention, type Part } from "./dossier";
+import { dateOf, describe, family, marriageLine, nameless, personTail, roleKind, type DossierEvent, type Mention, type Part } from "./dossier";
 
 /**
  * Экран «Поиск»: персона по приходу и её досье (спека
@@ -69,6 +69,12 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
   const year = (v: string) => (/^\d{4}$/.test(v.trim()) ? Number(v.trim()) : null);
   const filter = { query, place: place.trim() || null, own, part, clergy, year_from: year(yearFrom), year_to: year(yearTo) };
   const filterKey = JSON.stringify(filter);
+  // Год не из четырёх цифр в отбор не идёт — и об этом сказано, а не молча
+  // (проверяющий 09.10.2026); «от» больше «до» — никого не найдётся.
+  const badYear = (v: string) => v.trim() !== "" && year(v) === null;
+  const yearNote = badYear(yearFrom) || badYear(yearTo) ? "Год — четыре цифры: пока их меньше, отбор по этому году не действует."
+    : filter.year_from !== null && filter.year_to !== null && filter.year_from > filter.year_to
+      ? "Год «от» больше года «до» — так никого не найдётся." : "";
 
   // Открыли из формы с персоной под курсором — её ИОФ и НП в поля.
   useEffect(() => {
@@ -273,12 +279,15 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
           <span className="searchyears">
             годы
             <input data-year-from value={yearFrom} inputMode="numeric" maxLength={4} placeholder="от" aria-label="Год от"
+                   className={badYear(yearFrom) ? "rejected" : undefined}
                    onChange={(e) => setYearFrom(e.target.value.replace(/[^0-9]/g, ""))} />
             —
             <input data-year-to value={yearTo} inputMode="numeric" maxLength={4} placeholder="до" aria-label="Год до"
+                   className={badYear(yearTo) ? "rejected" : undefined}
                    onChange={(e) => setYearTo(e.target.value.replace(/[^0-9]/g, ""))} />
           </span>
         </div>
+        {yearNote && <p className="hint yearnote" data-year-note>{yearNote}</p>}
       </section>
 
       <div className="searchbody">
@@ -333,11 +342,17 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
             {hasFamily && fam && (
               <div className="dossierfamily" data-family>
                 <h3>Семья</h3>
-                {fam.marriages.map(({ event, spouse }) => (
-                  <p key={`m${event.entry_id}`}>
-                    <span className="when">{when(event)}</span> брак: {spouse ? who(spouse, dossier.place) : "супруг не записан"}
-                  </p>
-                ))}
+                {fam.marriages.map(({ event, spouse }) => {
+                  const line = marriageLine(event);
+                  return (
+                    <p key={`m${event.entry_id}`} data-marriage>
+                      <span className="when">{when(event)}</span> брак{line.mine && ` (${line.mine})`}:{" "}
+                      {spouse ? who(spouse, dossier.place) : line.missing}
+                      {spouse && line.spouseNote && <span className="sub"> · {line.spouseNote}</span>}
+                      {line.relatives.length > 0 && <span className="sub"> · {parts(line.relatives, dossier.place)}</span>}
+                    </p>
+                  );
+                })}
                 {fam.spouses.map((g, i) => (
                   <div key={i} className="children">
                     <p>

@@ -169,6 +169,8 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
         data-clergy={i}
         className="clergyselect"
         aria-label={`${TITLES[i]} церковнослужитель`}
+        // В узком окне длинное имя в списке обрезано — целиком оно в подписи.
+        title={now.iof.trim() ? [now.iof.trim(), now.rank.trim()].filter(Boolean).join(", ") : undefined}
         disabled={locked}
         value={nowKey}
         onChange={(e) => {

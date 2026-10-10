@@ -134,6 +134,39 @@ struct Row {
     month: Option<i64>,
     page: Option<String>,
     entry_note: Option<String>,
+    /// Ключ персоны и слова, по которым её находят, — считаются один раз при
+    /// чтении: поиск идёт на каждую набранную букву.
+    key: String,
+    words: Vec<String>,
+    place_norm: String,
+}
+
+/// Упоминания прихода в памяти. До 10.10.2026 поиск и досье читали их из
+/// базы каждый раз — на ста тысячах упоминаний по 0,3 с на каждую букву.
+/// Кто держит `Index` между вызовами, сам следит, что база не изменилась
+/// (`changes`).
+pub struct Index {
+    rows: Vec<Row>,
+}
+
+impl Index {
+    pub fn load(conn: &Connection) -> Result<Index, String> {
+        Ok(Index { rows: load(conn)? })
+    }
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// Сколько строк изменило это соединение с открытия: число растёт с каждым
+/// сохранением, правкой и импортом — по нему видно, что память поиска
+/// устарела. У нового соединения счёт свой, поэтому при смене прихода память
+/// сбрасывают отдельно.
+pub fn changes(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT total_changes()", [], |r| r.get(0)).map_err(|e| e.to_string())
 }
 
 /// К какой из трёх групп относится роль. Ребёнок в записи о рождении — не
@@ -175,7 +208,7 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
                     .collect();
                 if parts.is_empty() { None } else { Some(parts.join(" ")) }
             });
-            Ok(Row {
+            let mut row = Row {
                 entry_id: r.get(1)?,
                 role: r.get(2)?,
                 first: text(r, 4)?,
@@ -197,7 +230,15 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
                 month: r.get(24)?,
                 page: blank(r.get(25)?),
                 entry_note: blank(r.get(26)?),
-            })
+                key: String::new(),
+                words: Vec::new(),
+                place_norm: String::new(),
+            };
+            row.key = row.modern().iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect::<Vec<_>>().join(" ");
+            row.words = [&row.first, &row.patr, &row.surname, &row.first_modern, &row.patr_modern]
+                .iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect();
+            row.place_norm = normalize(&row.place);
+            Ok(row)
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -216,13 +257,10 @@ impl Row {
         self.modern().iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" ")
     }
     /// Ключ персоны: ИОФ в современном написании, без регистра, «ё» и «ъ».
+    /// Слова, по которым её находят, — книжное и современное написание
+    /// (`words`). Оба считает `load`.
     fn key(&self) -> String {
-        self.modern().iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect::<Vec<_>>().join(" ")
-    }
-    /// Слова, по которым её находят: книжное и современное написание.
-    fn words(&self) -> Vec<String> {
-        [&self.first, &self.patr, &self.surname, &self.first_modern, &self.patr_modern]
-            .iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect()
+        self.key.clone()
     }
     fn mention(&self) -> Mention {
         Mention {
@@ -246,7 +284,7 @@ fn passes(row: &Row, f: &Filter, place: &Option<String>) -> bool {
         return false;
     }
     if let Some(p) = place {
-        if &normalize(&row.place) != p {
+        if &row.place_norm != p {
             return false;
         }
     }
@@ -266,14 +304,19 @@ fn place_key(f: &Filter) -> Option<String> {
 /// Найденные персоны: одна строка — один ИОФ в одном НП. Запрос короче двух
 /// букв — пусто: по одной букве подошла бы половина прихода.
 pub fn find(conn: &Connection, f: &Filter) -> Result<Found, String> {
+    Ok(find_in(&Index::load(conn)?, f))
+}
+
+/// То же по упоминаниям, уже прочитанным в память.
+pub fn find_in(index: &Index, f: &Filter) -> Found {
     let words: Vec<String> = f.query.split_whitespace().map(normalize_name).filter(|w| !w.is_empty()).collect();
     if words.iter().map(|w| w.chars().count()).sum::<usize>() < 2 {
-        return Ok(Found { persons: Vec::new(), total: 0 });
+        return Found { persons: Vec::new(), total: 0 };
     }
     let place = place_key(f);
     struct Group { iof: String, place: String, mentions: usize, from: Option<i64>, to: Option<i64>, words: BTreeSet<String> }
     let mut groups: BTreeMap<(String, String), Group> = BTreeMap::new();
-    for row in load(conn)?.iter().filter(|r| passes(r, f, &place)) {
+    for row in index.rows.iter().filter(|r| passes(r, f, &place)) {
         let g = groups.entry((row.key(), row.place.clone())).or_insert_with(|| Group {
             iof: row.iof_modern(), place: row.place.clone(), mentions: 0, from: None, to: None, words: BTreeSet::new(),
         });
@@ -282,7 +325,7 @@ pub fn find(conn: &Connection, f: &Filter) -> Result<Found, String> {
             g.from = Some(g.from.map_or(y, |v| v.min(y)));
             g.to = Some(g.to.map_or(y, |v| v.max(y)));
         }
-        g.words.extend(row.words());
+        g.words.extend(row.words.iter().cloned());
     }
     let mut hits: Vec<PersonHit> = groups
         .into_iter()
@@ -293,17 +336,22 @@ pub fn find(conn: &Connection, f: &Filter) -> Result<Found, String> {
     hits.sort_by(|a, b| b.mentions.cmp(&a.mentions).then(a.iof.cmp(&b.iof)).then(a.place.cmp(&b.place)));
     let total = hits.len();
     hits.truncate(PERSON_LIMIT);
-    Ok(Found { persons: hits, total })
+    Found { persons: hits, total }
 }
 
 /// Досье персоны: все записи, где стоит её ИОФ (ключ) в этом НП, с теми, кто
 /// рядом в записи. Отборы по ролям и годам — те же, что у списка; слова
 /// запроса и отбор по НП здесь не действуют — персона уже выбрана.
 pub fn dossier(conn: &Connection, key: &str, place: &str, f: &Filter) -> Result<Dossier, String> {
-    let rows = load(conn)?;
+    Ok(dossier_in(&Index::load(conn)?, key, place, f))
+}
+
+/// То же по упоминаниям, уже прочитанным в память.
+pub fn dossier_in(index: &Index, key: &str, place: &str, f: &Filter) -> Dossier {
+    let rows = &index.rows;
     let only = Filter { place: None, ..f.clone() };
     let mine: Vec<&Row> = rows.iter()
-        .filter(|r| r.place == place && r.key() == key && passes(r, &only, &None))
+        .filter(|r| r.place == place && r.key == key && passes(r, &only, &None))
         .collect();
     let mut by_entry: BTreeMap<i64, Vec<&Row>> = BTreeMap::new();
     let wanted: BTreeSet<i64> = mine.iter().map(|r| r.entry_id).collect();
@@ -332,13 +380,13 @@ pub fn dossier(conn: &Connection, key: &str, place: &str, f: &Filter) -> Result<
     events.sort_by_key(|e| (e.year.unwrap_or(i64::MAX), e.month.unwrap_or(13), e.day.unwrap_or(32), e.entry_id));
     let mut ranks: Vec<(String, usize)> = ranks.into_iter().collect();
     ranks.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    Ok(Dossier {
+    Dossier {
         iof: mine.first().map(|r| r.iof_modern()).unwrap_or_default(),
         place: place.to_string(),
         ranks: ranks.into_iter().map(|r| r.0).collect(),
         mentions: mine.len(),
         events,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -369,7 +417,7 @@ mod tests {
     fn fresh(tag: &str) -> Option<(std::path::PathBuf, Connection)> {
         let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
         if !seed.exists() {
-            eprintln!("нет resources/seed.sqlite — тест поиска пропущен");
+            crate::seed_missing("тест поиска пропущен");
             return None;
         }
         let path = std::env::temp_dir().join(format!("genmetric-search-{tag}-{}.sqlite", std::process::id()));
@@ -531,6 +579,37 @@ mod tests {
                    vec![("Анна Петровна Иванова", 3), ("Анна Петровна", 1)], "запрос находит обеих, частая — первой");
         let plain = annas.iter().find(|p| p.iof == "Анна Петровна").unwrap();
         assert_eq!(dossier(&conn, &plain.key, "Малово", &all()).unwrap().mentions, 1, "ключ различает их");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Память поиска: по прочитанным упоминаниям ответы те же, что из базы, а
+    /// счётчик изменений растёт с каждым сохранением — по нему память и
+    /// сбрасывают. Без сброса новая запись в поиске не появилась бы.
+    #[test]
+    fn index_answers_and_goes_stale() {
+        let Some((path, conn)) = fresh("index") else { return };
+        story(&conn);
+        let q = Filter { query: "иван кап".into(), ..all() };
+        let index = Index::load(&conn).unwrap();
+        assert!(!index.is_empty() && index.len() >= 20, "{}", index.len());
+        assert_eq!(find_in(&index, &q).persons, find(&conn, &q).unwrap().persons);
+        let direct = dossier(&conn, "иван капитонович", "Фетинино", &all()).unwrap();
+        let cached = dossier_in(&index, "иван капитонович", "Фетинино", &all());
+        assert_eq!((cached.mentions, cached.events.len(), cached.ranks.clone()), (direct.mentions, direct.events.len(), direct.ranks));
+        assert_eq!(cached.mentions, 5);
+
+        let before = changes(&conn).unwrap();
+        assert_eq!(changes(&conn).unwrap(), before, "чтение счётчик не двигает");
+        let _ = find(&conn, &q).unwrap();
+        assert_eq!(changes(&conn).unwrap(), before, "поиск базу не меняет");
+        save_entry(&conn, &entry(1, 1896, 9, 9, "30", vec![
+            person("child", 10, ("Анна", "", ""), ("Анна", ""), "", "", "Ж"),
+            person("father", 20, ("Иоаннъ", "Капитоновъ", ""), ("Иван", "Капитонович"), "Фетинино", "крестьянин", "М"),
+        ])).unwrap();
+        assert!(changes(&conn).unwrap() > before, "сохранение записи видно по счётчику");
+        assert_eq!(find_in(&index, &q).persons[0].mentions, 5, "старая память новой записи не знает");
+        assert_eq!(find_in(&Index::load(&conn).unwrap(), &q).persons[0].mentions, 6, "прочитанная заново — знает");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

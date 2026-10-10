@@ -684,7 +684,15 @@ export default function IofField({
             // фокус (клик в скан) — человек вернётся и допишет слово; правка
             // текста здесь запустила бы сверку недописанного (ревьюер 03.10.2026).
             // И заглушка вместо имени («—», «?») — сразу как сохранится: «***».
-            const proper = showNoName(titleCase(e.currentTarget.value));
+            // Пробел на конце — след выбора слова из подсказки с заменой
+            // (applyWords оставляет его, чтобы следующее слово не слиплось);
+            // при уходе из поля он не нужен.
+            // Только при переходе в другое поле видимой формы: Ctrl+F прячет
+            // форму и потом возвращает курсор в это же поле — без пробела
+            // следующее слово слиплось бы с набранным (ревьюер 10.10.2026).
+            const moved = e.relatedTarget !== null && e.currentTarget.offsetParent !== null;
+            const cased = showNoName(titleCase(e.currentTarget.value));
+            const proper = moved ? cased.replace(/\s+$/, "") : cased;
             if (proper !== e.currentTarget.value && (e.relatedTarget !== null || document.hasFocus())) {
               valueRef.current = proper;
               onChange(proper, null);

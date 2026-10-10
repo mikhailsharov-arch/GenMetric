@@ -63,7 +63,7 @@ export default function FontScale() {
   }
 
   return (
-    <div className="scale" title="Размер шрифта">
+    <div className="scale" title={`Размер шрифта: ${Math.round(STEPS[index] * 100)}%`}>
       <button onClick={() => change(-1)} disabled={!loaded || index === 0} aria-label="Мельче">
         А−
       </button>

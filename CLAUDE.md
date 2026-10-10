@@ -25,7 +25,7 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 84, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 85, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 125, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 83 ок, 0 ошибок»
@@ -35,11 +35,11 @@
     python3 db/test_parish.py                                   # → «Итог: успешно 40, ошибок 0» (приходы, общие справочники)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 21, ошибок 0» (шаг страницы, предохранитель)
-    node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 18, ошибок 0» (месяц сам: по дню события и обряда)
-    node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 31, ошибок 0» (слова досье персоны и блок «Семья»)
+    node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 41, ошибок 0» (месяц сам: по дню события и обряда, первая цифра дня, смена года)
+    node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 36, ошибок 0» (слова досье персоны и блок «Семья»)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 96, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 258, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 277, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -53,7 +53,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 24 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 26 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -361,6 +361,23 @@ SQL не писать: считать по шагам во временной т
 genmetric-core --release search_real -- --ignored --nocapture`.
 Имена в строках досье стоят в именительном падеже после тире: склонять
 книжные написания программа не умеет.
+
+**Память поиска — по счётчику изменений соединения** (с 10.10.2026).
+Упоминания прихода для экрана «Поиск» лежат в памяти программы
+(`search::Index`, в `main.rs` — `App.search`); свежесть проверяется числом
+`SELECT total_changes()` у соединения прихода, а при смене прихода память
+сбрасывает `drop_search` (у нового соединения счёт свой и может совпасть).
+Новое место, где соединение прихода заменяется, — обязано звать `drop_search`.
+
+**Команда окна с базой идёт под перехватом паники** (с 10.10.2026):
+`with_conn` → `genmetric_core::guarded_db` — паника становится ошибкой в
+окне, незаконченная транзакция откатывается. Замок соединения брать только
+через `lock_conn` (отравленный берётся всё равно), не `app.conn.lock()`.
+
+**Месяц по дню — одно место для рождений и смертей**: `settleMonths` в
+`src/month.ts`. Формы читают дни и месяцы из `monthsNow` (ссылка), а не из
+замыкания: Ctrl+Enter в поле дня сначала уводит фокус (месяц решён), и
+сохранение в том же событии иначе записало бы прежний месяц.
 
 **Клавишу слушать по коду, а не по букве** (`e.code === "KeyF"`): в русской
 раскладке Ctrl+F приходит как «а». Esc на экране с подсказками — на

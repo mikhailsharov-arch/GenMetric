@@ -903,7 +903,7 @@ mod tests {
     fn case_free_order() {
         let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
         if !seed.exists() {
-            eprintln!("нет resources/seed.sqlite — тест дела пропущен");
+            crate::seed_missing("тест дела пропущен");
             return;
         }
         let path = std::env::temp_dir().join(format!("genmetric-case-{}.sqlite", std::process::id()));
@@ -965,7 +965,7 @@ mod tests {
     fn spouse_by_place_and_person_rows() {
         let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
         if !seed.exists() {
-            eprintln!("нет resources/seed.sqlite — тест пропущен");
+            crate::seed_missing("тест пропущен");
             return;
         }
         let path = std::env::temp_dir().join(format!("genmetric-spouse-{}.sqlite", std::process::id()));
@@ -1057,7 +1057,7 @@ mod tests {
     fn no_name_and_surnames() {
         let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
         if !seed.exists() {
-            eprintln!("нет resources/seed.sqlite — тест пропущен");
+            crate::seed_missing("тест пропущен");
             return;
         }
         let path = std::env::temp_dir().join(format!("genmetric-noname-{}.sqlite", std::process::id()));

@@ -163,7 +163,15 @@ pub fn list(dir: &Path) -> Result<Vec<ParishRow>, String> {
         let peek = if missing {
             None
         } else {
-            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+            // Не «только чтение»: базу в режиме WAL и так не прочесть без
+            // файлов -wal и -shm, а читатель без права записи убрать их за
+            // собой не может — они оставались у каждого прихода. Соединение
+            // с правом записи (файл не создаёт, записей не меняет) при
+            // закрытии убирает их само, долив в основной файл то, что
+            // оставалось в -wal, — как при обычном закрытии прихода.
+            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+                .or_else(|_| Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY))
+                .ok()
         };
         let entries = peek
             .as_ref()
@@ -487,7 +495,7 @@ mod tests {
     #[test]
     fn open_create_and_share() {
         let Some(seed) = seed() else {
-            eprintln!("нет resources/seed.sqlite — тест приходов пропущен");
+            crate::seed_missing("тест приходов пропущен");
             return;
         };
         let dir = temp_dir("share");
@@ -530,6 +538,13 @@ mod tests {
         let rows = list(&dir).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[1].current && !rows[0].current && rows[1].entries == Some(0));
+        // Перечень только читал — рядом с закрытыми приходами не остаётся
+        // ни -wal, ни -shm (до 10.10.2026 оставались у каждого прихода).
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join(PARISH_DIR)).unwrap())
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+            .filter(|n| n.ends_with("-wal") || n.ends_with("-shm"))
+            .collect();
+        assert!(left.is_empty(), "после перечня остались: {left:?}");
 
         // Запуск открывает последний; пропавший файл — первый с предупреждением.
         assert_eq!(open_current(&dir, &seed).unwrap().id, 2);

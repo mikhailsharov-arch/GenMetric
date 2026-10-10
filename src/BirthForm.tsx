@@ -10,7 +10,7 @@ import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow } from "./page";
-import { eventMonthFor, riteMonthFor } from "./month";
+import { monthOnYearChange, riteMonthFor, settleMonths } from "./month";
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
@@ -122,23 +122,35 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const monthManual = useRef(false);
   const riteMonthManual = useRef(false);
   const autoMonths = () => editingRef.current === null;
+  // Цифра, которая может быть началом двузначного дня, месяц не двигает:
+  // решение — на второй цифре, при уходе из поля или при сохранении.
+  const monthPending = useRef({ event: false, rite: false });
+  // Дни и месяцы «на сейчас» — не из замыкания: Ctrl+Enter в поле дня сначала
+  // уводит из него фокус (решение принято, месяц изменён), а сохранение в том
+  // же событии ещё видит прежний месяц — и записало бы его (стенд 10.10.2026).
+  const monthsNow = useRef({ eventDay: birthDay, eventMonth: birthMonth, riteDay: riteDay, riteMonth: riteMonth });
+  monthsNow.current = { eventDay: birthDay, eventMonth: birthMonth, riteDay: riteDay, riteMonth: riteMonth };
+  function settle(touched: "event" | "rite" | null, typed: { eventDay?: number | null; riteDay?: number | null } = {}) {
+    const now = { ...monthsNow.current, ...typed };
+    const out = settleMonths(now, savedRef.current[0], { event: monthManual.current, rite: riteMonthManual.current },
+                             touched, monthPending.current);
+    monthPending.current = out.pending;
+    monthsNow.current = { eventDay: out.eventDay, eventMonth: out.eventMonth, riteDay: out.riteDay, riteMonth: out.riteMonth };
+    if (out.eventMonth !== now.eventMonth) setBirthMonth(out.eventMonth);
+    if (out.riteMonth !== now.riteMonth) setRiteMonth(out.riteMonth);
+    return out;
+  }
   function typeBirthDay(v: number | null) {
     setBirthDay(v);
-    if (!autoMonths()) return;
-    let month = birthMonth;
-    if (!monthManual.current) {
-      const guess = eventMonthFor(savedRef.current[0], v);
-      if (guess !== null) {
-        month = guess;
-        setBirthMonth(guess);
-      }
-    }
-    if (!riteMonthManual.current && month !== null) setRiteMonth(riteMonthFor(v, month, riteDay));
+    if (autoMonths()) settle("event", { eventDay: v });
   }
   function typeRiteDay(v: number | null) {
     setRiteDay(v);
-    if (autoMonths() && !riteMonthManual.current && birthMonth !== null)
-      setRiteMonth(riteMonthFor(birthDay, birthMonth, v));
+    if (autoMonths()) settle("rite", { riteDay: v });
+  }
+  /** Ушли из поля дня — отложенное решение о месяце принимается. */
+  function leaveDay() {
+    if (autoMonths()) settle(null);
   }
   function typeRiteMonth(v: number | null) {
     riteMonthManual.current = true;
@@ -211,6 +223,25 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [saved, setSaved] = useState<Brief[]>([]);
   const savedRef = useRef(saved);
   savedRef.current = saved;
+  // Год на форме изменён, месяц руками не набирали: когда пришёл список
+  // записей нового года, месяц считается заново — по его последней записи, а
+  // в году без записей, следующем за прежним, это январь (month.ts). До
+  // 10.10.2026 месяц оставался от прежнего года, пока день не наберут заново.
+  const monthYear = useRef<number | null>(null);
+  const savedYear = useRef<number | null>(null);
+  useEffect(() => {
+    if (year === null || year < 1700 || savedYear.current !== year || !autoMonths()) return;
+    const prev = monthYear.current;
+    monthYear.current = year;
+    if (monthManual.current) return;
+    const guess = monthOnYearChange(prev, year, saved[0], birthDay);
+    // Месяц тот же — не трогаем и месяц обряда: он мог быть восстановлен
+    // по последней записи (крещение в следующем месяце).
+    if (guess === null || guess === birthMonth) return;
+    monthPending.current = { event: false, rite: false };
+    setBirthMonth(guess);
+    if (!riteMonthManual.current) setRiteMonth(riteMonthFor(birthDay, guess, riteDay));
+  }, [saved]);
   const editingRef = useRef(editingId);
   editingRef.current = editingId;
   const [busy, setBusy] = useState(false);
@@ -237,7 +268,11 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // Год набирают по цифре — ответ на прежний год отбрасывается.
     const mine = ++listSeq.current;
     invoke<Brief[]>("entry_list", { section: 1, year, last: false })
-      .then((rows) => { if (mine === listSeq.current) setSaved(rows); })
+      .then((rows) => {
+        if (mine !== listSeq.current) return;
+        savedYear.current = year;
+        setSaved(rows);
+      })
       .catch((e) => report("Не удалось прочитать список набранных записей", e));
   }
 
@@ -488,6 +523,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   }
 
   async function save() {
+    // Месяц, отложенный на первой цифре дня: Ctrl+Enter прямо из поля дня
+    // ухода из поля не даёт — решаем сейчас и пишем решённое.
+    const months = autoMonths() ? settle(null) : { eventMonth: birthMonth, riteMonth: riteMonth };
     let father = fatherRaw, mother = motherRaw, god1 = god1Raw, god2 = god2Raw,
         god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
         clergy3 = clergy3Raw;
@@ -632,10 +670,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
           no_male: columns.no_male,
           no_female: columns.no_female,
           event_day: birthDay,
-          event_month: birthMonth,
-          event_year: eventYearOf(year, birthMonth, riteMonth, riteNextYear),
+          event_month: months.eventMonth,
+          event_year: eventYearOf(year, months.eventMonth, months.riteMonth, riteNextYear),
           rite_day: riteDay,
-          rite_month: riteMonth,
+          rite_month: months.riteMonth,
           rite_year: year,
           note: entryNote.trim() || null,
           uncertain: null,
@@ -659,8 +697,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       // перечитать список может не удаться (ревьюер 08.10.2026).
       if (editingId === null)
         setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
-                           event_day: birthDay, event_month: birthMonth, event_year: null,
-                           rite_month: riteMonth, rite_year: year, child: titleCase(child).trim() || null,
+                           event_day: birthDay, event_month: months.eventMonth, event_year: null,
+                           rite_month: months.riteMonth, rite_year: year, child: titleCase(child).trim() || null,
                            father: father.iof.trim() || null, clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
@@ -834,6 +872,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     countManual.current = false;
     monthManual.current = false;
     riteMonthManual.current = false;
+    monthPending.current = { event: false, rite: false };
     dayField.current?.focus();
     dayField.current?.select();
   }
@@ -887,9 +926,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         {/* Даты рождения и крещения — одной строкой, если ширины хватает
             (27.09.2026: минус строка высоты); узко — переносятся. */}
         <div className="row wrap">
-          <NumberField label="Рожд., день" value={birthDay} onChange={typeBirthDay} min={1} max={31} inputRef={dayField} />
+          <NumberField label="Рожд., день" onLeave={leaveDay} value={birthDay} onChange={typeBirthDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12} />
-          <NumberField label="Крещ., день" value={riteDay} onChange={typeRiteDay} min={1} max={31} />
+          <NumberField label="Крещ., день" onLeave={leaveDay} value={riteDay} onChange={typeRiteDay} min={1} max={31} />
           <NumberField label="месяц" value={riteMonth} onChange={typeRiteMonth} min={1} max={12} noTab />
         </div>
         <NextYear eventMonth={birthMonth} riteMonth={riteMonth} year={year} rite="крещение"

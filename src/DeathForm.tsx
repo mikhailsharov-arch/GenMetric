@@ -9,7 +9,7 @@ import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow } from "./page";
-import { eventMonthFor, riteMonthFor } from "./month";
+import { monthOnYearChange, riteMonthFor, settleMonths } from "./month";
 import { parseAge } from "./age";
 import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
@@ -109,23 +109,35 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const monthManual = useRef(false);
   const burialMonthManual = useRef(false);
   const autoMonths = () => editingRef.current === null;
+  // Цифра, которая может быть началом двузначного дня, месяц не двигает:
+  // решение — на второй цифре, при уходе из поля или при сохранении.
+  const monthPending = useRef({ event: false, rite: false });
+  // Дни и месяцы «на сейчас» — не из замыкания: Ctrl+Enter в поле дня сначала
+  // уводит из него фокус (решение принято, месяц изменён), а сохранение в том
+  // же событии ещё видит прежний месяц — и записало бы его (стенд 10.10.2026).
+  const monthsNow = useRef({ eventDay: deathDay, eventMonth: deathMonth, riteDay: burialDay, riteMonth: burialMonth });
+  monthsNow.current = { eventDay: deathDay, eventMonth: deathMonth, riteDay: burialDay, riteMonth: burialMonth };
+  function settle(touched: "event" | "rite" | null, typed: { eventDay?: number | null; riteDay?: number | null } = {}) {
+    const now = { ...monthsNow.current, ...typed };
+    const out = settleMonths(now, savedRef.current[0], { event: monthManual.current, rite: burialMonthManual.current },
+                             touched, monthPending.current);
+    monthPending.current = out.pending;
+    monthsNow.current = { eventDay: out.eventDay, eventMonth: out.eventMonth, riteDay: out.riteDay, riteMonth: out.riteMonth };
+    if (out.eventMonth !== now.eventMonth) setDeathMonth(out.eventMonth);
+    if (out.riteMonth !== now.riteMonth) setBurialMonth(out.riteMonth);
+    return out;
+  }
   function typeDeathDay(v: number | null) {
     setDeathDay(v);
-    if (!autoMonths()) return;
-    let month = deathMonth;
-    if (!monthManual.current) {
-      const guess = eventMonthFor(savedRef.current[0], v);
-      if (guess !== null) {
-        month = guess;
-        setDeathMonth(guess);
-      }
-    }
-    if (!burialMonthManual.current && month !== null) setBurialMonth(riteMonthFor(v, month, burialDay));
+    if (autoMonths()) settle("event", { eventDay: v });
   }
   function typeBurialDay(v: number | null) {
     setBurialDay(v);
-    if (autoMonths() && !burialMonthManual.current && deathMonth !== null)
-      setBurialMonth(riteMonthFor(deathDay, deathMonth, v));
+    if (autoMonths()) settle("rite", { riteDay: v });
+  }
+  /** Ушли из поля дня — отложенное решение о месяце принимается. */
+  function leaveDay() {
+    if (autoMonths()) settle(null);
   }
   function typeBurialMonth(v: number | null) {
     burialMonthManual.current = true;
@@ -157,6 +169,25 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [saved, setSaved] = useState<Brief[]>([]);
   const savedRef = useRef(saved);
   savedRef.current = saved;
+  // Год на форме изменён, месяц руками не набирали: когда пришёл список
+  // записей нового года, месяц считается заново — по его последней записи, а
+  // в году без записей, следующем за прежним, это январь (month.ts). До
+  // 10.10.2026 месяц оставался от прежнего года, пока день не наберут заново.
+  const monthYear = useRef<number | null>(null);
+  const savedYear = useRef<number | null>(null);
+  useEffect(() => {
+    if (year === null || year < 1700 || savedYear.current !== year || !autoMonths()) return;
+    const prev = monthYear.current;
+    monthYear.current = year;
+    if (monthManual.current) return;
+    const guess = monthOnYearChange(prev, year, saved[0], deathDay);
+    // Месяц тот же — не трогаем и месяц обряда: он мог быть восстановлен
+    // по последней записи (крещение в следующем месяце).
+    if (guess === null || guess === deathMonth) return;
+    monthPending.current = { event: false, rite: false };
+    setDeathMonth(guess);
+    if (!burialMonthManual.current) setBurialMonth(riteMonthFor(deathDay, guess, burialDay));
+  }, [saved]);
   const [busy, setBusy] = useState(false);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
@@ -180,7 +211,11 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // Год набирают по цифре — ответ на прежний год отбрасывается.
     const mine = ++listSeq.current;
     invoke<Brief[]>("entry_list", { section: 3, year, last: false })
-      .then((rows) => { if (mine === listSeq.current) setSaved(rows); })
+      .then((rows) => {
+        if (mine !== listSeq.current) return;
+        savedYear.current = year;
+        setSaved(rows);
+      })
       .catch((e) => report("Не удалось прочитать список набранных смертей", e));
   }
 
@@ -424,6 +459,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   }
 
   async function save() {
+    // Месяц, отложенный на первой цифре дня: Ctrl+Enter прямо из поля дня
+    // ухода из поля не даёт — решаем сейчас и пишем решённое.
+    const months = autoMonths() ? settle(null) : { eventMonth: deathMonth, riteMonth: burialMonth };
     let d = dead, r = rel, cl = [clergy1, clergy2, clergy3];
     try {
       // Свёрнутый родственник: поля ИОФ на экране нет, разбор мог устареть.
@@ -494,9 +532,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
         entry: {
           id: editingId, case_id: mkCase.id, section: 3, page,
           no_male: columns.no_male, no_female: columns.no_female,
-          event_day: deathDay, event_month: deathMonth,
-          event_year: eventYearOf(year, deathMonth, burialMonth, burialNextYear),
-          rite_day: burialDay, rite_month: burialMonth,
+          event_day: deathDay, event_month: months.eventMonth,
+          event_year: eventYearOf(year, months.eventMonth, months.riteMonth, burialNextYear),
+          rite_day: burialDay, rite_month: months.riteMonth,
           rite_year: year,
           note: null, uncertain: null, persons,
         },
@@ -518,8 +556,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       // перечитать список может не удаться (ревьюер 08.10.2026).
       if (editingId === null)
         setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
-                           event_day: deathDay, event_month: deathMonth, event_year: null,
-                           rite_month: burialMonth, rite_year: year, deceased: d.iof.trim() || null,
+                           event_day: deathDay, event_month: months.eventMonth, event_year: null,
+                           rite_month: months.riteMonth, rite_year: year, deceased: d.iof.trim() || null,
                            clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
@@ -551,8 +589,11 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   });
 
   function formDirty(): boolean {
+    // День — тоже набранное, как в рождениях и браках (до 10.10.2026 здесь
+    // его не было: «Открыть» из поиска молча стирало набранный день смерти).
     return [dead, rel].some((p) => p.iof.trim() || p.place.trim() || p.rank.trim())
-      || dead.cause.trim().length > 0 || dead.age.trim().length > 0 || nameless;
+      || dead.cause.trim().length > 0 || dead.age.trim().length > 0 || nameless
+      || deathDay !== null || burialDay !== null;
   }
 
   async function openEntry(id: number) {
@@ -627,6 +668,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     countManual.current = false;
     monthManual.current = false;
     burialMonthManual.current = false;
+    monthPending.current = { event: false, rite: false };
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -754,9 +796,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
           <NumberField label="Счёт" value={count} onChange={typeCount} min={1} inputRef={countField} noTab />
         </div>
         <div className="row wrap">
-          <NumberField label="Смерть, день" value={deathDay} onChange={typeDeathDay} min={1} max={31} inputRef={dayField} />
+          <NumberField label="Смерть, день" onLeave={leaveDay} value={deathDay} onChange={typeDeathDay} min={1} max={31} inputRef={dayField} />
           <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12} />
-          <NumberField label="Погреб., день" value={burialDay} onChange={typeBurialDay} min={1} max={31} />
+          <NumberField label="Погреб., день" onLeave={leaveDay} value={burialDay} onChange={typeBurialDay} min={1} max={31} />
           <NumberField label="месяц" value={burialMonth} onChange={typeBurialMonth} min={1} max={12} noTab />
         </div>
         <NextYear eventMonth={deathMonth} riteMonth={burialMonth} year={year} rite="погребение"

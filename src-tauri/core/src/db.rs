@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn upgrade_runs_in_app_sqlite() {
         let Some(seed) = seed() else {
-            eprintln!("нет resources/seed.sqlite — тест обновления пропущен");
+            crate::seed_missing("тест обновления пропущен");
             return;
         };
         let dir = std::env::temp_dir().join(format!("genmetric-upgrade-{}", std::process::id()));

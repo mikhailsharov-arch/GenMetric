@@ -1203,7 +1203,8 @@ def incident_20261009_otvet_na_sborku_08_10():
 
     birth, death = read("src/BirthForm.tsx"), read("src/DeathForm.tsx")
     check("месяц сам — только в новой записи и пока месяц не набран руками (рождения и смерти)",
-          all("const autoMonths = () => editingRef.current === null;" in f and "if (!monthManual.current)" in f
+          all("const autoMonths = () => editingRef.current === null;" in f
+              and "{ event: monthManual.current, rite:" in f and "if (autoMonths()) settle(" in f
               and "monthManual.current = false;" in f for f in (birth, death))
           and "eventMonthFor" not in read("src/MarriageForm.tsx"))
     clergy = read("src/ClergyBlock.tsx")
@@ -1226,7 +1227,86 @@ def incident_20261009_otvet_na_sborku_08_10():
           "data-place-twin" in card and "if (twin && !comment)" in card)
 
 
+def incident_20261010_tehnicheskij_sprint():
+    """
+    10.10.2026, технический спринт (спека 2026-10-10-tehnicheskij-sprint).
+    Замечания проверяющего и ревьюера к двум спринтам 09.10: «Открыть» из
+    поиска молча стирало набранный день, НП или звание без имени; поиск
+    читал все упоминания прихода на каждую букву в главном потоке; паника в
+    команде окна закрывала программу; окно «Приходы» оставляло -wal и -shm
+    у каждого прихода; месяц прыгал на первой цифре дня.
+    """
+    birth, marriage, death = read("src/BirthForm.tsx"), read("src/MarriageForm.tsx"), read("src/DeathForm.tsx")
+    dirty = lambda text: text.split("function formDirty(): boolean {", 1)[-1].split("\n  }\n", 1)[0]
+    check("«форма занята» в рождениях: день, НП и звание без имён",
+          "birthDay !== null || riteDay !== null" in dirty(birth)
+          and 'p.place.trim() !== "" || p.rank.trim() !== ""' in dirty(birth))
+    check("«форма занята» в браках: день, НП и звание без имён",
+          "day !== null" in dirty(marriage) and 'p.place.trim() !== "" || p.rank.trim() !== ""' in dirty(marriage))
+    check("«форма занята» в смертях: день, НП и звание без имён",
+          "deathDay !== null || burialDay !== null" in dirty(death) and "p.place.trim() || p.rank.trim()" in dirty(death))
+    check("запись открывается на правку только с пустой формы — во всех трёх",
+          all("if (editingId === null && formDirty()) {" in f for f in (birth, marriage, death)))
+    app = read("src/App.tsx")
+    check("«Открыть» из поиска при занятой форме остаётся на экране поиска",
+          "if (dirtyForms().includes(form)) {" in app)
+
+    main_rs = read("src-tauri/src/main.rs")
+    core = read("src-tauri/core/src/lib.rs")
+    with_conn = main_rs.split("fn with_conn<T>(", 1)[-1].split("\nfn with_conn_shared", 1)[0]
+    check("работа с базой в командах окна идёт под перехватом паники",
+          "genmetric_core::guarded_db(conn, body)" in with_conn and "pub fn guarded_db<T>" in core
+          and 'execute_batch("ROLLBACK")' in core.split("pub fn guarded_db<T>", 1)[-1].split("pub fn caught", 1)[0])
+    check("замок базы, отравленный паникой, берётся всё равно — и молча нигде не пропускается",
+          "let guard = lock_conn(app);" in with_conn and "poisoned.into_inner()" in main_rs
+          and "app.conn.lock()" not in main_rs.replace("app.conn.lock().unwrap_or_else(|poisoned| {", ""))
+    check("поиск и досье — не в главном потоке и по упоминаниям в памяти",
+          "async fn search_persons(app: State<'_, App>" in main_rs and "async fn person_dossier(app: State<'_, App>" in main_rs
+          and "genmetric_core::search::find_in(&index, &filter)" in main_rs
+          and "genmetric_core::search::dossier_in(&index, &key, &place, &filter)" in main_rs)
+    index = main_rs.split("fn search_index(", 1)[-1].split("#[tauri::command]", 1)[0]
+    check("память поиска сверяется со счётчиком изменений базы и сбрасывается при смене прихода",
+          "genmetric_core::search::changes(conn)?" in index and "if *at == now" in index
+          and main_rs.count("drop_search(") >= 3
+          and "drop_search(app);" in main_rs.split("fn switch_parish(", 1)[-1].split("#[tauri::command]", 1)[0])
+    parish = read("src-tauri/core/src/parish.rs")
+    peek = parish.split("pub fn list(dir: &Path)", 1)[-1].split("\n}\n", 1)[0]
+    check("перечень приходов открывает файл так, что -wal и -shm после него не остаются",
+          "OpenFlags::SQLITE_OPEN_READ_WRITE" in peek and "SQLITE_OPEN_CREATE" not in peek)
+    check("тесты крейта без базы поставки в конвейере падают, а не пропускаются",
+          'std::env::var_os("CI").is_some()' in core
+          and 'eprintln!("нет resources/seed.sqlite' not in rust_all().replace('eprintln!("нет resources/seed.sqlite — {what}");', ""))
+
+    month = read("src/month.ts")
+    check("первая цифра двузначного дня месяц не двигает; решение — при уходе из поля и при сохранении",
+          "export function dayUnfinished(" in month and "export function settleMonths(" in month
+          and all("onLeave={leaveDay}" in f and "autoMonths() ? settle(null)" in f for f in (birth, death))
+          and "onLeave?.();" in read("src/NumberField.tsx"))
+    check("сохранение из поля дня пишет досчитанный месяц, а не месяц из замыкания",
+          all("const now = { ...monthsNow.current, ...typed };" in f and "event_month: months.eventMonth" in f
+              and "rite_month: months.riteMonth" in f for f in (birth, death)))
+    check("месяц при смене года считается заново, когда пришёл список записей этого года",
+          "export function monthOnYearChange(" in month
+          and all("monthOnYearChange(prev, year, saved[0]," in f and "savedYear.current = year;" in f for f in (birth, death)))
+    iof = read("src/IofField.tsx")
+    check("пробел на конце ИОФ при уходе из поля убирается",
+          'cased.replace(/\\s+$/, "")' in iof
+          and "const moved = e.relatedTarget !== null && e.currentTarget.offsetParent !== null;" in iof)
+    check("Ctrl+F при открытом окне: окно мигает, поиск не открывается",
+          'modal.classList.add("nudge");' in app and ".modal.nudge" in read("src/styles.css"))
+    search = read("src/SearchScreen.tsx")
+    check("год не из четырёх цифр и «от» больше «до» — со строкой-пояснением",
+          "data-year-note" in search and "badYear(yearFrom)" in search and "filter.year_from > filter.year_to" in search)
+    check("брак в блоке «Семья»: возраст, «каким браком», звание и родственники",
+          "export function marriageLine(" in read("src/dossier.ts") and "marriageLine(event)" in search)
+    styles = read("src/styles.css")
+    check("верхняя строка в узком окне — в один ряд: число процентов прячется",
+          "@media (max-width: 26em)" in styles and ".scale-value { display: none; }" in styles
+          and "title={`Размер шрифта: ${Math.round(STEPS[index] * 100)}%`}" in read("src/FontScale.tsx"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261010_tehnicheskij_sprint,
     incident_20261009_otvet_na_sborku_08_10,
     incident_20261008_chistaya_postavka,
     incident_20261007_otvet_na_sborku_06_10,

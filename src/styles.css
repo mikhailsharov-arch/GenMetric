@@ -911,3 +911,36 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
   table.events td.when, table.events td.page, table.events td:last-child { width: auto; white-space: normal; }
   table.events td.page, table.events td:last-child { display: inline-block; margin-right: 0.8em; }
 }
+
+/* ==========================================================================
+   Технический спринт 10.10.2026
+   ========================================================================== */
+
+/* Ctrl+F при открытом окне с вопросом: окно коротко мигает рамкой. */
+@keyframes nudge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(179, 38, 30, 0); }
+  30% { box-shadow: 0 0 0 0.35em rgba(179, 38, 30, 0.45); }
+}
+.modal.nudge { animation: nudge 0.6s ease-out; }
+
+/* Год в отборе поиска набран не до конца — как непринятое число в форме. */
+.searchyears input.rejected { border-color: #b3261e; background: #fdecea; }
+.yearnote { margin: 0.2em 0 0; color: #7a1f1f; }
+
+/* Верхняя строка в узком окне — в один ряд: число процентов между «А−» и
+   «А+» прячется (оно во всплывающей подписи), вкладки чуть теснее. Высота —
+   самый дефицитный ресурс формы, а перенос стоил целого ряда. */
+@media (max-width: 26em) {
+  .scale-value { display: none; }
+  .topbar { gap: 0.25em; }
+  .tabs { gap: 0.2em; }
+  .tabs button { padding-left: 0.1em; padding-right: 0.1em; }
+}
+
+/* Заголовок причта в узком окне при крупном шрифте: «закрепить» и «Изменить»
+   переносятся на свою строку, а не уходят за край (380 px, 135 %). */
+.clergyline { flex-wrap: wrap; }
+/* То же у заголовка блока персоны: «Имени в книге нет» в «Смертях» при
+   135 % в окне уже 440 px выводило страницу за край (проверяющий 10.10.2026). */
+.personhead { flex-wrap: wrap; }
+.clergyrow > .clergyselect { text-overflow: ellipsis; }

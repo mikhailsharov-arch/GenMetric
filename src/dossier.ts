@@ -186,6 +186,30 @@ export function personTail(m: Mention, here: string): string {
   return bits.length ? ` (${bits.join(", ")})` : "";
 }
 
+/**
+ * Брак персоны в блоке «Семья»: кем она в него вступала и кто рядом в записи.
+ * До 10.10.2026 там стояли только год и имя супруга — звание, «каким браком»
+ * и родственников приходилось искать ниже, в строке события.
+ *
+ * `mine` — возраст, «каким браком» и звание самой персоны на день свадьбы;
+ * `spouseNote` — звание и «каким браком» супруга (пункт и возраст дописывает
+ * personTail); `relatives` — родственники жениха и невесты с родством;
+ * `missing` — что сказать, когда супруга в записи нет.
+ */
+export function marriageLine(e: DossierEvent): { mine: string; spouseNote: string; relatives: Part[]; missing: string } {
+  const groomSide = e.me.role_code === "groom";
+  const spouse = one(e, groomSide ? "bride" : "groom");
+  const words = (m: Mention | undefined, withAge: boolean) =>
+    [withAge ? ageWords(m?.age ?? null) : "", (m?.marriage_order ?? "").trim().toLowerCase(), (m?.rank ?? "").trim()].filter(Boolean).join(", ");
+  return {
+    mine: words(e.me, true),
+    spouseNote: words(spouse, false),
+    relatives: join(people(of(e, "groom_relative"), (m) => relWord(m, "жениха")),
+                    people(of(e, "bride_relative", "bride_parent"), (m) => relWord(m, "невесты"))),
+    missing: groomSide ? "невеста не записана" : "жених не записан",
+  };
+}
+
 /** Блок «Семья»: браки персоны и её дети — по супругам. */
 export type Family = {
   marriages: { event: DossierEvent; spouse: Mention | undefined }[];

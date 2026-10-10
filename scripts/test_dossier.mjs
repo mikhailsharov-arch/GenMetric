@@ -3,7 +3,7 @@
  * Проверка слов досье — src/dossier.ts (Роман 09.10.2026: «хронологическое
  * „досье“ человека»). Запуск: node --experimental-strip-types scripts/test_dossier.mjs
  */
-import { ageWords, dateOf, describe, family, nameless, personTail, roleKind } from "../src/dossier.ts";
+import { ageWords, dateOf, describe, family, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -84,6 +84,25 @@ check("дети — по жёнам: одна жена в двух запися�
 check("у ребёнка — его восприемники", fam.spouses[0].children[0].godparents.map((g) => g.iof).join() === "Пётр Сидоров Орлов");
 check("чужое рождение, где он восприемник, в семью не идёт", fam.spouses.flatMap((g) => g.children).length === 4);
 check("у того, кто не был ни супругом, ни родителем, семьи нет", family([ev(1, god, [girl, father])]).marriages.length === 0 && family([ev(1, god, [girl, father])]).spouses.length === 0);
+
+console.log("\nБрак в блоке «Семья»\n");
+{
+  const people = (list) => list.map((p) => (typeof p === "string" ? p : `«${p.person.iof}»`)).join("");
+  const he = m("groom", "Фёдор Иванов", { gender: "М", age: "22", marriage_order: "Первым браком", rank: "крестьянский сын" });
+  const she = m("bride", "Дарья Петрова", { gender: "Ж", age: "19", marriage_order: "Первым браком", rank: "крестьянская дочь-девица", place: "Воспица" });
+  const dad = m("groom_relative", "Иван Семёнов", { kinship: "отец" });
+  const mum = m("bride_parent", "Анна Петрова");
+  const wed = marriageLine(ev(2, he, [she, dad, mum, m("witness1", "Пётр Орлов", { note: "по жениху" })]));
+  check("у жениха — возраст, «каким браком» и звание на день свадьбы", wed.mine === "22 года, первым браком, крестьянский сын", wed.mine);
+  check("у невесты — «каким браком» и звание (пункт и возраст дописывает строка человека)", wed.spouseNote === "первым браком, крестьянская дочь-девица", wed.spouseNote);
+  check("родственники жениха и невесты с родством; поручителей здесь нет",
+    people(wed.relatives) === "отец жениха — «Иван Семёнов»; родитель невесты — «Анна Петрова»", people(wed.relatives));
+  const hers = marriageLine(ev(2, she, [he]));
+  check("досье невесты: своё — у неё, у жениха — его", hers.mine === "19 лет, первым браком, крестьянская дочь-девица" && hers.spouseNote === "первым браком, крестьянский сын" && hers.relatives.length === 0);
+  const bare = marriageLine(ev(2, m("groom", "Иван Капитонов"), []));
+  check("ничего не записано — пусто, и сказано, кого нет", bare.mine === "" && bare.spouseNote === "" && bare.missing === "невеста не записана"
+    && marriageLine(ev(2, m("bride", "Анна"), [])).missing === "жених не записан");
+}
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${bad}`);
 process.exit(bad ? 1 : 0);

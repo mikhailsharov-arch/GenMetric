@@ -106,22 +106,86 @@ pub fn familio_search_url(name: &str, guberniya: &str, uyezd: &str, volost: &str
 /// прихода без строки в перечне. `what` — что делали, по-русски: попадёт в
 /// сообщение человеку.
 pub fn guarded<T>(what: &str, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+    match caught(work) {
         Ok(result) => result,
-        Err(payload) => {
-            let why = payload
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "причина не названа".to_string());
-            Err(format!("{what}: внутренняя ошибка программы ({why}). Данные не изменены; пришлите этот текст и файл разработчику"))
+        Err(why) => Err(format!("{what}: внутренняя ошибка программы ({why}). Данные не изменены; пришлите этот текст и файл разработчику")),
+    }
+}
+
+/// Работа с базой под перехватом паники — для команд окна. Обычная команда
+/// исполняется в главном потоке, и паника в ней закрывала программу вместе с
+/// набранным в форме. Здесь она становится ошибкой; начатую и не законченную
+/// транзакцию откатываем сами (не каждая у нас — объект, который откатился
+/// бы при раскрутке: есть и «BEGIN» текстом).
+pub fn guarded_db<T>(conn: &rusqlite::Connection, body: impl FnOnce(&rusqlite::Connection) -> Result<T, String>) -> Result<T, String> {
+    match caught(|| body(conn)) {
+        Ok(result) => result,
+        Err(why) => {
+            if !conn.is_autocommit() {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+            // Не «изменение отменено»: запись могла быть уже сохранена, а паника
+            // случиться после — в сверке справочников (ревьюер 10.10.2026).
+            Err(format!("внутренняя ошибка программы ({why}). Программа работает дальше. Если вы сохраняли запись — проверьте в списке «Набрано», сохранилась ли она; пришлите этот текст разработчику"))
         }
     }
 }
 
+/// Работа под перехватом паники: `Err` — её текст. Для тех, кому после паники
+/// нужно ещё прибраться самим (откатить транзакцию) и сказать своё.
+pub fn caught<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).map_err(|payload| {
+        payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "причина не названа".to_string())
+    })
+}
+
+/// Тесту нужна база поставки (`resources/seed.sqlite`), а её нет. У разработчика
+/// тест пропускается со строкой в выводе; в конвейере (переменная `CI`) — падает:
+/// до 10.10.2026 пропуск был молчаливым, и сломанный шаг сборки поставки
+/// оставил бы зелёными тесты, которые ничего не проверили.
+#[cfg(test)]
+pub(crate) fn seed_missing(what: &str) {
+    if std::env::var_os("CI").is_some() {
+        panic!("нет resources/seed.sqlite — в конвейере {what} быть не должен: поставку собирает шаг перед тестами");
+    }
+    eprintln!("нет resources/seed.sqlite — {what}");
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{familio_search_url, guarded, suggest_sql};
+    use super::{familio_search_url, guarded, guarded_db, suggest_sql};
+
+    /// Паника в команде окна: ошибка вместо закрытой программы, начатое
+    /// изменение отменено, соединение работает дальше.
+    #[test]
+    fn panic_in_db_work_is_an_error() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (v INTEGER)").unwrap();
+        let out: Result<(), String> = guarded_db(&conn, |c| {
+            c.execute_batch("BEGIN; INSERT INTO t VALUES (1)").unwrap();
+            let none: Option<i64> = None;
+            none.expect("значения нет");
+            Ok(())
+        });
+        let text = out.unwrap_err();
+        assert!(text.contains("внутренняя ошибка программы") && text.contains("значения нет"), "{text}");
+        assert!(conn.is_autocommit(), "транзакция откатана");
+        let n: i64 = conn.query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "начатое изменение отменено");
+        // Объект-транзакция откатывается сам, второй ROLLBACK не нужен и не мешает.
+        let out: Result<(), String> = guarded_db(&conn, |c| {
+            let tx = c.unchecked_transaction().unwrap();
+            tx.execute("INSERT INTO t VALUES (2)", []).unwrap();
+            panic!("посреди транзакции");
+        });
+        assert!(out.is_err() && conn.is_autocommit());
+        assert_eq!(guarded_db(&conn, |c| c.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())), Ok(0));
+        assert_eq!(guarded_db(&conn, |_| Err::<(), String>("обычная ошибка".into())), Err("обычная ошибка".into()));
+    }
 
     #[test]
     fn familio_url() {

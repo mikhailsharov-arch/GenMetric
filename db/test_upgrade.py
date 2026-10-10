@@ -287,7 +287,11 @@ def snapshot(db, columns: dict | None = None) -> tuple:
     e = ", ".join(f"e.{c}" for c in columns["entry"])
     m = ", ".join(f"m.{c}" for c in columns["person_mention"])
     rows = db.execute(
-        f"SELECT {e}, {m}, (SELECT p.name FROM place p WHERE p.id = m.place_id) "
+        f"SELECT {e}, {m}, (SELECT p.name FROM place p WHERE p.id = m.place_id), "
+        # Счёт: колонку обновление менять вправе (номер девочки — из мужской в
+        # женскую), а сам номер — нет. До 10.10.2026 счёт был исключён из
+        # снимка целиком, и порчу номера будущей миграцией снимок бы не увидел.
+        "       coalesce(e.no_male, e.no_female), (e.no_male IS NOT NULL) + (e.no_female IS NOT NULL) "
         "  FROM entry e LEFT JOIN person_mention m ON m.entry_id = e.id ORDER BY e.id, m.id").fetchall()
     return columns, rows
 
@@ -324,6 +328,9 @@ def main() -> int:
         check("снимок «до» берёт все колонки записей и упоминаний",
               len(snap_columns["entry"]) >= 10 and len(snap_columns["person_mention"]) >= 15,
               f"{len(snap_columns['entry'])} и {len(snap_columns['person_mention'])}")
+        check("в снимке есть номер записи: он стоит не больше чем в одной колонке счёта, и номера есть",
+              all(r[-1] <= 1 for r in before) and sum(1 for r in before if r[-2] is not None) >= 3,
+              str(sorted({(r[-2], r[-1]) for r in before}, key=str)))
         db.close()
 
         upgrade(user, seed)
@@ -451,7 +458,7 @@ def main() -> int:
               one("SELECT count(*) FROM lookup_dropped WHERE value_norm = 'отставной канонир'") == 1
               and int(one("SELECT value FROM setting WHERE key = 'cleanup_lookups'")) >= 4)
         check("записи, упоминания и их тексты не изменились",
-              snapshot(db, snap_columns)[1] == before, f"строк {len(snapshot(db, snap_columns)[1])} и {len(before)}; различия: " + str(sorted({(snap_columns["entry"] + snap_columns["person_mention"] + ["place"])[i] for a, b in zip(snapshot(db, snap_columns)[1], before) for i in range(len(a)) if a[i] != b[i]})))
+              snapshot(db, snap_columns)[1] == before, f"строк {len(snapshot(db, snap_columns)[1])} и {len(before)}; различия: " + str(sorted({(snap_columns["entry"] + snap_columns["person_mention"] + ["place", "счёт", "сколько колонок счёта занято"])[i] for a, b in zip(snapshot(db, snap_columns)[1], before) for i in range(len(a)) if a[i] != b[i]})))
         check("появилась колонка комментария пункта (схема 10)",
               "comment" in [r[1] for r in db.execute("PRAGMA table_info(place)")])
         check("разбор ИОФ заработает: «Никита» не подменяется",

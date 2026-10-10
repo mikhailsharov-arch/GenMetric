@@ -316,6 +316,49 @@ jobs:
             e2e-failure.png
             e2e-msedgedriver.log
 
+      # Проверка выше смотрит копию лицензии рядом с собранной программой.
+      # Человек же получает установщик — смотрим в него самого (ревьюер
+      # 09.10.2026). После сквозной проверки: на её итог этот шаг не влияет.
+      # Windows: 7-Zip (есть на раннере) читает список файлов установщика, ничего
+      # не устанавливая; не прочёл — ставим молча во временную папку и ищем там.
+      - name: Лицензия шрифта — внутри установщика (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "${{ matrix.bundles }}/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { Write-Host "установщик не найден"; exit 1 }
+          $listing = ""
+          if (Get-Command 7z -ErrorAction SilentlyContinue) { $listing = (& 7z l $setup.FullName | Out-String) }
+          if ($listing -match "Inter-OFL\.txt") {
+            Write-Host "Inter-OFL.txt есть в установщике (список 7-Zip)"
+            exit 0
+          }
+          Write-Host "Список 7-Zip файла не показал — ставим установщик молча и смотрим установленное"
+          $dir = Join-Path $env:RUNNER_TEMP "genmetric-install"
+          Start-Process -FilePath $setup.FullName -ArgumentList "/S", "/D=$dir" -Wait
+          $found = Get-ChildItem $dir -Recurse -Filter "Inter-OFL.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $found) {
+            Get-ChildItem $dir -Recurse -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { Write-Host $_.FullName }
+            Write-Host "Inter-OFL.txt в установленной программе не найден"
+            exit 1
+          }
+          Write-Host "Inter-OFL.txt установлен: $($found.FullName)"
+          exit 0
+
+      - name: Лицензия шрифта — внутри образа (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          dmg=$(find "${{ matrix.bundles }}/dmg" -name "*.dmg" -print -quit)
+          test -n "$dmg" || { echo "образ .dmg не найден"; exit 1; }
+          mount=$(mktemp -d)
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount" >/dev/null
+          # Нечитаемая служебная папка тома не должна ронять шаг: решает то, найден ли файл.
+          found=$(find "$mount" -type f -name "Inter-OFL.txt" -print -quit 2>/dev/null || true)
+          echo "$found"
+          hdiutil detach "$mount" >/dev/null || true
+          test -n "$found" || { echo "Inter-OFL.txt в образе не найден"; exit 1; }
+
       - uses: actions/upload-artifact@v7
         with:
           name: genmetric-${{ matrix.title }}

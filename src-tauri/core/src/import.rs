@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn imports_fixture() {
         let Some(seed) = seed() else {
-            eprintln!("нет resources/seed.sqlite — тест импорта пропущен");
+            crate::seed_missing("тест импорта пропущен");
             return;
         };
         let bytes = include_bytes!("../../../db/fixtures/indexer.xlsx");

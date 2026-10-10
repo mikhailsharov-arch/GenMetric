@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
@@ -45,6 +45,9 @@ struct App {
     /// Файл Excel для импорта: приходит из окна частями (он 7 МБ; байты —
     /// обычными аргументами, инцидент 13.09.2026) и ждёт здесь команды.
     import_file: Mutex<Vec<u8>>,
+    /// Упоминания открытого прихода для экрана «Поиск» и счётчик изменений
+    /// соединения, при котором они прочитаны (search.rs, `Index`).
+    search: Mutex<Option<(i64, Arc<genmetric_core::search::Index>)>>,
     data_dir: PathBuf,
     /// База поставки внутри программы: из неё создаётся и обновляется каждый приход.
     bundled: Result<PathBuf, String>,
@@ -148,20 +151,35 @@ fn write_log(path: &Path, text: &str) {
     }
 }
 
+/// Замок соединения. Отравленный паникой прошлой команды берётся всё равно:
+/// соединение цело, а отказ означал бы, что до перезапуска не работает ничего
+/// — ни набор, ни сохранение (до 10.10.2026 так и было, а импорт и смена
+/// прихода такой замок молча пропускали).
+fn lock_conn<'a>(app: &'a App) -> MutexGuard<'a, Option<Connection>> {
+    app.conn.lock().unwrap_or_else(|poisoned| {
+        write_log(&app.log_path, "Замок базы остался от команды, упавшей с внутренней ошибкой, — работа продолжается");
+        app.conn.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// Память экрана «Поиск» больше не годится: открыт другой приход или файл.
+fn drop_search(app: &App) {
+    *app.search.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// Оборачивает работу с базой: логирует неудачу и возвращает её наверх.
+///
+/// Работа идёт под перехватом паники: обычная команда окна исполняется в
+/// главном потоке, и паника в ней закрывала программу вместе с набранным в
+/// форме. Теперь это ошибка в окне и строка в журнале; начатую и не
+/// законченную транзакцию откатываем сами.
 fn with_conn<T>(
     app: &State<App>,
     what: &str,
     body: impl FnOnce(&Connection) -> Result<T, String>,
 ) -> Result<T, String> {
-    let guard = match app.conn.lock() {
-        Ok(g) => g,
-        Err(e) => {
-            let msg = format!("{what}: не удалось получить доступ к базе ({e})");
-            write_log(&app.log_path, &msg);
-            return Err(msg);
-        }
-    };
+    let guard = lock_conn(app);
     let conn = match guard.as_ref() {
         Some(c) => c,
         None => {
@@ -170,7 +188,8 @@ fn with_conn<T>(
             return Err(msg);
         }
     };
-    body(conn).map_err(|e| {
+    let done = genmetric_core::guarded_db(conn, body);
+    done.map_err(|e| {
         let msg = format!("{what}: {e}");
         write_log(&app.log_path, &msg);
         msg
@@ -842,7 +861,9 @@ fn import_archive(app: State<App>, bytes: Vec<u8>) -> Result<ImportReport, Strin
 
     let result = with_conn(&app, "Загрузка архива", |conn| {
         conn.execute("ATTACH DATABASE ?1 AS archive", [&tmp_str]).map_err(|e| e.to_string())?;
-        let done = (|| -> Result<ImportReport, String> {
+        // Под своим перехватом: паника посреди слияния не должна оставить
+        // архив подключённым — отключение ниже идёт в любом случае.
+        let done = genmetric_core::guarded_db(conn, |conn| -> Result<ImportReport, String> {
             let count = |sql: &str| -> Result<i64, String> {
                 conn.query_row(sql, [], |r| r.get(0)).map_err(|e| e.to_string())
             };
@@ -880,7 +901,7 @@ fn import_archive(app: State<App>, bytes: Vec<u8>) -> Result<ImportReport, Strin
                 places_added: count("SELECT count(*) FROM place")? - before.3,
                 source,
             })
-        })();
+        });
         // Слияние — одна транзакция внутри import_archive.sql. Если пакет
         // упал посередине, транзакция осталась открытой: DETACH в ней не
         // выполнится, а соединение зависнет в ней до перезапуска. Откатываем
@@ -941,24 +962,42 @@ fn suggest_spouse(app: State<App>, husband: String, place: Option<String>) -> Re
     })
 }
 
+/// Упоминания открытого прихода для поиска: из памяти, пока база не менялась
+/// (счётчик изменений соединения тот же), иначе — прочитать заново. Замок
+/// базы держим только на время чтения; сам поиск идёт уже без него.
+fn search_index(app: &State<App>, what: &str) -> Result<Arc<genmetric_core::search::Index>, String> {
+    with_conn(app, what, |conn| {
+        let now = genmetric_core::search::changes(conn)?;
+        let mut cache = app.search.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, index)) = cache.as_ref() {
+            if *at == now {
+                return Ok(index.clone());
+            }
+        }
+        let index = Arc::new(genmetric_core::search::Index::load(conn)?);
+        *cache = Some((now, index.clone()));
+        Ok(index)
+    })
+}
+
 /// Экран «Поиск»: найденные персоны — один ИОФ в одном НП (search.rs).
+/// async — не в главном потоке: поиск идёт на каждую набранную букву, и на
+/// большом приходе окно не должно замирать.
 #[tauri::command]
-fn search_persons(app: State<App>, filter: genmetric_core::search::Filter)
+async fn search_persons(app: State<'_, App>, filter: genmetric_core::search::Filter)
     -> Result<genmetric_core::search::Found, String>
 {
-    with_conn(&app, &format!("Поиск персоны «{}»", filter.query), |conn| {
-        genmetric_core::search::find(conn, &filter)
-    })
+    let index = search_index(&app, &format!("Поиск персоны «{}»", filter.query))?;
+    Ok(genmetric_core::search::find_in(&index, &filter))
 }
 
 /// Досье выбранной персоны: все записи, где стоит её ИОФ в этом НП.
 #[tauri::command]
-fn person_dossier(app: State<App>, key: String, place: String, filter: genmetric_core::search::Filter)
+async fn person_dossier(app: State<'_, App>, key: String, place: String, filter: genmetric_core::search::Filter)
     -> Result<genmetric_core::search::Dossier, String>
 {
-    with_conn(&app, &format!("Досье «{key}»"), |conn| {
-        genmetric_core::search::dossier(conn, &key, &place, &filter)
-    })
+    let index = search_index(&app, &format!("Досье «{key}»"))?;
+    Ok(genmetric_core::search::dossier_in(&index, &key, &place, &filter))
 }
 
 #[derive(Serialize)]
@@ -1454,7 +1493,8 @@ fn switch_parish(app: &State<App>, window: &tauri::Window, id: i64) -> Result<St
         msg
     };
     let bundled = bundled_seed(app).map_err(fail)?;
-    let mut guard = app.conn.lock().map_err(|e| fail(e.to_string()))?;
+    let mut guard = lock_conn(app);
+    drop_search(app);
     // Тот же приход открыт сейчас: два соединения с одним файлом и общим
     // файлом ни к чему — закрываем прежнее заранее.
     let same = app.parish.lock().map(|p| p.0 == id).unwrap_or(false);
@@ -1585,9 +1625,8 @@ async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, fi
     let current = app.parish.lock().map(|p| p.0).unwrap_or(1);
     let was_open = replace == Some(current);
     if was_open {
-        if let Ok(mut guard) = app.conn.lock() {
-            *guard = None;
-        }
+        *lock_conn(&app) = None;
+        drop_search(&app);
     }
     let made = parish::create_with(&app.data_dir, &bundled, &name, Some((&file_name, bytes.len() as i64)),
                                    replace, |conn| genmetric_core::import::import_into(conn, bytes));
@@ -1596,9 +1635,7 @@ async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, fi
         Err(e) => {
             if was_open {
                 // Вернуть прежний приход, чтобы окно не осталось без базы.
-                if let Ok(mut guard) = app.conn.lock() {
-                    *guard = parish::open(&app.data_dir, &bundled, current).ok().map(|o| o.conn);
-                }
+                *lock_conn(&app) = parish::open(&app.data_dir, &bundled, current).ok().map(|o| o.conn);
             }
             return Err(fail(e));
         }
@@ -1666,6 +1703,7 @@ fn main() {
                 parish: Mutex::new(current),
                 warning: Mutex::new(warning),
                 import_file: Mutex::new(Vec::new()),
+                search: Mutex::new(None),
                 data_dir,
                 bundled,
                 log_path,

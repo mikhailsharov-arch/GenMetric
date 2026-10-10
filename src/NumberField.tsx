@@ -23,10 +23,12 @@ type Props = {
    *  само (месяц крещения, месяц погребения), править его — мышью (Роман
    *  03.10 и 05.10.2026). */
   noTab?: boolean;
+  /** Человек ушёл из поля — значение набрано до конца (месяц по дню, month.ts). */
+  onLeave?: () => void;
 };
 
 export default function NumberField({
-  label, value, onChange, min = 0, max: limit, width, inputRef, noTab,
+  label, value, onChange, min = 0, max: limit, width, inputRef, noTab, onLeave,
 }: Props) {
   const max = limit ?? 9999;
   const own = useRef<HTMLInputElement>(null);
@@ -115,6 +117,7 @@ export default function NumberField({
               onChange(null);
               reject();
             }
+            onLeave?.();
           }}
           onKeyDown={onKeyDown}
         />

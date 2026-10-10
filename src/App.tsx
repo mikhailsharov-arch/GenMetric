@@ -106,7 +106,16 @@ export default function App() {
       if (!isF || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
       // Свой поиск вместо поиска по странице, который есть у окна программы.
       e.preventDefault();
-      if (document.querySelector(".modal")) return;
+      // Открыто окно с вопросом: сначала ответ в нём. Окно коротко мигает
+      // рамкой — иначе клавиша молча не делала ничего (проверяющий 09.10.2026).
+      const modal = document.querySelector<HTMLElement>(".modal");
+      if (modal) {
+        modal.classList.remove("nudge");
+        void modal.offsetWidth; // перезапуск мигания при повторном нажатии
+        modal.classList.add("nudge");
+        window.setTimeout(() => modal.classList.remove("nudge"), 700);
+        return;
+      }
       openSearch(document.activeElement as HTMLElement | null);
     };
     document.addEventListener("keydown", on, true);
