@@ -843,19 +843,20 @@ button.toggle { white-space: nowrap; }
 .searchhead h2 { margin: 0; flex: 1; }
 .searchhead .toggle { width: auto; }
 .searchfields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 0.8em; margin-top: 0.3em; }
-@media (min-width: 40em) { .searchfields { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+/* Пороги — в em колонки (шрифт 15px), прежние были в em окна (16px): те же точки при масштабе 100 %. */
+@container app (min-width: 42.7em) { .searchfields { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
 .searchopts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3em 1.2em; margin-top: 0.3em; }
 .searchyears { display: inline-flex; align-items: center; gap: 0.35em; font-size: 0.82rem; color: var(--muted); }
 .searchyears input { width: 3.6em; padding: 0.1em 0.3em; text-align: center; }
 
 /* Список слева, досье справа; на узком окне — друг под другом. */
 .searchbody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5em; align-items: start; }
-@media (min-width: 52em) {
+@container app (min-width: 55.5em) {
   .searchbody { grid-template-columns: minmax(16em, 24em) minmax(0, 1fr); }
   .searchlist { position: sticky; top: 0.4em; max-height: calc(100vh - 1em); overflow-y: auto; }
 }
 .searchpersons { list-style: none; margin: 0; padding: 0; max-height: 16em; overflow-y: auto; }
-@media (min-width: 52em) { .searchpersons { max-height: none; } }
+@container app (min-width: 55.5em) { .searchpersons { max-height: none; } }
 .searchpersons li {
   display: flex; justify-content: space-between; align-items: baseline; gap: 0.6em;
   padding: 0.2em 0.5em;
@@ -930,7 +931,7 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
 /* Верхняя строка в узком окне — в один ряд: число процентов между «А−» и
    «А+» прячется (оно во всплывающей подписи), вкладки чуть теснее. Высота —
    самый дефицитный ресурс формы, а перенос стоил целого ряда. */
-@media (max-width: 26em) {
+@container app (max-width: 27.7em) {
   .scale-value { display: none; }
   .topbar { gap: 0.25em; }
   .tabs { gap: 0.2em; }
@@ -944,3 +945,94 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
    135 % в окне уже 440 px выводило страницу за край (проверяющий 10.10.2026). */
 .personhead { flex-wrap: wrap; }
 .clergyrow > .clergyselect { text-overflow: ellipsis; }
+
+/* ==========================================================================
+   Сканы рядом с формой (10.10.2026, спека 2026-10-10-skany-ryadom-s-formoj)
+   ========================================================================== */
+
+/* Правила раскладки, зависящие от ширины, считают её по колонке программы, а
+   не по окну: рядом со сканом окно широкое, а колонка формы узкая. Обёртка
+   нужна потому, что блок не может быть контейнером сам для себя. */
+.shell { container: app / inline-size; }
+.shell.withscan {
+  container-type: normal;
+  display: flex;
+  align-items: flex-start;
+}
+.shell.withscan > .appcol {
+  container: app / inline-size;
+  flex: 0 1 var(--formw);
+  width: var(--formw);
+  min-width: 0;
+}
+.shell.withscan .app { max-width: none; margin: 0; }
+
+/* Граница между формой и сканом. */
+.scansplit {
+  flex: 0 0 0.45em;
+  align-self: stretch;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  cursor: col-resize;
+  background: var(--line);
+  touch-action: none;
+}
+.scansplit:hover { background: var(--accent); }
+
+/* Блок скана: вся высота окна, на месте при прокрутке формы. */
+.scanpane {
+  flex: 1 1 0;
+  min-width: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #2a2a2a;
+}
+.scanbar {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.25em 0.4em;
+  background: var(--bg, #fff);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.scanname {
+  flex: 1 1 8em;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scanname b { color: var(--ink); font-weight: 600; }
+.scantools { display: flex; gap: 0.3em; flex-wrap: wrap; }
+.scanview { flex: 1 1 0; min-height: 0; }
+.scanempty {
+  margin: auto;
+  max-width: 30em;
+  padding: 1.2em;
+  text-align: center;
+  background: var(--bg, #fff);
+  border-radius: 8px;
+}
+.scanempty p { margin: 0 0 0.6em; }
+.scanproblem {
+  margin: 0;
+  padding: 0.3em 0.6em;
+  font-size: 0.85rem;
+  background: #fdecea;
+  color: #7a1f1f;
+}
+.scanblock { margin-top: 0.6em; }
+.scanlink { margin-left: 0.5em; font-size: 0.85em; }
+.scanbind { font-weight: normal; }
+
+/* Окно с вопросом при включённом скане — только над колонкой формы: скан
+   рядом виден и доступен мыши (сверить имя по скану — главный случай). */
+body.withscan .overlay { right: auto; width: var(--formw); }
+.scanpane { min-width: 12em; }

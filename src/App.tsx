@@ -12,6 +12,7 @@ import { report, warn } from "./errors";
 import { dirtyForms } from "./dirty";
 import { FIELDS } from "./focus";
 import ArchiveBlock from "./ArchiveBlock";
+import { ScanCaseBlock, ScanProvider, ScanShell } from "./scan";
 import SearchScreen, { type SearchRequest } from "./SearchScreen";
 
 type Startup = {
@@ -219,6 +220,8 @@ export default function App() {
   }
 
   return (
+    <ScanProvider year={mkCase?.year ?? null} ready={!!startup && !startup.error}>
+    <ScanShell>
     <div className={screen === "search" ? "app wide" : "app"}>
       <ErrorBar />
       {/* Заголовок, вкладки и размер шрифта — одной строкой. Высота — самый
@@ -287,6 +290,7 @@ export default function App() {
                           и поручителем. Ctrl+F из блока персоны при наборе ищет сразу её.
                         </p>
                       </div>
+                      <ScanCaseBlock />
                       <OneColumn on={oneColumn} onToggle={toggleOneColumn} />
                     </>} />
       </div>
@@ -368,6 +372,8 @@ export default function App() {
           <p className="hint">
             Шрифт интерфейса — Inter, © The Inter Project Authors, лицензия SIL Open Font
             License 1.1 (текст лицензии — файл Inter-OFL.txt в папке программы).
+            Просмотрщик сканов — OpenSeadragon, © OpenSeadragon contributors, лицензия BSD 3-Clause
+            (файл OpenSeadragon-LICENSE.txt там же).
           </p>
           {info.repaired_entries > 0 && (
             <p className="hint">
@@ -427,5 +433,7 @@ export default function App() {
         </footer>
       )}
     </div>
+    </ScanShell>
+    </ScanProvider>
   );
 }

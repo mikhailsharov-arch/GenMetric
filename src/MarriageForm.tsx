@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person } from "./PersonBlock";
@@ -71,6 +72,7 @@ function splitSide(note: string | null, fallback: string): { side: string; note:
 }
 
 type Brief = {
+  scan_file?: string | null;
   id: number; page: string | null; no_male: number | null;
   event_day: number | null; event_month: number | null; event_year: number | null;
   groom: string | null; bride: string | null; clergy_noname: boolean;
@@ -82,6 +84,7 @@ type MentionOut = {
   note: string | null; age_years: number | null; marriage_order: string | null; kinship: string | null;
 };
 type EntryFull = {
+  scan_file?: string | null;
   id: number; page: string | null; no_male: number | null; event_day: number | null;
   event_month: number | null; event_year: number | null; note: string | null; persons: MentionOut[];
 };
@@ -124,6 +127,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                                month: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
+  // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
+  const entryScan = useEntryScan(editingId !== null, year);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -298,6 +303,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       const done = await invoke<{ id: number; case_id: number; new_case_year: number | null;
                                   fallback_case: boolean; fallback_year: number | null }>("entry_save", {
         entry: {
+          scan_file: entryScan.forSave(),
           id: editingId, case_id: mkCase.id, section: 2, page,
           no_male: count, no_female: null,
           event_day: day, event_month: month, event_year: year,
@@ -368,6 +374,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
+      entryScan.opened(e.scan_file ?? null, e.event_year ?? null);
       if (editingId === null)
         beforeEdit.current = { page, count, year, month };
       witnessPlaceManual.current = [false, false, false, false, false, false];
@@ -411,6 +418,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   function restoreAfterEdit() {
     const b = beforeEdit.current;
     beforeEdit.current = null;
+    entryScan.closed();
     setEditingId(null);
     next();
     if (b) {
@@ -496,6 +504,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись о браке открыта в форме. «Сохранить
           изменения» перепишет её; «Отменить» оставит как была.
+          {entryScan.bar}
           <button type="button" className="toggle" onClick={restoreAfterEdit}>Отменить</button>
         </div>
       )}
@@ -641,6 +650,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                     <button type="button" className="linkish" onClick={() => void openEntry(e.id)}>
                       {e.clergy_noname ? "Открыть — причт без имени" : "Открыть"}
                     </button>
+                    <ScanLink file={e.scan_file} year={e.event_year ?? null} />
                   </td>
                 </tr>
               ))}

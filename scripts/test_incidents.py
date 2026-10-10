@@ -1143,8 +1143,8 @@ def incident_20261008_chistaya_postavka():
     check("«законная жена его» вне поля матери — по званию мужа",
           'hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());' in main_rs
           and "keepWifeRank" in read("src/BirthForm.tsx").split('title="Мать"', 1)[-1][:500])
-    check("версия схемы 10 — в сборщике и в программе",
-          "SCHEMA_VERSION = 10" in build and "SCHEMA_VERSION: i64 = 10" in read("src-tauri/core/src/db.rs"))
+    check("версия схемы 11 — в сборщике и в программе (10 — комментарий пункта, 11 — файл скана у записи)",
+          "SCHEMA_VERSION = 11" in build and "SCHEMA_VERSION: i64 = 11" in read("src-tauri/core/src/db.rs"))
 
 
 def incident_20261009_otvet_na_sborku_08_10():
@@ -1301,11 +1301,102 @@ def incident_20261010_tehnicheskij_sprint():
           "export function marriageLine(" in read("src/dossier.ts") and "marriageLine(event)" in search)
     styles = read("src/styles.css")
     check("верхняя строка в узком окне — в один ряд: число процентов прячется",
-          "@media (max-width: 26em)" in styles and ".scale-value { display: none; }" in styles
+          "@container app (max-width: 27.7em)" in styles and ".scale-value { display: none; }" in styles
           and "title={`Размер шрифта: ${Math.round(STEPS[index] * 100)}%`}" in read("src/FontScale.tsx"))
 
 
+def incident_20261010_skany_ryadom_s_formoj():
+    """
+    10.10.2026, сканы рядом с формой (спека 2026-10-10-skany-ryadom-s-formoj).
+    Не поломки, а то, что стенд нашёл при первой сборке и что нельзя вернуть:
+    щелчок в скане уводил курсор из поля формы (и открывал сверку
+    недописанного имени); разворот, на котором шёл набор, «забывался» после
+    показа записи на правке. Плюс условия доставки: доступ окна только к
+    выбранной папке, лицензия просмотрщика в установщике.
+    """
+    scan = read("src/scan.tsx")
+    check("щелчок в скане не уводит курсор из поля: просмотрщик фокус не берёт, нажатие мыши не переводит его",
+          "v.canvas.focus = () => undefined;" in scan and "onMouseDownCapture={(e) => e.preventDefault()}" in scan
+          and "keyboardNavEnabled: false" in scan)
+    check("кнопки блока скана курсор у формы не забирают",
+          "const keep = { onMouseDown: (e: React.MouseEvent) => e.preventDefault() };" in scan and scan.count("{...keep}") >= 7)
+    remember = scan.split("const remembered = useRef", 1)[-1].split("const scan = useMemo", 1)[0]
+    check("открытый разворот запоминается, только когда запись ушла, и не во время показа записи на правке",
+          "held.current !== null" in remember
+          and remember.index("window.setTimeout") < remember.index("remembered.current = `${year}|${file}`;"))
+    check("на следующем развороте — то же место: набор картинок у просмотрщика один, с сохранением вида",
+          "sequenceMode: true" in scan and "preserveViewport: true" in scan)
+    entry = scan.split("export function useEntryScan", 1)[-1].split("export function ScanLink", 1)[0]
+    check("запись на правке свой файл скана не теряет, не меняет и чужой не получает без «привязать»",
+          "return rebind && open ? open : own;" in entry and "if (!editing) return open;" in entry
+          and 'data-scan-bind="none"' in entry)
+    check("новая запись получает разворот только из папки дела своего года; ссылка «скан» — тоже",
+          "current: (formYear) => (on && (year === null || formYear === year) ? file : null)," in scan
+          and 'if (entryYear !== year) return "другое дело";' in scan
+          and "if (!name || entryYear !== year) return;" in scan)
+    check("показ разворота по ссылке «скан» не затирает место набора",
+          'leave(away ?? "link", i);' in scan and "data-scan-back" in scan)
+    forms = [read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")]
+    check("три формы пишут файл скана, показывают разворот при «Открыть» и возвращают место набора после правки",
+          all("scan_file: entryScan.forSave()," in f and "entryScan.opened(e.scan_file ?? null, " in f
+              and "entryScan.closed();" in f and "<ScanLink file={e.scan_file} year={" in f
+              and "useEntryScan(editingId !== null, year)" in f for f in forms))
+    records = read("src-tauri/core/src/records.rs")
+    check("в базу идёт только имя файла, без пути",
+          "f.rsplit(['/', '\\\\']).next()" in records and '":scan_file": scan_file' in records)
+    statements = read("db/statements.sql")
+    check("колонка файла скана — в схеме и в запросах записи, списка и досье",
+          "scan_file      TEXT" in read("db/schema.sql")
+          and statements.count(":scan_file") == 2 and statements.count("e.scan_file") == 2
+          and "note, scan_file\n  FROM entry" in statements)
+    main_rs = read("src-tauri/src/main.rs")
+    conf = read("src-tauri/tauri.conf.json")
+    check("окно получает доступ только к выбранной папке: в конфигурации список путей пуст, папку разрешает Rust",
+          '"assetProtocol": {\n        "enable": true,\n        "scope": []' in conf
+          and "asset_protocol_scope().allow_directory(dir, false)" in main_rs
+          and "img-src 'self' asset: http://asset.localhost" in conf)
+    check("окно выбора папки открывает Rust: команд плагина у страницы нет (он разрешил бы папку с вложенными)",
+          "blocking_pick_folder()" in main_rs and "dialog:" not in read("src-tauri/capabilities/default.json")
+          and "@tauri-apps/plugin-dialog" not in scan and "plugin-dialog" not in read("package.json"))
+    check("чужой файл, брошенный на окно, папку сканов не меняет",
+          "if !genmetric_core::scans::is_scan(&name) {" in main_rs and "if dropped == Some(true) {" in main_rs
+          and "dropped: true" in scan)
+    # 10.10.2026: openseadragon стоял в node_modules, но не в package.json —
+    # локально всё собиралось, а конвейер (npm ci) упал бы. Каждый внешний
+    # пакет, который импортирует окно, обязан быть в зависимостях и в лок-файле.
+    import json
+    import re as _re
+    package = json.loads(read("package.json"))
+    lock = json.loads(read("package-lock.json"))
+    declared = set(package.get("dependencies", {}))
+    used = set()
+    for path in sorted((REPO / "src").rglob("*.ts*")):
+        for name in _re.findall(r'''(?:from\s+|import\(\s*)["\']([^."\'][^"\']*)["\']''', path.read_text(encoding="utf-8")):
+            parts = name.split("/")
+            used.add("/".join(parts[:2]) if name.startswith("@") else parts[0])
+    missing = sorted(u for u in used if u not in declared or f"node_modules/{u}" not in lock.get("packages", {}))
+    check("каждый пакет, который импортирует окно, записан в package.json и package-lock.json",
+          not missing and "openseadragon" in used, f"нет в зависимостях: {missing}; импортируется: {sorted(used)}")
+    check("папка сканов — настройка прихода по году дела, вид окна — общая настройка",
+          'format!("scan_dir_{y}")' in main_rs
+          and all(k in read("src-tauri/core/src/parish.rs").split("pub const COMMON_SETTINGS", 1)[-1].split(";", 1)[0]
+                  for k in ('"ui_scan_on"', '"ui_scan_form_width"'))
+          and "scan_dir" not in read("src-tauri/core/src/parish.rs").split("pub const COMMON_SETTINGS", 1)[-1].split(";", 1)[0])
+    check("лицензия просмотрщика — в ресурсах установщика и в проверках конвейера",
+          '"resources/OpenSeadragon-LICENSE.txt"' in conf
+          and "OpenSeadragon contributors" in read("src-tauri/resources/OpenSeadragon-LICENSE.txt")
+          and read(".github/workflows/build.yml").count("OpenSeadragon-LICENSE.txt") >= 3)
+    styles = read("src/styles.css")
+    check("правила раскладки по ширине считают колонку программы, а не окно",
+          "@media" not in styles and ".shell.withscan > .appcol {" in styles and "container: app / inline-size;" in styles)
+    for form in ("BirthForm", "DeathForm"):
+        text = read(f"src/{form}.tsx")
+        check(f"{form}: год без записей, про который нечего сказать, не становится точкой отсчёта января",
+              "if (prev === null || monthManual.current || saved[0] || guess !== null) monthYear.current = year;" in text)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261010_skany_ryadom_s_formoj,
     incident_20261010_tehnicheskij_sprint,
     incident_20261009_otvet_na_sborku_08_10,
     incident_20261008_chistaya_postavka,

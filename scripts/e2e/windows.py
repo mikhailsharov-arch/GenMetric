@@ -656,6 +656,84 @@ def run(driver, wait, archive):
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
     time.sleep(0.5)
 
+    print("\n5е. Сканы рядом с формой — картинка из папки на диске в настоящем WebView2")
+    # Главное, чего не видит стенд: окно показывает файл с диска через протокол
+    # asset (разрешение на папку выдаёт Rust), а просмотрщик берёт его в режиме
+    # WebGL или canvas. Системное окно выбора папки роботу недоступно — путь
+    # даёт подмена window.__pickScanDir, дальше всё настоящее.
+    import shutil
+    import tempfile
+    # resolve(): на Windows временная папка приходит коротким именем (RUNNER~1),
+    # а разрешение на папку сверяется с полным путём.
+    scans = Path(tempfile.mkdtemp(prefix="genmetric-scans-")).resolve() / "дело 1897"
+    scans.mkdir()
+    sample = Path(__file__).with_name("scan.jpg")
+    for name in ("лист 10.jpg", "лист 2.JPG", "лист 1.jpg"):
+        shutil.copyfile(sample, scans / name)
+    (scans / "заметки.txt").write_text("не скан", encoding="utf-8")
+
+    def scan_attr(name):
+        return driver.execute_script(
+            "const p = document.querySelector('[data-scan]'); return p ? p.getAttribute(arguments[0]) : null;", name)
+
+    width_before = driver.execute_script("return window.innerWidth;")
+    driver.execute_script("window.__pickScanDir = () => arguments[0];", str(scans))
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    wait_for(lambda: bool(driver.execute_script(
+        "const b = document.querySelector('[data-scan-pick]'); return !!b && b.offsetParent !== null;")))
+    driver.execute_script("const b = document.querySelector('[data-scan-pick]'); b.scrollIntoView({block: 'center'}); b.click();")
+    check("выбрали папку — блок скана появился, в нём три файла (текстовый не в счёт)",
+          wait_for(lambda: scan_attr("data-scan-count") == "3"),
+          f"файлов: {scan_attr('data-scan-count')} | {error_details(driver)}")
+    check("файлы по порядку имён: первый — «лист 1.jpg»", scan_attr("data-scan-file") == "лист 1.jpg",
+          str(scan_attr("data-scan-file")))
+    shown_first = wait_for(lambda: scan_attr("data-scan-loaded") == "лист 1.jpg", 20)
+    check("картинка с диска показана в окне (протокол asset, просмотрщик)", shown_first and not scan_attr("data-scan-problem"),
+          f"показан: {scan_attr('data-scan-loaded')!r}, беда: {scan_attr('data-scan-problem')!r} | {error_details(driver)}")
+    drawn = driver.execute_script(
+        "const c = document.querySelector('[data-scan] .scanview canvas'); return c ? [c.width, c.height] : null;")
+    check("у просмотрщика есть холст с ненулевым размером", bool(drawn) and drawn[0] > 0 and drawn[1] > 0, str(drawn))
+    wait_for(lambda: driver.execute_script("return window.innerWidth;") >= 600, 5)
+    width_on = driver.execute_script("return window.innerWidth;")
+    check("окно расширилось под скан (или уже было широким)", width_on >= width_before and width_on >= 600,
+          f"было {width_before}, стало {width_on}")
+    driver.execute_script("document.querySelector('[data-scan-next]').click();")
+    check("«→» — следующий разворот «лист 2.JPG», и он показан",
+          wait_for(lambda: scan_attr("data-scan-loaded") == "лист 2.JPG", 20), str(scan_attr("data-scan-loaded")))
+    # Щелчок в скане не уводит курсор из поля формы; Alt+PageDown листает из поля.
+    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    time.sleep(0.5)
+    child_field = field(driver, "Ребёнок")
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].focus();", child_field)
+    view = driver.find_element(By.CSS_SELECTOR, "[data-scan] .scanview")
+    ActionChains(driver).move_to_element(view).click().perform()
+    time.sleep(0.3)
+    check("щелчок в скане оставляет курсор в поле «Ребёнок»", driver.execute_script(
+        "const a = document.activeElement; const f = a && a.closest('.field');"
+        "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"),
+        str(driver.execute_script("const a = document.activeElement; return a ? a.tagName + '.' + a.className : null;")))
+    ActionChains(driver).key_down(Keys.ALT).send_keys(Keys.PAGE_DOWN).key_up(Keys.ALT).perform()
+    check("Alt+PageDown из поля — последний разворот «лист 10.jpg»",
+          wait_for(lambda: scan_attr("data-scan-file") == "лист 10.jpg", 5), str(scan_attr("data-scan-file")))
+    # Запись через настоящий Rust: файл скана сохраняется без пути и читается обратно.
+    saved_scan = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  const last = (await call('entry_list', {section: 1, year: null, last: true}))[0];"
+        "  const full = await call('entry_load', {id: last.id});"
+        "  return {id: last.id, has: 'scan_file' in full, value: full.scan_file, list: 'scan_file' in last};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("запись читается с полем файла скана (у прежней записи оно пусто)",
+          "error" not in saved_scan and saved_scan.get("has") and saved_scan.get("list") and saved_scan.get("value") is None,
+          str(saved_scan))
+    driver.execute_script("document.querySelector('[data-scan-hide]').click();")
+    check("«скрыть» убирает блок, окно возвращается к прежней ширине",
+          wait_for(lambda: scan_attr("data-scan-count") is None)
+          and wait_for(lambda: driver.execute_script("return window.innerWidth;") <= width_before + 2, 5),
+          f"ширина {driver.execute_script('return window.innerWidth;')}, была {width_before}")
+    shutil.rmtree(scans.parent, ignore_errors=True)
+
     print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")
     # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его
     # явно не выключили (Роман 07.10.2026).

@@ -41,6 +41,10 @@ export type DossierEvent = {
   month: number | null;
   page: string | null;
   note: string | null;
+  /** Файл скана разворота этой записи (search.rs, Event). */
+  scan_file?: string | null;
+  /** Год книги записи (её дело): папка сканов — у дела. */
+  book_year?: number | null;
   me: Mention;
   others: Mention[];
 };

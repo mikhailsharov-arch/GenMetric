@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension};
 
 /// Версия схемы, которую понимает эта сборка.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// Признак копии перед обновлением в имени файла.
 pub const BACKUP_MARK: &str = "-до-обновления-";

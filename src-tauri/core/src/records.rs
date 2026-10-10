@@ -541,6 +541,10 @@ pub struct EntryInput {
     pub rite_year: Option<i64>,
     pub note: Option<String>,
     pub uncertain: Option<String>,
+    /// Файл скана разворота — имя без пути (схема 11). Окно прежней сборки
+    /// его не присылает — тогда пусто.
+    #[serde(default)]
+    pub scan_file: Option<String>,
     pub persons: Vec<PersonInput>,
 }
 
@@ -642,6 +646,9 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 (found.map(|f| f.0).unwrap_or(entry.case_id), None)
             }
         };
+        // Только имя файла: путь к папке сканов у каждого компьютера свой.
+        let scan_file = entry.scan_file.as_deref().map(str::trim).filter(|f| !f.is_empty())
+            .map(|f| f.rsplit(['/', '\\']).next().unwrap_or(f).to_string());
         let entry_id = match entry.id {
             Some(id) => {
                 conn.execute(&statement("entry_update")?, rusqlite::named_params! {
@@ -650,7 +657,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                     ":event_month": entry.event_month, ":event_year": entry.event_year,
                     ":rite_day": entry.rite_day, ":rite_month": entry.rite_month,
                     ":rite_year": entry.rite_year, ":note": entry.note,
-                    ":uncertain": entry.uncertain,
+                    ":uncertain": entry.uncertain, ":scan_file": scan_file,
                 }).map_err(|e| e.to_string())?;
                 id
             }
@@ -662,7 +669,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                     ":event_year": entry.event_year, ":rite_day": entry.rite_day,
                     ":rite_month": entry.rite_month, ":rite_year": entry.rite_year,
                     ":note": entry.note, ":uncertain": entry.uncertain,
-                    ":created_by": Option::<String>::None,
+                    ":created_by": Option::<String>::None, ":scan_file": scan_file,
                 }).map_err(|e| e.to_string())?;
                 conn.last_insert_rowid()
             }
@@ -935,7 +942,7 @@ mod tests {
         let entry = EntryInput {
             id: None, case_id: 1, section: 2, page: None, no_male: Some(1), no_female: None,
             event_day: Some(1), event_month: Some(2), event_year: Some(1898),
-            rite_day: None, rite_month: None, rite_year: None, note: None, uncertain: None, persons: vec![],
+            rite_day: None, rite_month: None, rite_year: None, note: None, uncertain: None, scan_file: None, persons: vec![],
         };
         let saved = save_entry(&conn, &entry).unwrap();
         assert_eq!((saved.case_id, saved.new_case_year, count()), (new.id, None, 2));
@@ -986,7 +993,7 @@ mod tests {
         let birth = |persons: Vec<PersonInput>| EntryInput {
             id: None, case_id: 1, section: 1, page: None, no_male: Some(1), no_female: None,
             event_day: None, event_month: None, event_year: Some(1897), rite_day: None, rite_month: None,
-            rite_year: Some(1897), note: None, uncertain: None, persons,
+            rite_year: Some(1897), note: None, uncertain: None, scan_file: None, persons,
         };
         // Два тёзки «Иван Капитонов»: в Фетинине жена Анна, в Воспице — Олимпиада (дважды).
         save_entry(&conn, &birth(vec![person("father", "Иван", "Капитонов", None, Some("Фетинино"), "М"),
@@ -1096,7 +1103,7 @@ mod tests {
         let entry = EntryInput {
             id: None, case_id: 1, section: 1, page: None, no_male: None, no_female: Some(1),
             event_day: None, event_month: None, event_year: Some(1897), rite_day: None, rite_month: None,
-            rite_year: Some(1897), note: None, uncertain: None,
+            rite_year: Some(1897), note: None, uncertain: None, scan_file: None,
             persons: vec![person("mother", "***", "Томилина"), person("godparent1", "Анна", "Томилина")],
         };
         save_entry(&conn, &entry).unwrap();
@@ -1144,7 +1151,7 @@ mod tests {
         ].into_iter().enumerate() {
             save_entry(&conn, &EntryInput { id: None, case_id: 1, section: 1, page: None, no_male: None,
                 no_female: Some(i as i64 + 2), event_day: None, event_month: None, event_year: Some(1897),
-                rite_day: None, rite_month: None, rite_year: Some(1897), note: None, uncertain: None, persons: people }).unwrap();
+                rite_day: None, rite_month: None, rite_year: Some(1897), note: None, uncertain: None, scan_file: None, persons: people }).unwrap();
         }
         assert_eq!(default_rank(&conn, "godparent%", Some("Ж")).unwrap().as_deref(), Some("крестьянская девица"));
         assert_eq!(default_rank(&conn, "godparent%", Some("М")).unwrap().as_deref(), Some("крестьянин"));
@@ -1185,7 +1192,7 @@ mod tests {
         // Запись без года с убранным делом не падает.
         let mut loose = EntryInput { id: None, case_id: 999, section: 2, page: None, no_male: None, no_female: None,
             event_day: None, event_month: None, event_year: None, rite_day: None, rite_month: None, rite_year: None,
-            note: None, uncertain: None, persons: vec![] };
+            note: None, uncertain: None, scan_file: None, persons: vec![] };
         let moved = save_entry(&conn, &loose).unwrap();
         assert_eq!((moved.case_id, moved.fallback_case, moved.fallback_year), (1, true, Some(1897)));
         // Своё дело на месте — оговорки нет.

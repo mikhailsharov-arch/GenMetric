@@ -113,7 +113,7 @@ class Book:
                     event_day=None, event_month=None, event_year=None,
                     rite_day=None, rite_month=None, rite_year=None, note=None, uncertain=None, created_by=None)
         base.update(e)
-        entry_id = self.db.execute(self.sql["entry_insert"], base).lastrowid
+        entry_id = self.db.execute(self.sql["entry_insert"], {"scan_file": None, **base}).lastrowid
         for i, p in enumerate(persons):
             m = dict(entry_id=entry_id, role_code=None, sort_order=i, surname=None, first_name=None,
                      patronymic=None, surname_modern=None, first_name_modern=None, patronymic_modern=None,

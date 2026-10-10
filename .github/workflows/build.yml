@@ -215,12 +215,16 @@ jobs:
       # с ней. В ресурсах конфигурации она записана с 06.10.2026, но доехала
       # ли до собранной программы — не проверял никто (ревьюер 06.10.2026).
       # Сборщик кладёт ресурсы рядом с программой, оттуда их берёт установщик.
-      - name: Лицензия шрифта лежит рядом с собранной программой
+      # С 10.10.2026 в программе ещё и просмотрщик сканов OpenSeadragon (BSD-3):
+      # его лицензия едет так же.
+      - name: Лицензии шрифта и просмотрщика лежат рядом с собранной программой
         shell: bash
         run: |
-          found=$(find src-tauri/target -type f -name "Inter-OFL.txt" -path "*release*" -print -quit)
-          echo "$found"
-          test -n "$found" || { echo "Inter-OFL.txt в собранной программе не найден"; exit 1; }
+          for name in Inter-OFL.txt OpenSeadragon-LICENSE.txt; do
+            found=$(find src-tauri/target -type f -name "$name" -path "*release*" -print -quit)
+            echo "$found"
+            test -n "$found" || { echo "$name в собранной программе не найден"; exit 1; }
+          done
 
       # --- сквозная проверка на настоящем Windows ---------------------------
       # 13.09.2026 Роман получил сборку, где кнопка «Загрузить архив» не
@@ -321,31 +325,36 @@ jobs:
       # 09.10.2026). После сквозной проверки: на её итог этот шаг не влияет.
       # Windows: 7-Zip (есть на раннере) читает список файлов установщика, ничего
       # не устанавливая; не прочёл — ставим молча во временную папку и ищем там.
-      - name: Лицензия шрифта — внутри установщика (Windows)
+      - name: Лицензии шрифта и просмотрщика — внутри установщика (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          $names = @("Inter-OFL.txt", "OpenSeadragon-LICENSE.txt")
           $setup = Get-ChildItem "${{ matrix.bundles }}/nsis" -Filter "*-setup.exe" | Select-Object -First 1
           if (-not $setup) { Write-Host "установщик не найден"; exit 1 }
           $listing = ""
           if (Get-Command 7z -ErrorAction SilentlyContinue) { $listing = (& 7z l $setup.FullName | Out-String) }
-          if ($listing -match "Inter-OFL\.txt") {
-            Write-Host "Inter-OFL.txt есть в установщике (список 7-Zip)"
+          $missing = @($names | Where-Object { -not $listing.Contains($_) })
+          if ($missing.Count -eq 0) {
+            Write-Host "Обе лицензии есть в установщике (список 7-Zip)"
             exit 0
           }
-          Write-Host "Список 7-Zip файла не показал — ставим установщик молча и смотрим установленное"
+          Write-Host "Список 7-Zip не показал: $($missing -join ', ') — ставим установщик молча и смотрим установленное"
           $dir = Join-Path $env:RUNNER_TEMP "genmetric-install"
           Start-Process -FilePath $setup.FullName -ArgumentList "/S", "/D=$dir" -Wait
-          $found = Get-ChildItem $dir -Recurse -Filter "Inter-OFL.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $found) {
+          $bad = $false
+          foreach ($name in $names) {
+            $found = Get-ChildItem $dir -Recurse -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { Write-Host "$name установлен: $($found.FullName)" }
+            else { Write-Host "$name в установленной программе не найден"; $bad = $true }
+          }
+          if ($bad) {
             Get-ChildItem $dir -Recurse -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { Write-Host $_.FullName }
-            Write-Host "Inter-OFL.txt в установленной программе не найден"
             exit 1
           }
-          Write-Host "Inter-OFL.txt установлен: $($found.FullName)"
           exit 0
 
-      - name: Лицензия шрифта — внутри образа (macOS)
+      - name: Лицензии шрифта и просмотрщика — внутри образа (macOS)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
@@ -353,11 +362,15 @@ jobs:
           test -n "$dmg" || { echo "образ .dmg не найден"; exit 1; }
           mount=$(mktemp -d)
           hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount" >/dev/null
-          # Нечитаемая служебная папка тома не должна ронять шаг: решает то, найден ли файл.
-          found=$(find "$mount" -type f -name "Inter-OFL.txt" -print -quit 2>/dev/null || true)
-          echo "$found"
+          bad=0
+          for name in Inter-OFL.txt OpenSeadragon-LICENSE.txt; do
+            # Нечитаемая служебная папка тома не должна ронять шаг: решает то, найден ли файл.
+            found=$(find "$mount" -type f -name "$name" -print -quit 2>/dev/null || true)
+            echo "$name: $found"
+            test -n "$found" || { echo "$name в образе не найден"; bad=1; }
+          done
           hdiutil detach "$mount" >/dev/null || true
-          test -n "$found" || { echo "Inter-OFL.txt в образе не найден"; exit 1; }
+          test "$bad" = 0
 
       - uses: actions/upload-artifact@v7
         with:

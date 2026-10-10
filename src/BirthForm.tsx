@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person } from "./PersonBlock";
@@ -59,6 +60,7 @@ const NEW_FATHER = { ...EMPTY_PERSON, confession: CONFESSION };
 const NEW_MOTHER = { ...EMPTY_PERSON, confession: CONFESSION };
 
 type Brief = {
+  scan_file?: string | null;
   id: number;
   page: string | null;
   no_male: number | null;
@@ -232,9 +234,11 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   useEffect(() => {
     if (year === null || year < 1700 || savedYear.current !== year || !autoMonths()) return;
     const prev = monthYear.current;
-    monthYear.current = year;
+    const guess = monthManual.current ? null : monthOnYearChange(prev, year, saved[0], birthDay);
+    // Год без записей, про который сказать нечего, точкой отсчёта не
+    // становится: опечатка в годе (1889 → 1891 → 1890) иначе отнимала январь.
+    if (prev === null || monthManual.current || saved[0] || guess !== null) monthYear.current = year;
     if (monthManual.current) return;
-    const guess = monthOnYearChange(prev, year, saved[0], birthDay);
     // Месяц тот же — не трогаем и месяц обряда: он мог быть восстановлен
     // по последней записи (крещение в следующем месяце).
     if (guess === null || guess === birthMonth) return;
@@ -245,6 +249,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const editingRef = useRef(editingId);
   editingRef.current = editingId;
   const [busy, setBusy] = useState(false);
+  // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
+  const entryScan = useEntryScan(editingId !== null, year);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
   // Поиск внутри своей формы: рядом в DOM скрытые браки и смерти со своими
@@ -663,6 +669,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       const done = await invoke<{ id: number; case_id: number; new_case_year: number | null;
                                   fallback_case: boolean; fallback_year: number | null }>("entry_save", {
         entry: {
+          scan_file: entryScan.forSave(),
           id: editingId,
           case_id: mkCase.id,
           section: 1,
@@ -746,6 +753,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     confession: string | null; place: string | null; note: string | null;
   };
   type EntryFull = {
+  scan_file?: string | null;
     id: number; page: string | null; no_male: number | null; no_female: number | null;
     event_day: number | null; event_month: number | null; event_year: number | null;
     rite_day: number | null; rite_month: number | null; rite_year: number | null;
@@ -769,6 +777,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
+      entryScan.opened(e.scan_file ?? null, e.rite_year ?? e.event_year ?? null);
       if (editingId === null) {
         beforeEdit.current = { page, count, year, birthMonth, riteMonth };
       }
@@ -820,6 +829,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   function restoreAfterEdit() {
     const b = beforeEdit.current;
     beforeEdit.current = null;
+    entryScan.closed();
     setEditingId(null);
     next();
     if (b) {
@@ -905,6 +915,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         <div className="editbar">
           <b>Правка записи</b> — сохранённая запись открыта в форме. «Сохранить
           изменения» перепишет её; «Отменить» оставит как была.
+          {entryScan.bar}
           <button type="button" className="toggle" onClick={cancelEdit}>Отменить</button>
         </div>
       )}
@@ -1153,6 +1164,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
                     <button type="button" className="linkish" onClick={() => void openEntry(e.id)}>
                       {e.clergy_noname ? "Открыть — причт без имени" : "Открыть"}
                     </button>
+                    <ScanLink file={e.scan_file} year={e.rite_year ?? e.event_year ?? null} />
                   </td>
                 </tr>
               ))}

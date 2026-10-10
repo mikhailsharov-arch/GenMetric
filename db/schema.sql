@@ -227,7 +227,11 @@ CREATE TABLE entry (
   uncertain      TEXT,        -- перечень полей, прочитанных неуверенно (JSON-массив)
   created_by     TEXT,        -- кто набрал (передача дела между людьми, ответ 56)
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at     TEXT
+  updated_at     TEXT,
+  -- Файл скана разворота, с которого набрана запись (схема 11, 10.10.2026):
+  -- только имя, без пути — папка сканов дела у каждого компьютера своя и
+  -- лежит в настройках прихода (scan_dir_<год>).
+  scan_file      TEXT
 );
 CREATE INDEX ix_entry_case ON entry (case_id, section, id);
 

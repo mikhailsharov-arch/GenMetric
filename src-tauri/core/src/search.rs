@@ -93,6 +93,10 @@ pub struct Event {
     pub month: Option<i64>,
     pub page: Option<String>,
     pub note: Option<String>,
+    /// Файл скана разворота этой записи — ссылка «скан» в досье.
+    pub scan_file: Option<String>,
+    /// Год книги записи (её дело): папка сканов — у дела.
+    pub book_year: Option<i64>,
     /// Сама персона в этой записи.
     pub me: Mention,
     /// Остальные люди записи, кроме причта, — в порядке записи.
@@ -134,6 +138,8 @@ struct Row {
     month: Option<i64>,
     page: Option<String>,
     entry_note: Option<String>,
+    scan_file: Option<String>,
+    book_year: Option<i64>,
     /// Ключ персоны и слова, по которым её находят, — считаются один раз при
     /// чтении: поиск идёт на каждую набранную букву.
     key: String,
@@ -230,6 +236,8 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
                 month: r.get(24)?,
                 page: blank(r.get(25)?),
                 entry_note: blank(r.get(26)?),
+                scan_file: blank(r.get(27)?),
+                book_year: r.get(28)?,
                 key: String::new(),
                 words: Vec::new(),
                 place_norm: String::new(),
@@ -374,7 +382,7 @@ pub fn dossier_in(index: &Index, key: &str, place: &str, f: &Filter) -> Dossier 
         events.push(Event {
             entry_id: me.entry_id, section: me.section,
             year: me.year, day: me.day, month: me.month,
-            page: me.page.clone(), note: me.entry_note.clone(), me: me.mention(), others,
+            page: me.page.clone(), note: me.entry_note.clone(), scan_file: me.scan_file.clone(), book_year: me.book_year, me: me.mention(), others,
         });
     }
     events.sort_by_key(|e| (e.year.unwrap_or(i64::MAX), e.month.unwrap_or(13), e.day.unwrap_or(32), e.entry_id));
@@ -410,7 +418,7 @@ mod tests {
         EntryInput {
             id: None, case_id: 1, section, page: Some(page.into()), no_male: Some(1), no_female: None,
             event_day: Some(day), event_month: Some(month), event_year: Some(year), rite_day: None, rite_month: None,
-            rite_year: if section == 2 { None } else { Some(year) }, note: None, uncertain: None, persons,
+            rite_year: if section == 2 { None } else { Some(year) }, note: None, uncertain: None, scan_file: None, persons,
         }
     }
 
@@ -543,6 +551,23 @@ mod tests {
         assert_eq!(wedding.me.note.as_deref(), Some("по жениху"));
         let groom = wedding.others.iter().find(|m| m.role_code == "groom").unwrap();
         assert_eq!((groom.age.as_deref(), groom.marriage_order.as_deref()), (Some("22"), Some("Первым браком")));
+        // Файл скана записи доезжает до события досье; путь отбрасывается при сохранении.
+        let mut with_scan = entry(1, 1898, 3, 3, "60", vec![
+            person("child", 10, ("Нил", "", ""), ("Нил", ""), "", "", "М"),
+            person("father", 20, ("Нил", "Нилов", "Сканов"), ("Нил", "Нилович"), "Малово", "крестьянин", "М"),
+        ]);
+        with_scan.scan_file = Some("C:\\сканы\\дело 5\\лист 12.jpg".into());
+        let saved = save_entry(&conn, &with_scan).unwrap();
+        let stored: Option<String> = conn.query_row("SELECT scan_file FROM entry WHERE id = ?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(stored.as_deref(), Some("лист 12.jpg"), "в базе — только имя файла");
+        let nil = find(&conn, &Filter { query: "сканов".into(), ..all() }).unwrap().persons.remove(0);
+        assert_eq!(dossier(&conn, &nil.key, &nil.place, &all()).unwrap().events[0].scan_file.as_deref(), Some("лист 12.jpg"));
+        assert_eq!(d.events[0].scan_file, None, "у записи без скана — пусто");
+        with_scan.id = Some(saved.id);
+        with_scan.scan_file = Some("  ".into());
+        save_entry(&conn, &with_scan).unwrap();
+        let cleared: Option<String> = conn.query_row("SELECT scan_file FROM entry WHERE id = ?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(cleared, None, "пустое имя — в базе пусто");
         // Смерть: возраст и причина.
         assert_eq!((d.events[4].me.age.as_deref(), d.events[4].me.death_cause.as_deref()), (Some("60"), Some("чахотка")));
 

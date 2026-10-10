@@ -33,7 +33,10 @@ const NAME_MAX: usize = 60;
 
 /// Настройки окна — общие для всех приходов; остальные ключи (отпечаток
 /// поставки, загруженный архив, счётчики исправлений) — у каждого прихода свои.
-pub const COMMON_SETTINGS: &[&str] = &["ui_font_scale", "ui_one_column", "clergy_open", "familio_about"];
+// ui_scan_on и ui_scan_form_width — блок скана и ширина колонки формы: вид
+// окна, общий для всех приходов. Папка сканов (scan_dir_<год>) — у прихода.
+pub const COMMON_SETTINGS: &[&str] = &["ui_font_scale", "ui_one_column", "clergy_open", "familio_about",
+                                       "ui_scan_on", "ui_scan_form_width"];
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ParishRow {

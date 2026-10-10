@@ -109,16 +109,17 @@ UPDATE mk_case
 -- @entry_insert
 INSERT INTO entry (case_id, section, page, no_male, no_female,
                    event_day, event_month, event_year,
-                   rite_day, rite_month, rite_year, note, uncertain, created_by)
+                   rite_day, rite_month, rite_year, note, uncertain, created_by, scan_file)
 VALUES (:case_id, :section, :page, :no_male, :no_female,
         :event_day, :event_month, :event_year,
-        :rite_day, :rite_month, :rite_year, :note, :uncertain, :created_by);
+        :rite_day, :rite_month, :rite_year, :note, :uncertain, :created_by, :scan_file);
 
 -- @entry_update
 UPDATE entry SET case_id = :case_id, page = :page, no_male = :no_male, no_female = :no_female,
                  event_day = :event_day, event_month = :event_month, event_year = :event_year,
                  rite_day = :rite_day, rite_month = :rite_month, rite_year = :rite_year,
-                 note = :note, uncertain = :uncertain, updated_at = datetime('now')
+                 note = :note, uncertain = :uncertain, scan_file = :scan_file,
+                 updated_at = datetime('now')
  WHERE id = :id;
 
 -- @mentions_clear
@@ -507,7 +508,9 @@ SELECT e.id, e.page, e.no_male, e.no_female,
          WHERE m.entry_id = e.id AND m.role_code = 'deceased') AS deceased,
        -- Год книги для «продолжить с места»: у записи «событие в предыдущем
        -- году» он равен году обряда (сборка #38).
-       e.rite_year
+       e.rite_year,
+       -- Файл скана разворота — значок в строке списка (10.10.2026).
+       e.scan_file
   FROM entry e
  -- Записи года книги (:year), а не всего прихода: после импорта из Excel в
  -- списке иначе была бы тысяча строк. :last = 1 — одна последняя запись
@@ -520,7 +523,7 @@ SELECT e.id, e.page, e.no_male, e.no_female,
 -- @entry_get
 -- Запись целиком — для правки уже сохранённого (заказчик 22.09.2026).
 SELECT id, page, no_male, no_female, event_day, event_month, event_year,
-       rite_day, rite_month, rite_year, note
+       rite_day, rite_month, rite_year, note, scan_file
   FROM entry
  WHERE id = :id;
 
@@ -1639,7 +1642,9 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order,
        m.age_years, m.age_months, m.age_weeks, m.age_days, m.age_text,
        m.death_cause, m.marriage_order, m.kinship, m.note,
        e.section, coalesce(e.event_year, e.rite_year) AS year,
-       e.event_day, e.event_month, e.page, e.note AS entry_note
+       e.event_day, e.event_month, e.page, e.note AS entry_note, e.scan_file,
+       -- Год книги (дело записи): по нему ищут папку её скана.
+       coalesce(e.rite_year, e.event_year) AS book_year
   FROM person_mention m
   JOIN entry e ON e.id = m.entry_id
   LEFT JOIN place p ON p.id = m.place_id

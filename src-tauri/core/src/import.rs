@@ -856,7 +856,7 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                 rite_month: if section == 2 { None } else { rm },
                 rite_year,
                 note: entry_note,
-                uncertain: None,
+                uncertain: None, scan_file: None,
                 persons,
             };
             let saved = save_entry_in_tx(conn, &entry, &parish_key)

@@ -131,7 +131,7 @@ def main() -> int:
         place_id = one("SELECT id FROM place WHERE name_norm = ?", norm("Чертеж Малый"))[0]
 
         print("\n3. Запись о рождении со всеми персонами")
-        db.execute(sql["entry_insert"], dict(
+        db.execute(sql["entry_insert"], dict(scan_file=None, 
             case_id=1, section=1, page="909", no_male=None, no_female=2,
             event_day=5, event_month=1, event_year=1893,
             rite_day=7, rite_month=1, rite_year=1893,
@@ -365,7 +365,7 @@ def main() -> int:
         # Состав — как лист «2» Excel Романа: жених и невеста (НП, звание, ИОФ,
         # вероисповедание, каким браком, лет), родственник («отец») каждого,
         # поручители по жениху и по невесте, причт.
-        db.execute(sql["entry_insert"], dict(
+        db.execute(sql["entry_insert"], dict(scan_file=None, 
             case_id=1, section=2, page="894", no_male=1, no_female=None,
             event_day=31, event_month=1, event_year=1886,
             rite_day=None, rite_month=None, rite_year=None,
@@ -421,7 +421,7 @@ def main() -> int:
         check("подсказка умершего без коррелированного подзапроса (скорость)",
               "CORRELATED" not in plan, plan)
         # Вторая «Татьяна Никитична» в деле — отец не угадывается.
-        db.execute(sql["entry_insert"], dict(
+        db.execute(sql["entry_insert"], dict(scan_file=None, 
             case_id=1, section=1, page="2", no_male=None, no_female=2,
             event_day=1, event_month=2, event_year=1893, rite_day=2, rite_month=2, rite_year=1893,
             note=None, uncertain=None, created_by="тест"))
@@ -539,7 +539,7 @@ def main() -> int:
         # Состав — лист «3» Excel Романа: умерший (НП, звание, ИОФ, причина,
         # возраст как в книге), родственник («отец»), причт. Счёт раздельный
         # по полу — девочка в женской колонке.
-        db.execute(sql["entry_insert"], dict(
+        db.execute(sql["entry_insert"], dict(scan_file=None, 
             case_id=1, section=3, page="1004", no_male=None, no_female=7,
             event_day=3, event_month=5, event_year=1886,
             rite_day=5, rite_month=5, rite_year=1886,

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { report } from "./errors";
+import { ScanLink } from "./scan";
 import { focusNextField } from "./focus";
 import { dateOf, describe, family, marriageLine, nameless, personTail, roleKind, type DossierEvent, type Mention, type Part } from "./dossier";
 
@@ -398,6 +399,8 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                       <td>
                         <button type="button" className="linkish" data-open={e.entry_id}
                                 onClick={() => onOpenEntry(e.section, e.entry_id)}>Открыть</button>
+                        {/* Разворот записи — не открывая её саму. */}
+                        <ScanLink file={e.scan_file} year={e.book_year ?? null} />
                       </td>
                     </tr>
                   );

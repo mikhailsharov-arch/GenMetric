@@ -11,7 +11,12 @@ rust-version = "1.77.2"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# protocol-asset: окно показывает сканы из папки дела на диске (10.10.2026).
+tauri = { version = "2", features = ["protocol-asset"] }
+# Системное окно «Выберите папку» — для папки сканов. Окно открывает Rust
+# (команда scan_pick_dir): команд плагина у страницы нет, и папку он сам не
+# разрешает — это делаем мы, без вложенных папок.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # bundled: SQLite компилируется вместе с программой, системная библиотека

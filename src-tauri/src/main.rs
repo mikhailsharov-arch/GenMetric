@@ -48,6 +48,9 @@ struct App {
     /// Упоминания открытого прихода для экрана «Поиск» и счётчик изменений
     /// соединения, при котором они прочитаны (search.rs, `Index`).
     search: Mutex<Option<(i64, Arc<genmetric_core::search::Index>)>>,
+    /// Ширина окна до включения блока скана — к ней окно возвращается, когда
+    /// блок скрывают: ширина и положение левого края (в физических точках).
+    narrow_width: Mutex<Option<(u32, i32)>>,
     data_dir: PathBuf,
     /// База поставки внутри программы: из неё создаётся и обновляется каждый приход.
     bundled: Result<PathBuf, String>,
@@ -623,6 +626,7 @@ struct EntryBrief {
     bride: Option<String>,
     deceased: Option<String>,
     rite_year: Option<i64>,
+    scan_file: Option<String>,
 }
 
 /// Дело года (year) или текущее — дело последней записи. Дело — на год
@@ -1342,6 +1346,7 @@ struct EntryFull {
     rite_month: Option<i64>,
     rite_year: Option<i64>,
     note: Option<String>,
+    scan_file: Option<String>,
     persons: Vec<MentionOut>,
 }
 
@@ -1357,7 +1362,7 @@ fn entry_load(app: State<App>, id: i64) -> Result<EntryFull, String> {
                     id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
                     rite_day: r.get(7)?, rite_month: r.get(8)?, rite_year: r.get(9)?,
-                    note: r.get(10)?, persons: Vec::new(),
+                    note: r.get(10)?, scan_file: r.get(11)?, persons: Vec::new(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1424,7 +1429,7 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
                     rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
                     clergy_noname: r.get::<_, i64>(10)? != 0,
                     groom: r.get(11)?, bride: r.get(12)?, deceased: r.get(13)?,
-                    rite_year: r.get(14)?,
+                    rite_year: r.get(14)?, scan_file: r.get(15)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1468,6 +1473,185 @@ fn window_title(parish_name: &str) -> String {
     } else {
         format!("GenMetric — {parish_name}")
     }
+}
+
+// ----------------------------------------------------------------------------
+//  Сканы рядом с формой (спека 2026-10-10-skany-ryadom-s-formoj)
+// ----------------------------------------------------------------------------
+
+/// Что блок скана знает о папке дела.
+#[derive(Serialize)]
+struct ScanState {
+    /// Папка сканов дела этого года; None — не выбрана.
+    dir: Option<String>,
+    /// Имена файлов по порядку (scans::list).
+    files: Vec<String>,
+    /// Разделитель пути этой системы — окно склеивает путь к файлу само.
+    sep: String,
+    /// Папка была выбрана, но сейчас не читается (другой компьютер, диск не подключён).
+    missing: Option<String>,
+    /// Файл, на котором остановились в прошлый раз, или тот, что перетащили.
+    open: Option<String>,
+}
+
+fn scan_keys(year: Option<i64>) -> (String, String) {
+    let y = year.map(|y| y.to_string()).unwrap_or_default();
+    (format!("scan_dir_{y}"), format!("scan_last_{y}"))
+}
+
+/// Прочитать папку и разрешить окну её файлы — только её, без вложенных.
+fn scan_open_dir(handle: &tauri::AppHandle, dir: &str, open: Option<String>) -> ScanState {
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    match genmetric_core::scans::list(Path::new(dir)) {
+        Ok(files) => {
+            let allowed = handle.asset_protocol_scope().allow_directory(dir, false);
+            ScanState {
+                dir: Some(dir.to_string()),
+                open: open.filter(|f| files.contains(f)),
+                files,
+                sep,
+                missing: allowed.err().map(|e| format!("программа не получила доступ к папке: {e}")),
+            }
+        }
+        Err(e) => ScanState { dir: Some(dir.to_string()), files: Vec::new(), sep, missing: Some(e), open: None },
+    }
+}
+
+/// Папка сканов дела этого года и её файлы.
+#[tauri::command]
+fn scan_state(handle: tauri::AppHandle, app: State<App>, year: Option<i64>) -> Result<ScanState, String> {
+    let (dir_key, last_key) = scan_keys(year);
+    let (dir, last) = with_conn(&app, "Папка сканов", |conn| {
+        let mut dir = parish::setting_get(conn, &dir_key)?.filter(|d| !d.trim().is_empty());
+        // Папку выбрали, когда у дела ещё не было года (новое дело): теперь
+        // год есть — она переходит к нему, а не теряется (проверяющий 10.10.2026).
+        if dir.is_none() && year.is_some() {
+            let (loose_key, _) = scan_keys(None);
+            if let Some(loose) = parish::setting_get(conn, &loose_key)?.filter(|d| !d.trim().is_empty()) {
+                parish::setting_set(conn, &dir_key, &loose)?;
+                parish::setting_set(conn, &loose_key, "")?;
+                dir = Some(loose);
+            }
+        }
+        Ok((dir, parish::setting_get(conn, &last_key)?))
+    })?;
+    Ok(match dir.filter(|d| !d.trim().is_empty()) {
+        Some(dir) => scan_open_dir(&handle, &dir, last),
+        None => ScanState { dir: None, files: Vec::new(), sep: std::path::MAIN_SEPARATOR.to_string(), missing: None, open: None },
+    })
+}
+
+/// Системное окно «Выберите папку» и выбранная в нём папка. Окно открывает
+/// Rust, а не страница: команда плагина разрешила бы окну выбранную папку
+/// вместе со всеми вложенными (выбрали домашнюю папку — открыт весь диск), а
+/// нам нужна только она сама (ревьюер 10.10.2026). None — человек передумал.
+/// async — не в главном потоке: окно выбора ждёт человека.
+#[tauri::command]
+async fn scan_pick_dir(handle: tauri::AppHandle, app: State<'_, App>, year: Option<i64>)
+    -> Result<Option<ScanState>, String>
+{
+    use tauri_plugin_dialog::DialogExt;
+    let picked = handle.dialog().file().set_title("Папка со сканами дела").blocking_pick_folder();
+    let Some(folder) = picked else { return Ok(None) };
+    let path = folder.into_path().map_err(|e| format!("Папка сканов: путь не прочитан ({e})"))?;
+    scan_set_dir(handle.clone(), app, year, path.to_string_lossy().to_string(), None).map(Some)
+}
+
+/// Выбрать папку сканов дела: путь к папке или к любому её файлу (так
+/// приходит перетаскивание — перетащили файл, открывается он). `dropped` —
+/// путь брошен на окно мышью: чужой файл (не скан) тогда не трогает ничего —
+/// на окно бросают и другое, и папка сканов от этого меняться не должна.
+#[tauri::command]
+fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, path: String,
+                dropped: Option<bool>) -> Result<ScanState, String>
+{
+    let picked = Path::new(path.trim());
+    let fail = |text: String| {
+        write_log(&app.log_path, &format!("Папка сканов: {text}"));
+        text
+    };
+    let (dir, file) = if picked.is_dir() {
+        (picked.to_path_buf(), None)
+    } else if picked.is_file() {
+        let name = picked.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if !genmetric_core::scans::is_scan(&name) {
+            if dropped == Some(true) {
+                return scan_state(handle, app, year);
+            }
+            return Err(fail(format!("«{name}» — не скан: программа показывает файлы .jpg и .jpeg")));
+        }
+        let parent = picked.parent().ok_or_else(|| fail(format!("у файла «{path}» нет папки")))?;
+        (parent.to_path_buf(), picked.file_name().map(|n| n.to_string_lossy().to_string()))
+    } else {
+        return Err(fail(format!("«{path}» — не папка и не файл")));
+    };
+    let dir = dir.to_string_lossy().to_string();
+    let (dir_key, last_key) = scan_keys(year);
+    let last = with_conn(&app, "Папка сканов", |conn| {
+        let before = parish::setting_get(conn, &dir_key)?;
+        parish::setting_set(conn, &dir_key, &dir)?;
+        // Та же папка выбрана снова — место в ней остаётся.
+        if before.as_deref() == Some(dir.as_str()) { parish::setting_get(conn, &last_key) } else { Ok(None) }
+    })?;
+    let state = scan_open_dir(&handle, &dir, file.or(last));
+    if let Some(why) = &state.missing {
+        write_log(&app.log_path, &format!("Папка сканов «{dir}»: {why}"));
+    }
+    Ok(state)
+}
+
+/// Запомнить открытый разворот — после перезапуска блок покажет его же.
+#[tauri::command]
+fn scan_remember(app: State<App>, year: Option<i64>, file: String) -> Result<(), String> {
+    let (_, last_key) = scan_keys(year);
+    with_conn(&app, "Открытый скан", |conn| parish::setting_set(conn, &last_key, &file))
+}
+
+/// Блок скана включили — узкое окно расширяется на рабочую область экрана;
+/// выключили — возвращается к прежней ширине. Окно, которое человек уже сам
+/// сделал широким, не трогаем.
+#[tauri::command]
+fn scan_window(window: tauri::Window, app: State<App>, on: bool) -> Result<(), String> {
+    let e = |e: tauri::Error| e.to_string();
+    let inner = window.inner_size().map_err(e)?;
+    let scale = window.scale_factor().map_err(e)?;
+    let mut saved = app.narrow_width.lock().unwrap_or_else(|p| p.into_inner());
+    // Развёрнутое на весь экран окно не трогаем ни в какую сторону.
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        if !on {
+            saved.take();
+        }
+        return Ok(());
+    }
+    if !on {
+        if let Some((width, x)) = saved.take() {
+            window.set_size(tauri::PhysicalSize::new(width, inner.height)).map_err(e)?;
+            let pos = window.outer_position().map_err(e)?;
+            window.set_position(tauri::PhysicalPosition::new(x, pos.y)).map_err(e)?;
+        }
+        return Ok(());
+    }
+    // Уже широкое (форма и скан помещаются) — оставляем как есть.
+    if (inner.width as f64) / scale >= 900.0 {
+        return Ok(());
+    }
+    let Some(monitor) = window.current_monitor().map_err(e)? else { return Ok(()) };
+    let area = monitor.work_area();
+    let frame = window.outer_size().map_err(e)?.width.saturating_sub(inner.width);
+    let width = area.size.width.saturating_sub(frame).min((1600.0 * scale) as u32);
+    if width <= inner.width {
+        return Ok(());
+    }
+    let pos = window.outer_position().map_err(e)?;
+    *saved = Some((inner.width, pos.x));
+    window.set_size(tauri::PhysicalSize::new(width, inner.height)).map_err(e)?;
+    // Не уходить за правый край экрана: сдвигаем окно влево, сколько нужно.
+    let right = area.position.x + area.size.width as i32;
+    if pos.x + (width + frame) as i32 > right {
+        let x = (right - (width + frame) as i32).max(area.position.x);
+        window.set_position(tauri::PhysicalPosition::new(x, pos.y)).map_err(e)?;
+    }
+    Ok(())
 }
 
 fn bundled_seed(app: &State<App>) -> Result<PathBuf, String> {
@@ -1652,6 +1836,7 @@ async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, fi
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // GENMETRIC_DATA_DIR — папка данных для проверок разработчика:
             // настоящая программа на чужих данных, не трогая свои. У
@@ -1704,6 +1889,7 @@ fn main() {
                 warning: Mutex::new(warning),
                 import_file: Mutex::new(Vec::new()),
                 search: Mutex::new(None),
+                narrow_width: Mutex::new(None),
                 data_dir,
                 bundled,
                 log_path,
@@ -1785,6 +1971,11 @@ fn main() {
             place_get,
             place_update,
             set_always_on_top,
+            scan_state,
+            scan_set_dir,
+            scan_pick_dir,
+            scan_remember,
+            scan_window,
             parish_list,
             parish_open,
             parish_create,

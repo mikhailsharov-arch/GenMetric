@@ -36,7 +36,7 @@ REPO = DB_DIR.parent
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
 FROM_VERSION = 6
-TO_VERSION = 10
+TO_VERSION = 11
 
 ok_count = 0
 fail_count = 0
@@ -461,6 +461,9 @@ def main() -> int:
               snapshot(db, snap_columns)[1] == before, f"строк {len(snapshot(db, snap_columns)[1])} и {len(before)}; различия: " + str(sorted({(snap_columns["entry"] + snap_columns["person_mention"] + ["place", "счёт", "сколько колонок счёта занято"])[i] for a, b in zip(snapshot(db, snap_columns)[1], before) for i in range(len(a)) if a[i] != b[i]})))
         check("появилась колонка комментария пункта (схема 10)",
               "comment" in [r[1] for r in db.execute("PRAGMA table_info(place)")])
+        check("появилась колонка файла скана у записи (схема 11), у прежних записей она пуста",
+              "scan_file" in [r[1] for r in db.execute("PRAGMA table_info(entry)")]
+              and db.execute("SELECT count(*) FROM entry WHERE scan_file IS NOT NULL").fetchone()[0] == 0)
         check("разбор ИОФ заработает: «Никита» не подменяется",
               db.execute("SELECT d.name FROM name_form f JOIN name_dict d ON d.id=f.name_id "
                          "WHERE f.kind IN ('name','variant') AND f.form_norm='никита' "

@@ -26,7 +26,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {
@@ -45,7 +49,8 @@
     ],
     "resources": [
       "resources/seed.sqlite",
-      "resources/Inter-OFL.txt"
+      "resources/Inter-OFL.txt",
+      "resources/OpenSeadragon-LICENSE.txt"
     ],
     "copyright": "GenMetric, лицензия GPL-3.0-or-later",
     "category": "Productivity",
