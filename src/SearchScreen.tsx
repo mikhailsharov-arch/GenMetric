@@ -42,6 +42,14 @@ type Props = {
 type Snapshot = { query: string; place: string; picked: { key: string; place: string } | null };
 
 const SECTION = ["", "рождение", "брак", "смерть"];
+/** Роли по группам переключателей — имена как у `role_class` в search.rs. */
+type RoleGroup = "own" | "part" | "clergy";
+const ROLES: Record<RoleGroup, [string, string][]> = {
+  own: [["groom", "жених"], ["bride", "невеста"], ["father", "отец"], ["mother", "мать"], ["deceased", "умерший"]],
+  part: [["godparent", "восприемник"], ["witness", "поручитель"], ["groom_relative", "родственник жениха"],
+         ["bride_relative", "родственник невесты"], ["deceased_relative", "родственник умершего"]],
+  clergy: [["clergy", "причт"]],
+};
 const years = (a: number | null, b: number | null) => (a === null ? "" : a === b || b === null ? String(a) : `${a}–${b}`);
 
 export default function SearchScreen({ active, request, onOpenEntry, onBack, backTitle }: Props) {
@@ -52,6 +60,45 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
   const [own, setOwn] = useState(true);
   const [part, setPart] = useState(true);
   const [clergy, setClergy] = useState(false);
+  // Роли по отдельности (Роман 12.10.2026: «трех общих переключателей ролей
+  // недостаточно… отдельные галочки по каждой конкретной роли (как это
+  // делается в фильтрах Excel)»). Три переключателя остаются группами; здесь
+  // — роли, выключенные внутри включённой группы.
+  const [skip, setSkip] = useState<string[]>([]);
+  const [rolesOpen, setRolesOpen] = useState(false);
+  const groupOn = { own, part, clergy };
+  const setGroup = { own: setOwn, part: setPart, clergy: setClergy };
+  function toggleRole(group: RoleGroup, role: string) {
+    const mates = ROLES[group].map(([r]) => r);
+    if (!groupOn[group]) {
+      // Группа выключена — включаем её с одной этой ролью.
+      setGroup[group](true);
+      setSkip((x) => [...x.filter((r) => !mates.includes(r)), ...mates.filter((r) => r !== role)]);
+      return;
+    }
+    const next = skip.includes(role) ? skip.filter((r) => r !== role) : [...skip, role];
+    // Выключена последняя роль группы — это выключенная группа.
+    if (mates.every((r) => next.includes(r))) {
+      setGroup[group](false);
+      setSkip(next.filter((r) => !mates.includes(r)));
+    } else setSkip(next);
+  }
+  /** Переключатель группы включает её целиком. */
+  function toggleGroup(group: RoleGroup, on: boolean) {
+    setGroup[group](on);
+    setSkip((x) => x.filter((r) => !ROLES[group].some(([m]) => m === r)));
+  }
+  /** Человек нужен в такой-то роли (ссылка из досье, Ctrl+F из причта) — она включается. */
+  function needRole(role: string) {
+    const bare = role.replace(/\d+$/, "");
+    // Как role_class в search.rs: родители и супруги из импорта — с родственниками.
+    const cls = ({ groom_parent: "groom_relative", bride_parent: "bride_relative",
+                   deceased_parent: "deceased_relative", deceased_spouse: "deceased_relative" } as Record<string, string>)[bare] ?? bare;
+    const group = (Object.keys(ROLES) as RoleGroup[]).find((g) => ROLES[g].some(([r]) => r === cls));
+    if (!group) return;
+    if (!groupOn[group]) toggleGroup(group, true);
+    else setSkip((x) => x.filter((r) => r !== cls));
+  }
   const [yearFrom, setYearFrom] = useState("");
   const [yearTo, setYearTo] = useState("");
 
@@ -68,7 +115,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
   const wanted = useRef<{ key?: string; place: string; typed?: string } | null>(null);
 
   const year = (v: string) => (/^\d{4}$/.test(v.trim()) ? Number(v.trim()) : null);
-  const filter = { query, place: place.trim() || null, own, part, clergy, year_from: year(yearFrom), year_to: year(yearTo) };
+  const filter = { query, place: place.trim() || null, own, part, clergy, skip, year_from: year(yearFrom), year_to: year(yearTo) };
   const filterKey = JSON.stringify(filter);
   // Год не из четырёх цифр в отбор не идёт — и об этом сказано, а не молча
   // (проверяющий 09.10.2026); «от» больше «до» — никого не найдётся.
@@ -84,7 +131,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
       setHistory([]);
       setQuery(request.iof.trim());
       setPlace(request.place.trim());
-      if (request.clergy) setClergy(true);
+      if (request.clergy) needRole("clergy");
       wanted.current = { place: request.place.trim(), typed: request.iof.trim() };
     }
     setTimeout(() => { queryField.current?.focus(); queryField.current?.select(); }, 0);
@@ -142,7 +189,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
     invoke<Dossier>("person_dossier", { key: picked.key, place: picked.place, filter })
       .then((d) => { if (mine === dseq.current) setDossier(d); })
       .catch((e) => { if (mine === dseq.current) report("Не удалось собрать досье", e); });
-  }, [picked?.key, picked?.place, own, part, clergy, yearFrom, yearTo, active]);
+  }, [picked?.key, picked?.place, own, part, clergy, skip.join(","), yearFrom, yearTo, active]);
 
   // Выбранная строка — на виду в своём списке. Только при смене выбора: на
   // каждую перерисовку это дёргало бы страницу к списку, пока читают досье.
@@ -180,8 +227,9 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
     wanted.current = { key: m.key, place: m.place };
     setQuery(nextQuery);
     setPlace(m.place);
-    // Причт в досье не показывается, но роль человека может быть и такой.
-    if (roleKind(m.role_code) === "clergy") setClergy(true);
+    // Причт в досье не показывается, но роль человека может быть и такой;
+    // и роль, выключенная по отдельности, — тоже: иначе ссылка никого не найдёт.
+    if (roleKind(m.role_code) !== "child") needRole(m.role_code);
     window.scrollTo({ top: 0 });
   }
   function goBack() {
@@ -266,17 +314,20 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
         </div>
         <div className="searchopts">
           <label className="unknownbox" title="Он жених или невеста, отец или мать, умерший">
-            <input type="checkbox" checked={own} data-role-own onChange={(e) => setOwn(e.target.checked)} />
+            <input type="checkbox" checked={own} data-role-own onChange={(e) => toggleGroup("own", e.target.checked)} />
             свои события
           </label>
           <label className="unknownbox" title="Восприемник, поручитель, родственник жениха, невесты или умершего">
-            <input type="checkbox" checked={part} data-role-part onChange={(e) => setPart(e.target.checked)} />
+            <input type="checkbox" checked={part} data-role-part onChange={(e) => toggleGroup("part", e.target.checked)} />
             участие
           </label>
           <label className="unknownbox" title="Церковнослужители стоят в каждой записи — с ними список длиннее">
-            <input type="checkbox" checked={clergy} data-role-clergy onChange={(e) => setClergy(e.target.checked)} />
+            <input type="checkbox" checked={clergy} data-role-clergy onChange={(e) => toggleGroup("clergy", e.target.checked)} />
             причт
           </label>
+          <button type="button" className="linkish" data-roles-toggle onClick={() => setRolesOpen((v) => !v)}>
+            {rolesOpen ? "роли — свернуть" : skip.length > 0 ? `роли по отдельности (выключено: ${skip.length})` : "роли по отдельности"}
+          </button>
           <span className="searchyears">
             годы
             <input data-year-from value={yearFrom} inputMode="numeric" maxLength={4} placeholder="от" aria-label="Год от"
@@ -288,6 +339,21 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                    onChange={(e) => setYearTo(e.target.value.replace(/[^0-9]/g, ""))} />
           </span>
         </div>
+        {rolesOpen && (
+          <div className="searchroles" data-roles>
+            {(Object.keys(ROLES) as RoleGroup[]).map((group) => (
+              <span key={group} className="rolegroup">
+                {ROLES[group].map(([role, title]) => (
+                  <label key={role} className="unknownbox">
+                    <input type="checkbox" data-role={role} checked={groupOn[group] && !skip.includes(role)}
+                           onChange={() => toggleRole(group, role)} />
+                    {title}
+                  </label>
+                ))}
+              </span>
+            ))}
+          </div>
+        )}
         {yearNote && <p className="hint yearnote" data-year-note>{yearNote}</p>}
       </section>
 
@@ -377,7 +443,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
               </div>
             )}
 
-            <h3>События</h3>
+            <h3 className="eventshead" data-events-head>События</h3>
             <table className="events">
               <tbody>
                 {dossier.events.map((e, i) => {

@@ -455,6 +455,32 @@ fn suggest(
         for row in rows {
             out.push(row.map_err(|e| e.to_string())?);
         }
+        drop(stmt);
+        // Звания — ещё и по вхождению (Роман 12.10.2026: набрал «от» и хочет
+        // увидеть «сын-отрок», а не только «отставной рядовой»). Сначала всё,
+        // что начинается с набранного, ниже — где набранное в середине. С
+        // двух букв: одна буква в середине есть почти в каждом звании.
+        if let Some(inside) = genmetric_core::rank_inside_pattern(&kind, &pattern) {
+            if (out.len() as i64) < limit {
+                let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+                let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
+                    vec![(":kind", &kind), (":prefix", &inside), (":limit", &limit)];
+                if gendered {
+                    params.push((":gender", &gender));
+                }
+                let more = stmt
+                    .query_map(&params[..], |r| {
+                        Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)? })
+                    })
+                    .map_err(|e| e.to_string())?;
+                for row in more {
+                    let row = row.map_err(|e| e.to_string())?;
+                    if (out.len() as i64) < limit && !out.iter().any(|have: &Suggestion| have.value == row.value) {
+                        out.push(row);
+                    }
+                }
+            }
+        }
         Ok(out)
     })
 }
@@ -627,6 +653,7 @@ struct EntryBrief {
     deceased: Option<String>,
     rite_year: Option<i64>,
     scan_file: Option<String>,
+    rite_day: Option<i64>,
 }
 
 /// Дело года (year) или текущее — дело последней записи. Дело — на год
@@ -1429,7 +1456,7 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
                     rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
                     clergy_noname: r.get::<_, i64>(10)? != 0,
                     groom: r.get(11)?, bride: r.get(12)?, deceased: r.get(13)?,
-                    rite_year: r.get(14)?, scan_file: r.get(15)?,
+                    rite_year: r.get(14)?, scan_file: r.get(15)?, rite_day: r.get(16)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1578,7 +1605,7 @@ fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, pa
             if dropped == Some(true) {
                 return scan_state(handle, app, year);
             }
-            return Err(fail(format!("«{name}» — не скан: программа показывает файлы .jpg и .jpeg")));
+            return Err(fail(format!("«{name}» — не скан: программа показывает файлы .jpg, .jpeg и .png")));
         }
         let parent = picked.parent().ok_or_else(|| fail(format!("у файла «{path}» нет папки")))?;
         (parent.to_path_buf(), picked.file_name().map(|n| n.to_string_lossy().to_string()))
@@ -1604,7 +1631,22 @@ fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, pa
 #[tauri::command]
 fn scan_remember(app: State<App>, year: Option<i64>, file: String) -> Result<(), String> {
     let (_, last_key) = scan_keys(year);
-    with_conn(&app, "Открытый скан", |conn| parish::setting_set(conn, &last_key, &file))
+    // Листание — запись в базу прихода, а память поиска сверяется по счётчику
+    // изменений соединения: каждое перелистывание заставляло бы перечитать все
+    // упоминания прихода. Место скана упоминаний не меняет — память, свежая
+    // до этой записи, остаётся свежей и после неё.
+    with_conn(&app, "Открытый скан", |conn| {
+        let before = genmetric_core::search::changes(conn)?;
+        parish::setting_set(conn, &last_key, &file)?;
+        let after = genmetric_core::search::changes(conn)?;
+        let mut cache = app.search.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, _)) = cache.as_mut() {
+            if *at == before {
+                *at = after;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Блок скана включили — узкое окно расширяется на рабочую область экрана;

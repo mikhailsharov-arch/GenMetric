@@ -10,7 +10,7 @@ import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow } from "./page";
-import { monthOnYearChange, riteMonthFor, settleMonths } from "./month";
+import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { parseAge } from "./age";
 import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
@@ -62,6 +62,7 @@ type Brief = {
   scan_file?: string | null;
   id: number; page: string | null; no_male: number | null; no_female: number | null;
   event_day: number | null; event_month: number | null; event_year: number | null;
+  rite_day?: number | null;
   rite_month: number | null; rite_year: number | null; deceased: string | null; clergy_noname: boolean;
 };
 
@@ -96,25 +97,38 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [burialMonth, setBurialMonth] = useState<number | null>(null);
   // Погребение в следующем году — отмечает человек (NextYear.tsx).
   const [burialNextYear, setBurialNextYear] = useState(false);
-  /** Месяц смерти подставляется в месяц погребения — в одну сторону
-   *  (Роман 28.09.2026: «в большинстве записей месяцы совпадают»). */
+  /** Месяц смерти, набранный руками. */
   function changeDeathMonth(v: number | null) {
     monthManual.current = true;
     setDeathMonth(v);
-    // Исправленный руками месяц погребения не затирается (ревьюер #38).
-    if (autoMonths() && !burialMonthManual.current && v !== null) setBurialMonth(riteMonthFor(deathDay, v, burialDay));
-    else setBurialMonth((r) => (r === null || r === deathMonth ? v : r));
+    // Месяц обряда за ним не идёт (Роман 12.10.2026: «если я вручную меняю
+    // месяц рождения (например, ребенок родился в конце предыдущего месяца),
+    // то месяц крещения при этом не должен меняться автоматически вслед за
+    // ним»). Два исключения: пустой месяц обряда заполняется (первая запись
+    // книги), и обряд не остаётся раньше события — месяц события подняли выше
+    // месяца обряда, значит, перешли к другому месяцу книги.
+    const was = monthsNow.current.riteMonth;
+    const follow = autoMonths() && !burialMonthManual.current;
+    if (follow && was === null) riteFilled.current = true;
+    const next = followEvent(was, v, follow, riteFilled.current);
+    // Обряд перешёл вслед за событием — это решение человека: правило по дню
+    // обряда его уже не отменяет. Заполнение пустого — не решение.
+    if (was !== null && next !== was && !riteFilled.current) burialMonthManual.current = true;
+    setBurialMonth(next);
   }
   // --- Месяц сам (Роман 09.10.2026, month.ts) ---
-  // День смерти меньше, чем в последней записи года, — следующий месяц; день
-  // погребения меньше дня смерти — погребение в следующем месяце. Месяц,
-  // набранный руками, до сохранения не трогаем; запись на правке — тоже.
+  // День погребения меньше, чем в последней записи года, — следующий месяц;
+  // день смерти больше дня погребения — смерть в предыдущем месяце (с
+  // 12.10.2026 правило считает по дню обряда). Месяц, набранный руками, до
+  // сохранения не трогаем; запись на правке — тоже.
   const monthManual = useRef(false);
   const burialMonthManual = useRef(false);
   const autoMonths = () => editingRef.current === null;
   // Цифра, которая может быть началом двузначного дня, месяц не двигает:
   // решение — на второй цифре, при уходе из поля или при сохранении.
-  const monthPending = useRef({ event: false, rite: false });
+  const monthPending = useRef(NO_WAIT);
+  /** Месяц обряда был пуст и заполнен из месяца события в этой же записи. */
+  const riteFilled = useRef(false);
   // Дни и месяцы «на сейчас» — не из замыкания: Ctrl+Enter в поле дня сначала
   // уводит из него фокус (решение принято, месяц изменён), а сохранение в том
   // же событии ещё видит прежний месяц — и записало бы его (стенд 10.10.2026).
@@ -138,13 +152,31 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     setBurialDay(v);
     if (autoMonths()) settle("rite", { riteDay: v });
   }
-  /** Ушли из поля дня — отложенное решение о месяце принимается. */
+  /** Ушли из поля дня обряда — отложенное решение о месяце принимается. Из
+   *  поля дня события уход ничего не решает: день обряда ещё впереди. */
   function leaveDay() {
     if (autoMonths()) settle(null);
   }
+  /** Месяц, который программа переключила сама, подсвечен (Роман 12.10.2026:
+   *  «ненавязчивое уведомление… о том, что месяц изменился»): он не тот, что
+   *  в последней записи, и набран не руками. */
+  function monthAuto() {
+    const last = saved[0];
+    if (editingId !== null || !last || (deathDay === null && burialDay === null)) return { event: false, rite: false };
+    return {
+      event: !monthManual.current && deathMonth !== null && last.event_month !== null && deathMonth !== last.event_month,
+      rite: !burialMonthManual.current && burialMonth !== null && bookMonth(last) !== null && burialMonth !== bookMonth(last),
+    };
+  }
   function typeBurialMonth(v: number | null) {
     burialMonthManual.current = true;
+    riteFilled.current = false;
     setBurialMonth(v);
+    // Месяц события считается от месяца обряда — и от набранного руками тоже.
+    // Кроме перехода через год: событие в декабре, обряд поправили на январь
+    // — декабрь остаётся, отметку «в предыдущем году» ставит человек.
+    if (autoMonths() && !monthManual.current && v !== null && !(v === 1 && deathMonth === 12))
+      setDeathMonth(eventMonthFrom(v, deathDay, burialDay));
   }
   useEffect(() => {
     if (!riteBeforeEvent(deathMonth, burialMonth)) setBurialNextYear(false);
@@ -181,17 +213,20 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   useEffect(() => {
     if (year === null || year < 1700 || savedYear.current !== year || !autoMonths()) return;
     const prev = monthYear.current;
-    const guess = monthManual.current ? null : monthOnYearChange(prev, year, saved[0], deathDay);
+    const bothManual = monthManual.current && burialMonthManual.current;
+    const guess = bothManual ? null : monthOnYearChange(prev, year, saved[0], burialDay ?? deathDay);
     // Год без записей, про который сказать нечего, точкой отсчёта не
     // становится: опечатка в годе (1889 → 1891 → 1890) иначе отнимала январь.
-    if (prev === null || monthManual.current || saved[0] || guess !== null) monthYear.current = year;
-    if (monthManual.current) return;
-    // Месяц тот же — не трогаем и месяц обряда: он мог быть восстановлен
-    // по последней записи (крещение в следующем месяце).
-    if (guess === null || guess === deathMonth) return;
-    monthPending.current = { event: false, rite: false };
-    setDeathMonth(guess);
-    if (!burialMonthManual.current) setBurialMonth(riteMonthFor(deathDay, guess, burialDay));
+    if (prev === null || bothManual || saved[0] || guess !== null) monthYear.current = year;
+    if (bothManual || guess === null) return;
+    // Правило считает месяц обряда; месяц события — от него: и когда месяц
+    // обряда уже тот, месяц события мог остаться от прежнего года.
+    monthPending.current = NO_WAIT;
+    riteFilled.current = false;
+    const rite = burialMonthManual.current ? burialMonth : guess;
+    if (rite !== burialMonth) setBurialMonth(rite);
+    const event = monthManual.current ? deathMonth : eventMonthFrom(rite, deathDay, burialDay);
+    if (event !== deathMonth) setDeathMonth(event);
   }, [saved]);
   const [busy, setBusy] = useState(false);
   // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
@@ -565,7 +600,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       if (editingId === null)
         setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
                            event_day: deathDay, event_month: months.eventMonth, event_year: null,
-                           rite_month: months.riteMonth, rite_year: year, deceased: d.iof.trim() || null,
+                           rite_day: burialDay, rite_month: months.riteMonth, rite_year: year, deceased: d.iof.trim() || null,
                            clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
@@ -616,7 +651,6 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
-      entryScan.opened(e.scan_file ?? null, e.rite_year ?? e.event_year ?? null);
       pickSeq.current++;
       autoRel.current = null;
       autoPlace.current = null;
@@ -645,6 +679,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       clergyState.open([person(by("clergy1"), EMPTY_PERSON), person(by("clergy2"), EMPTY_PERSON),
                         person(by("clergy3"), EMPTY_PERSON)]);
       setEditingId(e.id);
+      // После того как запись встала в форму: при ошибке выше «свой» файл
+      // остался бы от записи, которая так и не открылась.
+      entryScan.opened(e.scan_file ?? null, e.rite_year ?? e.event_year ?? null);
       window.scrollTo({ top: 0 });
       // В день смерти, а не в «Счёт»: счёт теперь вне обхода клавишами.
       dayField.current?.focus();
@@ -678,7 +715,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     countManual.current = false;
     monthManual.current = false;
     burialMonthManual.current = false;
-    monthPending.current = { event: false, rite: false };
+    monthPending.current = NO_WAIT;
+    riteFilled.current = false;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
     setNameless(false);
@@ -807,10 +845,15 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
           <NumberField label="Счёт" value={count} onChange={typeCount} min={1} inputRef={countField} noTab />
         </div>
         <div className="row wrap">
-          <NumberField label="Смерть, день" onLeave={leaveDay} value={deathDay} onChange={typeDeathDay} min={1} max={31} inputRef={dayField} />
-          <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12} />
+          <NumberField label="Смерть, день" value={deathDay} onChange={typeDeathDay} min={1} max={31} inputRef={dayField} />
+          {/* Месяцы ставятся сами и стоят вне обхода клавишами, как «Счёт» (Роман
+              12.10.2026). Пустой месяц — у первой записи книги — в обходе
+              остаётся: иначе до него только мышью. */}
+          <NumberField label="месяц" value={deathMonth} onChange={changeDeathMonth} min={1} max={12}
+                       noTab={deathMonth !== null} auto={monthAuto().event} />
           <NumberField label="Погреб., день" onLeave={leaveDay} value={burialDay} onChange={typeBurialDay} min={1} max={31} />
-          <NumberField label="месяц" value={burialMonth} onChange={typeBurialMonth} min={1} max={12} noTab />
+          <NumberField label="месяц" value={burialMonth} onChange={typeBurialMonth} min={1} max={12}
+                       noTab={burialMonth !== null} auto={monthAuto().rite} />
         </div>
         <NextYear eventMonth={deathMonth} riteMonth={burialMonth} year={year} rite="погребение"
                   checked={burialNextYear} onChange={setBurialNextYear} />
@@ -853,7 +896,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
                      }}
                      gender={kinGender(rel.kinship)} onPickPerson={pickInto(setRel)} {...common}
                      before={
-                       <Suggest label="Родство" kind="kinship" value={rel.kinship} browse
+                       <Suggest label="Родство" kind="kinship" value={rel.kinship} browse skipFilled
                                 onChange={(kinship) => setRel((s) => ({ ...s, kinship }))} />
                      } />
       </div>

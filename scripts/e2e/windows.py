@@ -671,6 +671,15 @@ def run(driver, wait, archive):
     for name in ("лист 10.jpg", "лист 2.JPG", "лист 1.jpg"):
         shutil.copyfile(sample, scans / name)
     (scans / "заметки.txt").write_text("не скан", encoding="utf-8")
+    # PNG — тоже скан (с 12.10.2026); настоящий файл 2×2, собранный на месте.
+    import struct
+    import zlib
+
+    def png_chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    (scans / "обложка.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+        + png_chunk(b"IDAT", zlib.compress(b"\x00\xc8\xb4\x96\xc8\xb4\x96" * 2)) + png_chunk(b"IEND", b""))
 
     def scan_attr(name):
         return driver.execute_script(
@@ -682,8 +691,8 @@ def run(driver, wait, archive):
     wait_for(lambda: bool(driver.execute_script(
         "const b = document.querySelector('[data-scan-pick]'); return !!b && b.offsetParent !== null;")))
     driver.execute_script("const b = document.querySelector('[data-scan-pick]'); b.scrollIntoView({block: 'center'}); b.click();")
-    check("выбрали папку — блок скана появился, в нём три файла (текстовый не в счёт)",
-          wait_for(lambda: scan_attr("data-scan-count") == "3"),
+    check("выбрали папку — блок скана появился, в нём четыре файла: три JPG и PNG (текстовый не в счёт)",
+          wait_for(lambda: scan_attr("data-scan-count") == "4"),
           f"файлов: {scan_attr('data-scan-count')} | {error_details(driver)}")
     check("файлы по порядку имён: первый — «лист 1.jpg»", scan_attr("data-scan-file") == "лист 1.jpg",
           str(scan_attr("data-scan-file")))
@@ -713,8 +722,30 @@ def run(driver, wait, archive):
         "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"),
         str(driver.execute_script("const a = document.activeElement; return a ? a.tagName + '.' + a.className : null;")))
     ActionChains(driver).key_down(Keys.ALT).send_keys(Keys.PAGE_DOWN).key_up(Keys.ALT).perform()
-    check("Alt+PageDown из поля — последний разворот «лист 10.jpg»",
+    check("Alt+PageDown из поля — следующий разворот «лист 10.jpg»",
           wait_for(lambda: scan_attr("data-scan-file") == "лист 10.jpg", 5), str(scan_attr("data-scan-file")))
+    # PNG из папки показывается настоящим окном (протокол asset отдаёт его тип).
+    ActionChains(driver).key_down(Keys.ALT).send_keys(Keys.PAGE_DOWN).key_up(Keys.ALT).perform()
+    check("PNG показан в окне",
+          wait_for(lambda: scan_attr("data-scan-loaded") == "обложка.png", 20) and not scan_attr("data-scan-problem"),
+          f"показан: {scan_attr('data-scan-loaded')!r}, беда: {scan_attr('data-scan-problem')!r}")
+    # Переход по номеру (Роман 12.10.2026): щелчок в поле номера, цифра, Enter —
+    # и курсор возвращается в поле формы, из которого пришли.
+    number = driver.find_element(By.CSS_SELECTOR, "[data-scan-no]")
+    ActionChains(driver).move_to_element(number).click().send_keys("1").send_keys(Keys.ENTER).perform()
+    check("номер разворота «1», Enter — открыт «лист 1.jpg»",
+          wait_for(lambda: scan_attr("data-scan-file") == "лист 1.jpg", 5), str(scan_attr("data-scan-file")))
+    check("после перехода по номеру курсор снова в поле «Ребёнок»", wait_for(lambda: driver.execute_script(
+        "const a = document.activeElement; const f = a && a.closest('.field');"
+        "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"), 3),
+        str(driver.execute_script("const a = document.activeElement; return a ? a.tagName + '.' + a.className : null;")))
+    # Alt+стрелка двигает лист и не уводит курсор из поля.
+    ActionChains(driver).key_down(Keys.ALT).send_keys(Keys.ARROW_DOWN).key_up(Keys.ALT).perform()
+    time.sleep(0.3)
+    check("Alt+↓ в настоящем окне оставляет курсор в поле «Ребёнок»", driver.execute_script(
+        "const a = document.activeElement; const f = a && a.closest('.field');"
+        "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"),
+        str(driver.execute_script("const a = document.activeElement; return a ? a.tagName + '.' + a.className : null;")))
     # Запись через настоящий Rust: файл скана сохраняется без пути и читается обратно.
     saved_scan = driver.execute_async_script(
         "const done = arguments[arguments.length - 1];"

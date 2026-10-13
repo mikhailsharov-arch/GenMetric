@@ -31,6 +31,10 @@ type Props = {
    *  (Роман 07.10.2026). Выбранное из списка не правится: это уже принятое
    *  написание. */
   fix?: (text: string, final: boolean) => string;
+  /** Вне обхода клавишами, пока в поле стоит значение («Родство»: в 90 %
+   *  случаев там «отец», Роман 12.10.2026). Пустое поле в обходе остаётся —
+   *  иначе до него только мышью. */
+  skipFilled?: boolean;
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -52,7 +56,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock, skipFilled },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -126,7 +130,13 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
       .then((rows) => {
         if (mine !== seq.current) return; // ответ на устаревший запрос
         setItems(rows);
-        setActive(0);
+        // Звания ищутся и по вхождению (12.10.2026). Если с набранного не
+        // начинается ни одна строка, заранее не выбрана ни одна: иначе Enter
+        // на набранном целиком «вдова» подставил бы «крестьянская вдова» —
+        // та же поломка, что «Курынин» → «Курынина» (ревьюер 13.10.2026).
+        const bare = (t: string) => t.toLowerCase().replace(/ъ(?=\s|$)/g, "");
+        const inside = kind.startsWith("rank") && rows.length > 0 && !rows.some((r) => bare(r.value).startsWith(bare(query)));
+        setActive(inside ? -1 : 0);
         // Единственный вариант, совпадающий с набранным, показывать незачем.
         const exact = rows.length === 1 && rows[0].value.toLowerCase() === query.toLowerCase();
         setOpen(rows.length > 0 && !exact);
@@ -180,13 +190,20 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      if (listOpen) setActive((i) => (i - 1 + items.length) % items.length);
+      if (listOpen) setActive((i) => (i < 0 ? items.length - 1 : (i - 1 + items.length) % items.length));
       else focusNextField(e.currentTarget, -1);
       return;
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      if (listOpen) {
+      if (listOpen && active < 0) {
+        // Ни одна строка не выбрана (звание нашлось только в середине):
+        // набранное остаётся, Enter ведёт дальше. Ctrl+Enter при открытом
+        // списке запись не сохраняет — то же правило, что ниже.
+        if (e.ctrlKey || e.metaKey) { e.stopPropagation(); return; }
+        closeList();
+        focusNextField(e.currentTarget, e.shiftKey ? -1 : 1);
+      } else if (listOpen) {
         // Ctrl+Enter при открытом списке: только подставить, не сохранять.
         // Иначе сохранение (обработчик выше по дереву) уйдёт с недобранным
         // «Бух» вместо выбранного «Бухарино» — состояние ещё не применилось.
@@ -212,9 +229,10 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           else if (ref) ref.current = el;
         }}
         data-field
+        data-browse={browse ? "" : undefined}
         readOnly={lock?.on}
-        tabIndex={lock?.on ? -1 : undefined}
-        data-skip={lock?.on ? "" : undefined}
+        tabIndex={lock?.on || (skipFilled && value.trim()) ? -1 : undefined}
+        data-skip={lock?.on || (skipFilled && value.trim()) ? "" : undefined}
         className={[action && value.trim() ? "withaction" : browse || lock ? "withbrowse" : "", lock?.on ? "locked" : ""]
           .filter(Boolean).join(" ") || undefined}
         value={value}

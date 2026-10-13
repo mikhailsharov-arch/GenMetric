@@ -9,14 +9,16 @@
 use std::cmp::Ordering;
 use std::path::Path;
 
-/// Файл скана: `.jpg` или `.jpeg` в любом регистре, не служебный (у macOS
-/// рядом с картинкой на чужом диске лежит «._имя.jpg»).
+/// Файл скана: `.jpg`, `.jpeg` или `.png` в любом регистре, не служебный (у
+/// macOS рядом с картинкой на чужом диске лежит «._имя.jpg»). PNG — с
+/// 12.10.2026 (Роман: «архивы очень часто выдают цифровые копии именно в этих
+/// форматах»); TIFF и PDF окно программы само не показывает.
 pub fn is_scan(name: &str) -> bool {
     if name.starts_with('.') {
         return false;
     }
     let lower = name.to_lowercase();
-    lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+    lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png")
 }
 
 /// Порядок имён «по-человечески»: цифры сравниваются как числа, буквы — без
@@ -83,7 +85,7 @@ mod tests {
         for name in ["2.jpg", "10.JPEG", "1.jpg", "._1.jpg", "заметки.txt", "обложка.png", ".DS_Store"] {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
-        assert_eq!(list(&dir).unwrap(), vec!["1.jpg", "2.jpg", "10.JPEG"], "только jpg и jpeg, без служебных и без папок");
+        assert_eq!(list(&dir).unwrap(), vec!["1.jpg", "2.jpg", "10.JPEG", "обложка.png"], "jpg, jpeg и png, без служебных и без папок");
         assert!(list(&dir.join("нет такой")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

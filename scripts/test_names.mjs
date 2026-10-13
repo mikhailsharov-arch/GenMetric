@@ -1,6 +1,6 @@
 // Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { feminineSurname, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
+import { feminineSurname, onlyFeminineOf, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -79,5 +79,19 @@ same("метка: пустой комментарий — просто назв�
 same("показ: название и комментарий", JSON.stringify(splitPlaceLabel("Хмельничное (Столпино)")), JSON.stringify({ name: "Хмельничное", comment: "Столпино" }));
 same("показ: без скобок — комментария нет", JSON.stringify(splitPlaceLabel("Хмельничное")), JSON.stringify({ name: "Хмельничное", comment: "" }));
 same("показ: его пункт чужого прихода остаётся целым", splitPlaceLabel("д.Балахонка, Заобнорская волость").comment, "");
+console.log("\nМужчине — не женская форма набранной им фамилии (Роман 12.10.2026)");
+for (const [value, typed, want] of [
+  ["Курынина", "Курынин", true],     // набрано целиком — строка убирается, Enter ведёт дальше
+  ["Курынина", "курынинъ", true],    // регистр и «ъ» не мешают
+  ["Курынина", "Курын", false],      // слово не дописано — строка видна
+  ["Курынина", "Курынина", false],   // набрано то же самое
+  ["Курынин", "Курынин", false],
+  ["Томская", "Томский", true],
+  ["Сова", "Сов", true],             // «Сова» у мужчины: на «Сов» строка убрана, на «Сова» — видна
+  ["Сова", "Сова", false],
+  ["Палий", "Палий", false],
+  ["Курынина", "", false],
+]) same(`«${value}» при набранном «${typed}» — ${want ? "убрать" : "оставить"}`, onlyFeminineOf(value, typed), want);
+
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

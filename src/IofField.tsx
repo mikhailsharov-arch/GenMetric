@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { feminineSurname, showNoName, titleCase, typedCase } from "./names";
+import { feminineSurname, onlyFeminineOf, showNoName, titleCase, typedCase } from "./names";
 import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
@@ -306,7 +306,15 @@ export default function IofField({
         const sexed = kind === "surname" && askedGender === "Ж"
           ? foundWords.map((w) => ({ ...w, value: feminineSurname(w.value) }))
               .filter((w, i, all) => all.findIndex((x) => x.value === w.value) === i)
-          : foundWords;
+          : kind === "surname" && askedGender === "М"
+            // Мужчине не подставлять женскую форму набранной им фамилии:
+            // «Курынин» целиком, в приходе известна только «Курынина» — она
+            // стояла первой строкой, и Enter возвращал «а» (Роман 12.10.2026).
+            // Строка, которая отличается от набранного лишь женским
+            // окончанием, убирается; пока слово не дописано («Курын»), она
+            // видна — фамилию без пары лучше показать, чем промолчать.
+            ? foundWords.filter((w) => !onlyFeminineOf(w.value, currentWord))
+            : foundWords;
         const shownWords = early && foundPersons.length > 0 ? sexed.slice(0, 1) : sexed;
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;

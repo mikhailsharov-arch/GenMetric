@@ -374,7 +374,6 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
-      entryScan.opened(e.scan_file ?? null, e.event_year ?? null);
       if (editingId === null)
         beforeEdit.current = { page, count, year, month };
       witnessPlaceManual.current = [false, false, false, false, false, false];
@@ -407,6 +406,9 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       clergyState.open([person(by("clergy1"), EMPTY_PERSON), person(by("clergy2"), EMPTY_PERSON),
                         person(by("clergy3"), EMPTY_PERSON)]);
       setEditingId(e.id);
+      // После того как запись встала в форму: при ошибке выше «свой» файл
+      // остался бы от записи, которая так и не открылась.
+      entryScan.opened(e.scan_file ?? null, e.event_year ?? null);
       window.scrollTo({ top: 0 });
       // В день венчания, а не в «Счёт»: счёт вне обхода клавишами.
       dayField.current?.focus();
@@ -462,7 +464,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   );
 
   const relativeBefore = (r: Relative, set: (fn: (s: Relative) => Relative) => void) => (
-    <Suggest label="Родство" kind="kinship" value={r.kinship} browse
+    <Suggest label="Родство" kind="kinship" value={r.kinship} browse skipFilled
              onChange={(kinship) => set((s) => ({ ...s, kinship }))} />
   );
 

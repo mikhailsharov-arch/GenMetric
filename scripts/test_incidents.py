@@ -1316,7 +1316,8 @@ def incident_20261010_skany_ryadom_s_formoj():
     """
     scan = read("src/scan.tsx")
     check("щелчок в скане не уводит курсор из поля: просмотрщик фокус не берёт, нажатие мыши не переводит его",
-          "v.canvas.focus = () => undefined;" in scan and "onMouseDownCapture={(e) => e.preventDefault()}" in scan
+          "v.canvas.focus = () => undefined;" in scan
+          and 'onMouseDownCapture={(e) => { if (!(e.target as HTMLElement).closest("[data-scan-no]")) e.preventDefault(); }}' in scan
           and "keyboardNavEnabled: false" in scan)
     check("кнопки блока скана курсор у формы не забирают",
           "const keep = { onMouseDown: (e: React.MouseEvent) => e.preventDefault() };" in scan and scan.count("{...keep}") >= 7)
@@ -1347,7 +1348,7 @@ def incident_20261010_skany_ryadom_s_formoj():
     statements = read("db/statements.sql")
     check("колонка файла скана — в схеме и в запросах записи, списка и досье",
           "scan_file      TEXT" in read("db/schema.sql")
-          and statements.count(":scan_file") == 2 and statements.count("e.scan_file") == 2
+          and statements.count(":scan_file") == 2 and statements.count("e.scan_file") == 11
           and "note, scan_file\n  FROM entry" in statements)
     main_rs = read("src-tauri/src/main.rs")
     conf = read("src-tauri/tauri.conf.json")
@@ -1392,10 +1393,92 @@ def incident_20261010_skany_ryadom_s_formoj():
     for form in ("BirthForm", "DeathForm"):
         text = read(f"src/{form}.tsx")
         check(f"{form}: год без записей, про который нечего сказать, не становится точкой отсчёта января",
-              "if (prev === null || monthManual.current || saved[0] || guess !== null) monthYear.current = year;" in text)
+              "if (prev === null || bothManual || saved[0] || guess !== null) monthYear.current = year;" in text)
+
+
+def incident_20261012_otvet_romana_na_sborku_10_10():
+    """
+    12.10.2026, ответ Романа на сборку 10.10 (intent/2026-10-12-…, спека
+    2026-10-13-dovodka-po-otvetu-12-10). Четыре ошибки, дошедшие до него:
+    1) фамилия мужа не дописывалась матери, если отчество выбрано из списка —
+       выбор оставляет пробел на конце, уход из поля его обрезает, поле
+       разбирает имя заново, и ответ того разбора стирал дописанное;
+    2) «Курынин» у восприемника становился «Курынина»: женская форма без
+       мужской пары стояла первой строкой списка, Enter её подставлял;
+    3) «Вяткинстр.» — ячейки списка «Набрано» без отступа;
+    4) месяц считался по дню события, а книга идёт по дням обряда.
+    Поведение правил держат scripts/test_month.mjs и scripts/test_names.mjs
+    (в конвейере); здесь — что формы этими правилами пользуются.
+    """
+    birth, death = read("src/BirthForm.tsx"), read("src/DeathForm.tsx")
+    check("фамилия матери: пока дописанное не дошло до блока, правка блока с прежним текстом его не стирает",
+          "surnamePin.current = { from: text, to: full };" in birth
+          and "pin && next.iof.trim() === pin.from ? { ...next, iof: pin.to, parsed: null } : next" in birth
+          and "onChange={setMotherFromBlock}" in birth and "onChange={setMother}\n" not in birth
+          and "useEffect(() => { surnamePin.current = null; }, [motherRaw.iof]);" in birth)
+    names, iof = read("src/names.ts"), read("src/IofField.tsx")
+    check("мужчине не показывается строка, которая лишь женская форма набранной фамилии",
+          "export function onlyFeminineOf(" in names
+          and 'kind === "surname" && askedGender === "М"' in iof
+          and "foundWords.filter((w) => !onlyFeminineOf(w.value, currentWord))" in iof
+          and "onlyFeminineOf(" in read("scripts/test_names.mjs"))
+    check("между ячейками списка «Набрано» есть отступ",
+          ".facts.saved td + td { padding-left:" in read("src/styles.css"))
+    month = read("src/month.ts")
+    check("месяц считается по дню обряда: правило знает день обряда последней записи",
+          "export const bookDay = (last: Dated | undefined): number | null => last?.rite_day ?? last?.event_day ?? null;" in month
+          and "export function monthAfter(" in month and "export function eventMonthFrom(" in month
+          and "export function riteMonthFor(" not in month and "export function eventMonthFor(" not in month)
+    statements, main_rs = read("db/statements.sql"), read("src-tauri/src/main.rs")
+    check("день обряда доходит до формы в списке набранных записей",
+          "       e.scan_file,\n       -- День обряда" in statements and "       e.rite_day\n  FROM entry e" in statements
+          and "rite_day: r.get(16)?" in main_rs
+          and "rite_day: riteDay, rite_month: months.riteMonth, rite_year: year, child:" in birth
+          and "rite_day: burialDay, rite_month: months.riteMonth, rite_year: year, deceased:" in death)
+    for form, text, rite in (("BirthForm", birth, "Rite"), ("DeathForm", death, "Burial")):
+        check(f"{form}: месяц события, набранный руками, месяц обряда не двигает; уход из дня события ничего не решает",
+              "const next = followEvent(was, v, follow, riteFilled.current);" in text and "riteMonthFor" not in text
+              and text.count("riteFilled.current = false;") == 3
+              and "export function followEvent(" in month
+              and text.count("onLeave={leaveDay}") == 1
+              and f"noTab={{{rite[0].lower() + rite[1:]}Month !== null}}" in text)
+    check("поле месяца и «Родство» вне обхода клавишами, только пока в них стоит значение",
+          all("noTab={" + m + " !== null} auto={monthAuto().event}" in t
+              for m, t in (("birthMonth", birth), ("deathMonth", death)))
+          and "skipFilled && value.trim()" in read("src/Suggest.tsx")
+          and 'kind="kinship" value={r.kinship} browse skipFilled' in read("src/MarriageForm.tsx")
+          and 'kind="kinship" value={rel.kinship} browse skipFilled' in death)
+    search = read("src-tauri/core/src/search.rs")
+    check("поиск персон: слово из трёх и более букв ищется и в середине, из одной-двух — только с начала",
+          "typed.chars().count() >= 3 && have.contains(typed)" in search and "fn word_match(" in search)
+    check("подсказка званий по вхождению — вторым запросом, после совпадений с начала",
+          "pub fn rank_inside_pattern(" in read("src-tauri/core/src/lib.rs")
+          and "genmetric_core::rank_inside_pattern(&kind, &pattern)" in main_rs)
+    check("листание скана не сбрасывает память поиска; правка без поля скана не стирает привязку",
+          "if *at == before {\n                *at = after;" in main_rs
+          and "scan_file = CASE WHEN :keep_scan THEN scan_file ELSE :scan_file END" in statements
+          and 'deserialize_with = "present"' in read("src-tauri/core/src/records.rs"))
+    suggest = read("src/Suggest.tsx")
+    check("звание, найденное только в середине, заранее не выбрано: Enter оставляет набранное",
+          "setActive(inside ? -1 : 0);" in suggest and "if (listOpen && active < 0) {" in suggest)
+    check("колонки скана в выгрузке не ищут запись во временной таблице без индекса",
+          "JOIN x_entry x ON x.id = e.id" not in statements
+          and statements.count("JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')") == 3)
+    check("Alt+стрелки перехватываются только при живом просмотрщике, Alt+↓ в поле с перечнем остаётся полю",
+          "!onRef.current || !live.viewer) return;" in read("src/scan.tsx")
+          and '?.matches?.("[data-browse], select")) return;' in read("src/scan.tsx")
+          and 'data-browse={browse ? "" : undefined}' in suggest)
+    check("месяц после декабря: событие не уходит в ноябрь (pastDecember)",
+          "export function pastDecember(" in month and "pastDecember(last, s.riteDay ?? s.eventDay)" in month)
+    scan = read("src/scan.tsx")
+    check("скан: переход по номеру, вид к верху листа при смене разворота, Alt+стрелки, PNG",
+          "data-scan-no" in scan and "if (opened++ > 0) toTop(v, OpenSeadragon);" in scan
+          and "panView(pan[0] * PAN_STEP, pan[1] * PAN_STEP);" in scan
+          and 'lower.ends_with(".png")' in read("src-tauri/core/src/scans.rs"))
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261012_otvet_romana_na_sborku_10_10,
     incident_20261010_skany_ryadom_s_formoj,
     incident_20261010_tehnicheskij_sprint,
     incident_20261009_otvet_na_sborku_08_10,

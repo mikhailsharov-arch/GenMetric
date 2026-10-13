@@ -525,6 +525,11 @@ pub struct PersonInput {
     pub death_cause: Option<String>,
 }
 
+/// Поле пришло (пусть и `null`) — `Some`: так его отличают от отсутствующего.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
 #[derive(Deserialize)]
 pub struct EntryInput {
     pub id: Option<i64>,
@@ -541,10 +546,12 @@ pub struct EntryInput {
     pub rite_year: Option<i64>,
     pub note: Option<String>,
     pub uncertain: Option<String>,
-    /// Файл скана разворота — имя без пути (схема 11). Окно прежней сборки
-    /// его не присылает — тогда пусто.
-    #[serde(default)]
-    pub scan_file: Option<String>,
+    /// Файл скана разворота — имя без пути (схема 11). Три случая: поля нет
+    /// (`None`) — при правке привязка записи остаётся как была; `null`
+    /// (`Some(None)`) — привязка снимается; имя — записывается. До 12.10.2026
+    /// «поля нет» и «null» не различались, и вызов без поля стёр бы привязку.
+    #[serde(default, deserialize_with = "present")]
+    pub scan_file: Option<Option<String>>,
     pub persons: Vec<PersonInput>,
 }
 
@@ -647,7 +654,8 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             }
         };
         // Только имя файла: путь к папке сканов у каждого компьютера свой.
-        let scan_file = entry.scan_file.as_deref().map(str::trim).filter(|f| !f.is_empty())
+        let keep_scan = entry.scan_file.is_none();
+        let scan_file = entry.scan_file.as_ref().and_then(|f| f.as_deref()).map(str::trim).filter(|f| !f.is_empty())
             .map(|f| f.rsplit(['/', '\\']).next().unwrap_or(f).to_string());
         let entry_id = match entry.id {
             Some(id) => {
@@ -657,7 +665,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                     ":event_month": entry.event_month, ":event_year": entry.event_year,
                     ":rite_day": entry.rite_day, ":rite_month": entry.rite_month,
                     ":rite_year": entry.rite_year, ":note": entry.note,
-                    ":uncertain": entry.uncertain, ":scan_file": scan_file,
+                    ":uncertain": entry.uncertain, ":scan_file": scan_file, ":keep_scan": keep_scan,
                 }).map_err(|e| e.to_string())?;
                 id
             }

@@ -71,6 +71,17 @@ pub fn suggest_sql(kind: &str) -> Result<(String, bool), String> {
     Ok((sql, !usage_gender.is_empty()))
 }
 
+/// Шаблон «набранное в середине» для подсказки званий: из шаблона «с начала»
+/// (`от%`, уже нормализованного и экранированного) — `%от%`. None — не звание
+/// или набрано меньше двух букв: тогда ищем только с начала.
+pub fn rank_inside_pattern(kind: &str, prefix_pattern: &str) -> Option<String> {
+    let typed = prefix_pattern.strip_suffix('%')?;
+    if !kind.starts_with("rank") || typed.chars().count() < 2 {
+        return None;
+    }
+    Some(format!("%{typed}%"))
+}
+
 /// Адрес поиска населённого пункта на Familio (Роман 03.10.2026, задача 3).
 ///
 /// Страница «Места» читает два параметра: `title` — название, `georequisites`
@@ -158,7 +169,7 @@ pub(crate) fn seed_missing(what: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{familio_search_url, guarded, guarded_db, suggest_sql};
+    use super::{familio_search_url, guarded, guarded_db, rank_inside_pattern, suggest_sql};
 
     /// Паника в команде окна: ошибка вместо закрытой программы, начатое
     /// изменение отменено, соединение работает дальше.
@@ -246,6 +257,23 @@ mod tests {
         assert_eq!(other("кал", "М"), vec!["Калина"]);
         assert_eq!(other("петр", "Ж"), vec!["Петров"]);
         assert_eq!(other("пал", "Ж"), vec!["Палий"]);
+        // Звания по вхождению (12.10.2026): шаблон «в середине» — только
+        // званиям и только с двух букв; тот же запрос его исполняет.
+        assert_eq!(rank_inside_pattern("rank_m", "от%"), Some("%от%".to_string()));
+        assert_eq!(rank_inside_pattern("rank", "от%"), Some("%от%".to_string()));
+        assert_eq!(rank_inside_pattern("rank_m", "о%"), None, "одна буква — только с начала");
+        assert_eq!(rank_inside_pattern("surname", "от%"), None, "фамилии — только с начала");
+        add("rank_m", "сын-отрок", 2);
+        add("rank_m", "отставной рядовой", 5);
+        let ranks = |pattern: &str| -> Vec<String> {
+            let (sql, _) = suggest_sql("rank_m").unwrap();
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let rows = stmt.query_map(rusqlite::named_params! { ":kind": "rank_m", ":prefix": pattern, ":limit": 20i64 },
+                                      |r| r.get::<_, String>(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(ranks("от%"), vec!["отставной рядовой"]);
+        assert_eq!(ranks(&rank_inside_pattern("rank_m", "от%").unwrap()), vec!["отставной рядовой", "сын-отрок"]);
         // Не медленнее с ростом прихода: пара ищется по индексу. 6000 фамилий
         // и первая буква — доли секунды (без индекса было бы больше минуты).
         let tx = conn.unchecked_transaction().unwrap();

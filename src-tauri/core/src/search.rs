@@ -25,7 +25,8 @@ use crate::text::{normalize, normalize_name};
 /// Что набрано на экране «Поиск».
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct Filter {
-    /// Слова ИОФ — в любом порядке, каждое — начало имени, отчества или фамилии.
+    /// Слова ИОФ — в любом порядке; каждое — начало имени, отчества или
+    /// фамилии, а слово из трёх и более букв — и середина (`word_match`).
     pub query: String,
     /// Название пункта как в справочнике; пусто — все пункты.
     pub place: Option<String>,
@@ -35,6 +36,10 @@ pub struct Filter {
     pub part: bool,
     /// Причт — стоит в каждой записи, изначально выключен.
     pub clergy: bool,
+    /// Роли, выключенные по отдельности (Роман 12.10.2026: «отдельные галочки
+    /// по каждой конкретной роли»), — как их называет `role_class`.
+    #[serde(default)]
+    pub skip: Vec<String>,
     pub year_from: Option<i64>,
     pub year_to: Option<i64>,
 }
@@ -189,6 +194,29 @@ fn kind_of(role: &str) -> Kind {
     }
 }
 
+/// Роль без номера: «godparent2» → «godparent», «clergy1» → «clergy». По этим
+/// именам экран выключает роли по отдельности (`Filter::skip`).
+/// Родители и супруги из импорта Excel («bride_parent», «deceased_spouse»)
+/// идут с родственниками своей стороны — отдельной галочки у них нет.
+pub fn role_class(role: &str) -> &str {
+    match role.trim_end_matches(|c: char| c.is_ascii_digit()) {
+        "groom_parent" => "groom_relative",
+        "bride_parent" => "bride_relative",
+        "deceased_parent" | "deceased_spouse" => "deceased_relative",
+        other => other,
+    }
+}
+
+/// Как набранное слово подходит слову персоны: 2 — с начала, 1 — в середине,
+/// 0 — никак. В середине ищем только слово из трёх и более букв: по обрывку
+/// «рьева» находится «Григорьева» (второй тестировщик, 12.10.2026 — текст,
+/// ушедший в корешок), а «ив» в середине нашло бы половину прихода.
+fn word_match(have: &str, typed: &str) -> u8 {
+    if have.starts_with(typed) { 2 }
+    else if typed.chars().count() >= 3 && have.contains(typed) { 1 }
+    else { 0 }
+}
+
 fn blank(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
@@ -291,6 +319,9 @@ fn passes(row: &Row, f: &Filter, place: &Option<String>) -> bool {
     if !wanted || row.first.is_empty() || row.first == crate::records::NO_NAME {
         return false;
     }
+    if f.skip.iter().any(|s| s == role_class(&row.role)) {
+        return false;
+    }
     if let Some(p) = place {
         if &row.place_norm != p {
             return false;
@@ -335,16 +366,27 @@ pub fn find_in(index: &Index, f: &Filter) -> Found {
         }
         g.words.extend(row.words.iter().cloned());
     }
-    let mut hits: Vec<PersonHit> = groups
+    // Каждое набранное слово должно подойти какому-то слову персоны. Персоны,
+    // у которых все слова совпали с начала, идут выше тех, у кого хоть одно
+    // нашлось в середине: точное попадание не должно тонуть среди обрывков.
+    let mut hits: Vec<(bool, PersonHit)> = groups
         .into_iter()
-        // Каждое набранное слово — начало какого-то слова персоны.
-        .filter(|(_, g)| words.iter().all(|w| g.words.iter().any(|have| have.starts_with(w.as_str()))))
-        .map(|((key, _), g)| PersonHit { key, iof: g.iof, place: g.place, mentions: g.mentions, year_from: g.from, year_to: g.to })
+        .filter_map(|((key, _), g)| {
+            let mut exact = true;
+            for w in &words {
+                match g.words.iter().map(|have| word_match(have, w)).max().unwrap_or(0) {
+                    0 => return None,
+                    1 => exact = false,
+                    _ => {}
+                }
+            }
+            Some((exact, PersonHit { key, iof: g.iof, place: g.place, mentions: g.mentions, year_from: g.from, year_to: g.to }))
+        })
         .collect();
-    hits.sort_by(|a, b| b.mentions.cmp(&a.mentions).then(a.iof.cmp(&b.iof)).then(a.place.cmp(&b.place)));
+    hits.sort_by(|(ea, a), (eb, b)| eb.cmp(ea).then(b.mentions.cmp(&a.mentions)).then(a.iof.cmp(&b.iof)).then(a.place.cmp(&b.place)));
     let total = hits.len();
     hits.truncate(PERSON_LIMIT);
-    Found { persons: hits, total }
+    Found { persons: hits.into_iter().map(|(_, h)| h).collect(), total }
 }
 
 /// Досье персоны: все записи, где стоит её ИОФ (ключ) в этом НП, с теми, кто
@@ -517,6 +559,16 @@ mod tests {
         assert_eq!(hits(q("рождеств")), vec![], "причт без переключателя не ищется");
         assert_eq!(hits(Filter { clergy: true, ..q("рождеств") }),
                    vec![("Александр Рождественский".to_string(), String::new(), 5)], "с переключателем — ищется");
+        // Слово в середине (12.10.2026): обрывок из трёх и более букв.
+        assert_eq!(hits(q("питон ив")), both, "обрывок «питон» находит «Капитонович»");
+        assert_eq!(hits(q("ит ив")), vec![], "две буквы в середине слова не ищутся");
+        assert_eq!((word_match("григорьева", "рьева"), word_match("иванов", "ив"), word_match("крапивин", "ив"), word_match("крапивин", "пив")),
+                   (1, 2, 0, 1), "с начала — 2, в середине с трёх букв — 1");
+        // Роли по отдельности.
+        assert_eq!(hits(Filter { skip: vec!["father".into()], ..q("иван кап") })[0].2, 3, "без роли «отец»: умер, восприемник, поручитель");
+        assert_eq!(hits(Filter { skip: vec!["godparent".into(), "witness".into()], ..q("иван кап") })[0].2, 3, "без восприемника и поручителя");
+        assert_eq!((role_class("godparent2"), role_class("clergy1"), role_class("groom_relative"), role_class("deceased_spouse")),
+                   ("godparent", "clergy", "groom_relative", "deceased_relative"));
         let found = find(&conn, &q("иван кап")).unwrap();
         assert_eq!((found.total, found.persons[0].year_from, found.persons[0].year_to), (2, Some(1889), Some(1897)));
         drop(conn);
@@ -556,7 +608,7 @@ mod tests {
             person("child", 10, ("Нил", "", ""), ("Нил", ""), "", "", "М"),
             person("father", 20, ("Нил", "Нилов", "Сканов"), ("Нил", "Нилович"), "Малово", "крестьянин", "М"),
         ]);
-        with_scan.scan_file = Some("C:\\сканы\\дело 5\\лист 12.jpg".into());
+        with_scan.scan_file = Some(Some("C:\\сканы\\дело 5\\лист 12.jpg".into()));
         let saved = save_entry(&conn, &with_scan).unwrap();
         let stored: Option<String> = conn.query_row("SELECT scan_file FROM entry WHERE id = ?1", [saved.id], |r| r.get(0)).unwrap();
         assert_eq!(stored.as_deref(), Some("лист 12.jpg"), "в базе — только имя файла");
@@ -564,10 +616,25 @@ mod tests {
         assert_eq!(dossier(&conn, &nil.key, &nil.place, &all()).unwrap().events[0].scan_file.as_deref(), Some("лист 12.jpg"));
         assert_eq!(d.events[0].scan_file, None, "у записи без скана — пусто");
         with_scan.id = Some(saved.id);
-        with_scan.scan_file = Some("  ".into());
+        with_scan.scan_file = Some(Some("  ".into()));
         save_entry(&conn, &with_scan).unwrap();
         let cleared: Option<String> = conn.query_row("SELECT scan_file FROM entry WHERE id = ?1", [saved.id], |r| r.get(0)).unwrap();
         assert_eq!(cleared, None, "пустое имя — в базе пусто");
+        // Правка без поля скана привязку не трогает; с null — снимает.
+        with_scan.scan_file = Some(Some("лист 12.jpg".into()));
+        save_entry(&conn, &with_scan).unwrap();
+        with_scan.scan_file = None;
+        save_entry(&conn, &with_scan).unwrap();
+        let kept: Option<String> = conn.query_row("SELECT scan_file FROM entry WHERE id = ?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(kept.as_deref(), Some("лист 12.jpg"), "поля нет — привязка осталась");
+        let from_window: EntryInput = serde_json::from_str(r#"{"id":1,"section":1,"case_id":1,"page":null,"no_male":null,"no_female":null,"event_day":null,"event_month":null,"event_year":null,"rite_day":null,"rite_month":null,"rite_year":null,"note":null,"uncertain":null,"scan_file":null,"persons":[]}"#).unwrap();
+        assert_eq!(from_window.scan_file, Some(None), "null от окна — «снять привязку», а не «поля нет»");
+        let old_window: EntryInput = serde_json::from_str(r#"{"id":1,"section":1,"case_id":1,"page":null,"no_male":null,"no_female":null,"event_day":null,"event_month":null,"event_year":null,"rite_day":null,"rite_month":null,"rite_year":null,"note":null,"uncertain":null,"persons":[]}"#).unwrap();
+        assert_eq!(old_window.scan_file, None, "поля нет вовсе");
+        with_scan.scan_file = Some(None);
+        save_entry(&conn, &with_scan).unwrap();
+        let gone: Option<String> = conn.query_row("SELECT scan_file FROM entry WHERE id = ?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(gone, None, "null — привязка снята");
         // Смерть: возраст и причина.
         assert_eq!((d.events[4].me.age.as_deref(), d.events[4].me.death_cause.as_deref()), (Some("60"), Some("чахотка")));
 

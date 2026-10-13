@@ -491,6 +491,9 @@ button.linkish {
 .editbar .toggle { margin-left: auto; }
 .facts.saved { display: block; max-height: 14em; overflow-y: auto; }
 .facts.saved tr.editing td { background: #fff7e0; }
+/* Список — блок с прокруткой, ячейки сжаты по содержимому: без отступа
+   «Вяткин» и «стр.» слипались (Роман 12.10.2026). */
+.facts.saved td + td { padding-left: 0.9em; }
 
 /* ============================================================================
    Модальные окна: сверка имени со справочником, карточка населённого пункта
@@ -696,6 +699,9 @@ button.toggle { white-space: nowrap; }
    ============================================================================ */
 /* Набранное в поле числа не принято — поле коротко мигает (NumberField). */
 .numrow input.rejected { border-color: #b3261e; background: #fdecea; }
+/* Месяц, который программа переключила сама (Роман 12.10.2026): нейтральный
+   фон — заметно, но не тревожно. */
+.numrow input.auto { background: #cfe0f5; border-color: #5f86b8; }
 /* Форма занята, годы-опечатки в файле: заметнее обычной подсказки. */
 .reviewbusy {
   margin: 0 0 0.5em; padding: 0.4em 0.6em; font-size: 0.85rem; line-height: 1.35;
@@ -846,6 +852,9 @@ button.toggle { white-space: nowrap; }
 /* Пороги — в em колонки (шрифт 15px), прежние были в em окна (16px): те же точки при масштабе 100 %. */
 @container app (min-width: 42.7em) { .searchfields { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
 .searchopts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3em 1.2em; margin-top: 0.3em; }
+.searchroles { display: flex; flex-wrap: wrap; gap: 0.2em 1.4em; margin-top: 0.3em; font-size: 0.9rem; }
+.searchroles .rolegroup { display: flex; flex-wrap: wrap; gap: 0.1em 0.9em; }
+.searchroles .rolegroup + .rolegroup { padding-left: 1.4em; border-left: 0.0625em solid var(--line); }
 .searchyears { display: inline-flex; align-items: center; gap: 0.35em; font-size: 0.82rem; color: var(--muted); }
 .searchyears input { width: 3.6em; padding: 0.1em 0.3em; text-align: center; }
 
@@ -873,6 +882,18 @@ button.toggle { white-space: nowrap; }
 .dossier h3 { margin: 0.5em 0 0.2em; font-size: 0.9rem; color: var(--accent); }
 .dossier .when { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
 .dossier .sub { color: var(--muted); font-size: 0.82rem; }
+/* «Семья» и события — два разных блока (Роман 12.10.2026: «визуально
+   сливаются в единое текстовое полотно»): у семьи фон и полоса слева, у
+   событий — своя плашка-заголовок. */
+.dossierfamily {
+  margin: 0.6em 0 0.9em; padding: 0.4em 0.7em 0.5em;
+  background: #f3f7fc; border-left: 0.2em solid var(--accent); border-radius: 0.3em;
+}
+.dossierfamily h3 { margin-top: 0; }
+.dossier h3.eventshead {
+  margin: 0.9em 0 0.3em; padding: 0.25em 0.7em;
+  background: #f1f1ee; border-left: 0.2em solid var(--muted); border-radius: 0.3em; color: var(--ink);
+}
 .dossierfamily p { margin: 0.15em 0; }
 .dossierfamily ul { margin: 0 0 0.3em; padding-left: 1.2em; list-style: none; }
 .dossierfamily li { margin: 0.1em 0; }
@@ -1011,6 +1032,20 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
 }
 .scanname b { color: var(--ink); font-weight: 600; }
 .scantools { display: flex; gap: 0.3em; flex-wrap: wrap; }
+/* Номер разворота — поле: набрали и Enter (Роман 12.10.2026). */
+.scanno {
+  width: 3.2em; padding: 0.05em 0.25em; margin-right: 0.15em;
+  font: inherit; font-weight: 600; color: var(--ink); text-align: right;
+  border: 1px solid var(--line); border-radius: 0.25em; background: #fff;
+}
+/* В узком блоке у кнопок вида — значки вместо слов: иначе они шли в
+   несколько рядов и отнимали высоту у листа. Слова — во всплывающей подписи. */
+.scanpane { container: scanpane / inline-size; }
+.scantools .short { display: none; }
+@container scanpane (max-width: 34em) {
+  .scantools .long { display: none; }
+  .scantools .short { display: inline; }
+}
 .scanview { flex: 1 1 0; min-height: 0; }
 .scanempty {
   margin: auto;

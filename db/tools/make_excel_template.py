@@ -49,13 +49,24 @@ RELABEL = {
     "Рождения": {2: dict(zip("AM AN AO AP AQ AR AS AT".split(),
                              ["Восприемник 3"] * 4 + ["Восприемник 4"] * 4))},
 }
+# Скан записи (Роман 12.10.2026: «в выгрузку необходимо отдавать не только имя
+# файла скана, но и полный путь») — две колонки за последней колонкой листа,
+# оформление как у ИОФ поручителя 1 (AE).
 LIKE = {  # колонка → с какой колонки взять ширину и стили
-    "Рождения": dict(zip("AM AN AO AP AQ AR AS AT".split(), "AE AF AG AH AE AF AG AH".split())),
-    "Браки": dict(zip("BD BE BF BG BH BI BJ BK".split(), "AE AF AG AH AE AF AG AH".split())),
+    "Рождения": {**dict(zip("AM AN AO AP AQ AR AS AT".split(), "AE AF AG AH AE AF AG AH".split())),
+                 "BD": "AE", "BE": "AE"},
+    "Браки": {**dict(zip("BD BE BF BG BH BI BJ BK".split(), "AE AF AG AH AE AF AG AH".split())),
+              "BL": "AE", "BM": "AE"},
+    "Смерти": {"BD": "AE", "BE": "AE"},
 }
+SCAN_TEXT = lambda a, b: {1: {a: "Файл", b: "Путь к файлу"}, 2: {a: "Скан", b: "Скан"}}
 EXTRA_TEXT = {
-    "Браки": {1: dict(zip("BD BE BF BG BH BI BJ BK".split(), ["ИОФ", "НП", "Звание", "Прим."] * 2)),
-              2: dict(zip("BD BE BF BG BH BI BJ BK".split(), ["Поручитель 5"] * 4 + ["Поручитель 6"] * 4))},
+    "Рождения": SCAN_TEXT("BD", "BE"),
+    "Браки": {1: {**dict(zip("BD BE BF BG BH BI BJ BK".split(), ["ИОФ", "НП", "Звание", "Прим."] * 2)),
+                  **SCAN_TEXT("BL", "BM")[1]},
+              2: {**dict(zip("BD BE BF BG BH BI BJ BK".split(), ["Поручитель 5"] * 4 + ["Поручитель 6"] * 4)),
+                  **SCAN_TEXT("BL", "BM")[2]}},
+    "Смерти": SCAN_TEXT("BD", "BE"),
 }
 
 

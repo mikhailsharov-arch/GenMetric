@@ -403,7 +403,8 @@ def main() -> int:
         check("ребёнок: отчество по имени отца, «дочь», НП отца",
               [v("G"), v("K"), v("L"), v("M")] == ["Татьяна Никитична", "Никитична", "дочь", "Чертеж Малый"],
               str([v("G"), v("K"), v("L"), v("M")]))
-        check("N…BP — строка листа записи", r[col("N"):col("BP") + 1] == rows(db, sql, "excel_births")[0])
+        check("N…BP — строка листа записи (55 колонок индексатора, без колонок скана)",
+              r[col("N"):col("BP") + 1] == rows(db, sql, "excel_births")[0][:55])
         check("BS ID записи, BU церковь, BV село", [v("BS"), v("BU"), v("BV")] ==
               ["GM-1", "Христорождественская", "Борисоглебское"], str([v("BS"), v("BU"), v("BV")]))
         r = mk[1]
@@ -493,6 +494,28 @@ def main() -> int:
         check("выгрузка в Excel: комментария пункта нет ни в одной ячейке",
               any(c == "Заборье" for c in excel) and not any("Столпино" in c for c in excel),
               str([c for c in excel if "Забор" in c][:4]))
+
+        # Скан записи в выгрузке Excel (Роман 12.10.2026: «не только имя файла
+        # скана, но и полный путь»): две колонки за последней колонкой листа.
+        first = db.execute("SELECT id, coalesce(rite_year, event_year) FROM entry WHERE section = 1 ORDER BY id LIMIT 1").fetchone()
+        db.execute("UPDATE entry SET scan_file = 'лист 12.jpg' WHERE id = ?", (first[0],))
+        db.executescript(sql["export_prepare"])
+        scan_of = lambda: next(x for x in rows(db, sql, "excel_births") if x[0] == 1)[55:]
+        check("скан: листы рождений и смертей — 57 колонок, браков — 65",
+              [len(rows(db, sql, b)[0]) for b in ("excel_births", "excel_marriages", "excel_deaths")] == [57, 65, 57])
+        check("скан: папка дела не указана — имя файла есть, путь пуст", list(scan_of()) == ["лист 12.jpg", None], str(scan_of()))
+        db.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)", (f"scan_dir_{first[1]}", "C:\\Сканы\\Дело 18"))
+        check("скан: путь — папка дела и имя файла, разделитель как в папке",
+              list(scan_of()) == ["лист 12.jpg", "C:\\Сканы\\Дело 18\\лист 12.jpg"], str(scan_of()))
+        db.execute("UPDATE setting SET value = '/Users/r/сканы/дело 18/' WHERE key = ?", (f"scan_dir_{first[1]}",))
+        check("скан: папка с косой чертой на конце — без двойного разделителя",
+              scan_of()[1] == "/Users/r/сканы/дело 18/лист 12.jpg", str(scan_of()))
+        check("скан: у записи без файла обе колонки пусты",
+              all(list(x[55:]) == [None, None] for x in rows(db, sql, "excel_births") if x[0] != 1))
+        check("скан: в выгрузке Familio файла нет",
+              not any("лист 12" in str(c) for x in rows(db, sql, "familio_birth") for c in x))
+        db.execute("UPDATE entry SET scan_file = NULL WHERE id = ?", (first[0],))
+        db.execute("DELETE FROM setting WHERE key LIKE 'scan_dir_%'")
 
         # Запись без года (до 22.09 год не был обязателен): со всем приходом
         # выгружается, по списку годов — нет, и окно это показывает.

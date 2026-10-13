@@ -118,7 +118,10 @@ VALUES (:case_id, :section, :page, :no_male, :no_female,
 UPDATE entry SET case_id = :case_id, page = :page, no_male = :no_male, no_female = :no_female,
                  event_day = :event_day, event_month = :event_month, event_year = :event_year,
                  rite_day = :rite_day, rite_month = :rite_month, rite_year = :rite_year,
-                 note = :note, uncertain = :uncertain, scan_file = :scan_file,
+                 note = :note, uncertain = :uncertain,
+                 -- :keep_scan = 1 — вызывающий поля скана не прислал: привязка
+                 -- записи к развороту остаётся как была (12.10.2026).
+                 scan_file = CASE WHEN :keep_scan THEN scan_file ELSE :scan_file END,
                  updated_at = datetime('now')
  WHERE id = :id;
 
@@ -510,7 +513,9 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        -- году» он равен году обряда (сборка #38).
        e.rite_year,
        -- Файл скана разворота — значок в строке списка (10.10.2026).
-       e.scan_file
+       e.scan_file,
+       -- День обряда: по нему считается месяц следующей записи (12.10.2026).
+       e.rite_day
   FROM entry e
  -- Записи года книги (:year), а не всего прихода: после импорта из Excel в
  -- списке иначе была бы тысяча строк. :last = 1 — одна последняя запись
@@ -1502,25 +1507,60 @@ SELECT DISTINCT e.village, NULL, NULL, NULL, NULL, e.village, e.village, NULL, N
  ORDER BY 1, 7;
 
 -- @excel_births
--- Лист «Рождения» (у индексатора «1»): 55 колонок A…BC, как у него.
-SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
-       c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
-       c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55
-  FROM x_row WHERE section = 1 ORDER BY c1;
-
--- @excel_marriages
--- Лист «Браки» («2»): 55 колонок A…BC и ещё 8 — поручители 5 и 6 (BD…BK).
+-- Лист «Рождения» (у индексатора «1»): 55 колонок A…BC, как у него, и две
+-- наши — скан записи (BD, BE).
 SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
        c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
        c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55,
-       c56, c57, c58, c59, c60, c61, c62, c63
+       -- Скан записи (12.10.2026): имя файла и полный путь. Путь — папка
+       -- сканов дела на этом компьютере (настройка scan_dir_<год книги>);
+       -- папка не указана — путь пуст. Разделитель — какой стоит в папке.
+       -- Год книги — прямо из записи: x_entry без индекса по id давал бы
+       -- просмотр всей таблицы на каждую строку (ревьюер 13.10.2026).
+       (SELECT e.scan_file FROM entry e WHERE e.id = x_row.entry_id),
+       (SELECT rtrim(s.value, '/' || char(92))
+               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END || e.scan_file
+          FROM entry e
+          JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')
+         WHERE e.id = x_row.entry_id AND e.scan_file IS NOT NULL AND trim(coalesce(s.value, '')) <> '')
+  FROM x_row WHERE section = 1 ORDER BY c1;
+
+-- @excel_marriages
+-- Лист «Браки» («2»): 55 колонок A…BC, ещё 8 — поручители 5 и 6 (BD…BK) — и
+-- скан записи (BL, BM).
+SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
+       c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
+       c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55,
+       c56, c57, c58, c59, c60, c61, c62, c63,
+       -- Скан записи (12.10.2026): имя файла и полный путь. Путь — папка
+       -- сканов дела на этом компьютере (настройка scan_dir_<год книги>);
+       -- папка не указана — путь пуст. Разделитель — какой стоит в папке.
+       -- Год книги — прямо из записи: x_entry без индекса по id давал бы
+       -- просмотр всей таблицы на каждую строку (ревьюер 13.10.2026).
+       (SELECT e.scan_file FROM entry e WHERE e.id = x_row.entry_id),
+       (SELECT rtrim(s.value, '/' || char(92))
+               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END || e.scan_file
+          FROM entry e
+          JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')
+         WHERE e.id = x_row.entry_id AND e.scan_file IS NOT NULL AND trim(coalesce(s.value, '')) <> '')
   FROM x_row WHERE section = 2 ORDER BY c1;
 
 -- @excel_deaths
--- Лист «Смерти» («3»): 55 колонок A…BC.
+-- Лист «Смерти» («3»): 55 колонок A…BC и скан записи (BD, BE).
 SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
        c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
-       c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55
+       c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55,
+       -- Скан записи (12.10.2026): имя файла и полный путь. Путь — папка
+       -- сканов дела на этом компьютере (настройка scan_dir_<год книги>);
+       -- папка не указана — путь пуст. Разделитель — какой стоит в папке.
+       -- Год книги — прямо из записи: x_entry без индекса по id давал бы
+       -- просмотр всей таблицы на каждую строку (ревьюер 13.10.2026).
+       (SELECT e.scan_file FROM entry e WHERE e.id = x_row.entry_id),
+       (SELECT rtrim(s.value, '/' || char(92))
+               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END || e.scan_file
+          FROM entry e
+          JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')
+         WHERE e.id = x_row.entry_id AND e.scan_file IS NOT NULL AND trim(coalesce(s.value, '')) <> '')
   FROM x_row WHERE section = 3 ORDER BY c1;
 
 -- @excel_mk

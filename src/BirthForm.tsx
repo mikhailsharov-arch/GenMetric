@@ -11,7 +11,7 @@ import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow } from "./page";
-import { monthOnYearChange, riteMonthFor, settleMonths } from "./month";
+import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
@@ -68,6 +68,7 @@ type Brief = {
   event_day: number | null;
   event_month: number | null;
   event_year: number | null;
+  rite_day?: number | null;
   rite_month: number | null;
   rite_year: number | null;
   child: string | null;
@@ -107,26 +108,38 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const [riteMonth, setRiteMonth] = useState<number | null>(null);
   // Крещение в следующем году — отмечает человек (NextYear.tsx).
   const [riteNextYear, setRiteNextYear] = useState(false);
-  /** Месяц рождения подставляется в месяц крещения — в одну сторону
-   *  (Роман 28.09.2026: «в большинстве записей месяцы совпадают»). */
+  /** Месяц рождения, набранный руками. */
   function changeBirthMonth(v: number | null) {
     monthManual.current = true;
     setBirthMonth(v);
-    // Только пока обряд пуст или совпадал с событием: исправленный руками
-    // месяц крещения правка месяца рождения не затирает (ревьюер #38).
-    if (autoMonths() && !riteMonthManual.current && v !== null) setRiteMonth(riteMonthFor(birthDay, v, riteDay));
-    else setRiteMonth((r) => (r === null || r === birthMonth ? v : r));
+    // Месяц обряда за ним не идёт (Роман 12.10.2026: «если я вручную меняю
+    // месяц рождения (например, ребенок родился в конце предыдущего месяца),
+    // то месяц крещения при этом не должен меняться автоматически вслед за
+    // ним»). Два исключения: пустой месяц обряда заполняется (первая запись
+    // книги), и обряд не остаётся раньше события — месяц события подняли выше
+    // месяца обряда, значит, перешли к другому месяцу книги.
+    const was = monthsNow.current.riteMonth;
+    const follow = autoMonths() && !riteMonthManual.current;
+    if (follow && was === null) riteFilled.current = true;
+    const next = followEvent(was, v, follow, riteFilled.current);
+    // Обряд перешёл вслед за событием — это решение человека: правило по дню
+    // обряда его уже не отменяет. Заполнение пустого — не решение.
+    if (was !== null && next !== was && !riteFilled.current) riteMonthManual.current = true;
+    setRiteMonth(next);
   }
   // --- Месяц сам (Роман 09.10.2026, month.ts) ---
-  // День рождения меньше, чем в последней записи года, — следующий месяц;
-  // день крещения меньше дня рождения — крещение в следующем месяце. Месяц,
-  // набранный руками, до сохранения не трогаем; запись на правке — тоже.
+  // День крещения меньше, чем в последней записи года, — следующий месяц;
+  // день рождения больше дня крещения — рождение в предыдущем месяце (с
+  // 12.10.2026 правило считает по дню обряда). Месяц, набранный руками, до
+  // сохранения не трогаем; запись на правке — тоже.
   const monthManual = useRef(false);
   const riteMonthManual = useRef(false);
   const autoMonths = () => editingRef.current === null;
   // Цифра, которая может быть началом двузначного дня, месяц не двигает:
   // решение — на второй цифре, при уходе из поля или при сохранении.
-  const monthPending = useRef({ event: false, rite: false });
+  const monthPending = useRef(NO_WAIT);
+  /** Месяц обряда был пуст и заполнен из месяца события в этой же записи. */
+  const riteFilled = useRef(false);
   // Дни и месяцы «на сейчас» — не из замыкания: Ctrl+Enter в поле дня сначала
   // уводит из него фокус (решение принято, месяц изменён), а сохранение в том
   // же событии ещё видит прежний месяц — и записало бы его (стенд 10.10.2026).
@@ -150,13 +163,31 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     setRiteDay(v);
     if (autoMonths()) settle("rite", { riteDay: v });
   }
-  /** Ушли из поля дня — отложенное решение о месяце принимается. */
+  /** Ушли из поля дня обряда — отложенное решение о месяце принимается. Из
+   *  поля дня события уход ничего не решает: день обряда ещё впереди. */
   function leaveDay() {
     if (autoMonths()) settle(null);
   }
+  /** Месяц, который программа переключила сама, подсвечен (Роман 12.10.2026:
+   *  «ненавязчивое уведомление… о том, что месяц изменился»): он не тот, что
+   *  в последней записи, и набран не руками. */
+  function monthAuto() {
+    const last = saved[0];
+    if (editingId !== null || !last || (birthDay === null && riteDay === null)) return { event: false, rite: false };
+    return {
+      event: !monthManual.current && birthMonth !== null && last.event_month !== null && birthMonth !== last.event_month,
+      rite: !riteMonthManual.current && riteMonth !== null && bookMonth(last) !== null && riteMonth !== bookMonth(last),
+    };
+  }
   function typeRiteMonth(v: number | null) {
     riteMonthManual.current = true;
+    riteFilled.current = false;
     setRiteMonth(v);
+    // Месяц события считается от месяца обряда — и от набранного руками тоже.
+    // Кроме перехода через год: событие в декабре, обряд поправили на январь
+    // — декабрь остаётся, отметку «в предыдущем году» ставит человек.
+    if (autoMonths() && !monthManual.current && v !== null && !(v === 1 && birthMonth === 12))
+      setBirthMonth(eventMonthFrom(v, birthDay, riteDay));
   }
   // Месяцы больше не «декабрь → январь» — отметка «в предыдущем году»
   // теряет смысл и снимается, чтобы не всплыть отмеченной позже.
@@ -234,17 +265,20 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   useEffect(() => {
     if (year === null || year < 1700 || savedYear.current !== year || !autoMonths()) return;
     const prev = monthYear.current;
-    const guess = monthManual.current ? null : monthOnYearChange(prev, year, saved[0], birthDay);
+    const bothManual = monthManual.current && riteMonthManual.current;
+    const guess = bothManual ? null : monthOnYearChange(prev, year, saved[0], riteDay ?? birthDay);
     // Год без записей, про который сказать нечего, точкой отсчёта не
     // становится: опечатка в годе (1889 → 1891 → 1890) иначе отнимала январь.
-    if (prev === null || monthManual.current || saved[0] || guess !== null) monthYear.current = year;
-    if (monthManual.current) return;
-    // Месяц тот же — не трогаем и месяц обряда: он мог быть восстановлен
-    // по последней записи (крещение в следующем месяце).
-    if (guess === null || guess === birthMonth) return;
-    monthPending.current = { event: false, rite: false };
-    setBirthMonth(guess);
-    if (!riteMonthManual.current) setRiteMonth(riteMonthFor(birthDay, guess, riteDay));
+    if (prev === null || bothManual || saved[0] || guess !== null) monthYear.current = year;
+    if (bothManual || guess === null) return;
+    // Правило считает месяц обряда; месяц события — от него: и когда месяц
+    // обряда уже тот, месяц события мог остаться от прежнего года.
+    monthPending.current = NO_WAIT;
+    riteFilled.current = false;
+    const rite = riteMonthManual.current ? riteMonth : guess;
+    if (rite !== riteMonth) setRiteMonth(rite);
+    const event = monthManual.current ? birthMonth : eventMonthFrom(rite, birthDay, riteDay);
+    if (event !== birthMonth) setBirthMonth(event);
   }, [saved]);
   const editingRef = useRef(editingId);
   editingRef.current = editingId;
@@ -428,8 +462,22 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     if (!needsFathersSurname(p)) return;
     surnameDoneFor.current = text;
     const full = `${text} ${feminineSurname(fathers)}`;
+    surnamePin.current = { from: text, to: full };
     setMother((m) => (m.iof.trim() === text ? { ...m, iof: full, parsed: null } : m));
   }
+  // Дописанную фамилию стирал сам блок матери (Роман 12.10.2026: «выбираю
+  // словарное отчество из выпадающего списка… фамилия мужа не подтягивается»).
+  // Слово из подсказки оставляет в поле пробел на конце; при уходе пробел
+  // обрезается, и поле разбирает имя заново. Ответ того разбора приходит,
+  // когда фамилия уже дописана, но блок её ещё не видел — и кладёт в форму
+  // прежний текст. Пока форма с фамилией не перерисована, правка блока с
+  // прежним текстом фамилию не трогает.
+  const surnamePin = useRef<{ from: string; to: string } | null>(null);
+  function setMotherFromBlock(next: Person) {
+    const pin = surnamePin.current;
+    setMother(pin && next.iof.trim() === pin.from ? { ...next, iof: pin.to, parsed: null } : next);
+  }
+  useEffect(() => { surnamePin.current = null; }, [motherRaw.iof]);
   /** Только «имя отчество»: без отчества фамилия встала бы на его место. */
   const needsFathersSurname = (p: Parsed | null) =>
     !!p && p.known_name && !!p.patronymic && !p.surname && !p.patr_unknown;
@@ -705,7 +753,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       if (editingId === null)
         setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
                            event_day: birthDay, event_month: months.eventMonth, event_year: null,
-                           rite_month: months.riteMonth, rite_year: year, child: titleCase(child).trim() || null,
+                           rite_day: riteDay, rite_month: months.riteMonth, rite_year: year, child: titleCase(child).trim() || null,
                            father: father.iof.trim() || null, clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
@@ -777,7 +825,6 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     }
     try {
       const e = await invoke<EntryFull>("entry_load", { id });
-      entryScan.opened(e.scan_file ?? null, e.rite_year ?? e.event_year ?? null);
       if (editingId === null) {
         beforeEdit.current = { page, count, year, birthMonth, riteMonth };
       }
@@ -817,6 +864,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
                         person(by("clergy2"), { ...EMPTY_PERSON }),
                         person(by("clergy3"), { ...EMPTY_PERSON })]);
       setEditingId(e.id);
+      // После того как запись встала в форму: при ошибке выше «свой» файл
+      // остался бы от записи, которая так и не открылась.
+      entryScan.opened(e.scan_file ?? null, e.rite_year ?? e.event_year ?? null);
       window.scrollTo({ top: 0 });
       // В день рождения, а не в «Счёт»: счёт теперь вне обхода клавишами.
       dayField.current?.focus();
@@ -882,7 +932,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     countManual.current = false;
     monthManual.current = false;
     riteMonthManual.current = false;
-    monthPending.current = { event: false, rite: false };
+    monthPending.current = NO_WAIT;
+    riteFilled.current = false;
     dayField.current?.focus();
     dayField.current?.select();
   }
@@ -937,10 +988,15 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         {/* Даты рождения и крещения — одной строкой, если ширины хватает
             (27.09.2026: минус строка высоты); узко — переносятся. */}
         <div className="row wrap">
-          <NumberField label="Рожд., день" onLeave={leaveDay} value={birthDay} onChange={typeBirthDay} min={1} max={31} inputRef={dayField} />
-          <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12} />
+          <NumberField label="Рожд., день" value={birthDay} onChange={typeBirthDay} min={1} max={31} inputRef={dayField} />
+          {/* Месяцы ставятся сами и стоят вне обхода клавишами, как «Счёт» (Роман
+              12.10.2026). Пустой месяц — у первой записи книги — в обходе
+              остаётся: иначе до него только мышью. */}
+          <NumberField label="месяц" value={birthMonth} onChange={changeBirthMonth} min={1} max={12}
+                       noTab={birthMonth !== null} auto={monthAuto().event} />
           <NumberField label="Крещ., день" onLeave={leaveDay} value={riteDay} onChange={typeRiteDay} min={1} max={31} />
-          <NumberField label="месяц" value={riteMonth} onChange={typeRiteMonth} min={1} max={12} noTab />
+          <NumberField label="месяц" value={riteMonth} onChange={typeRiteMonth} min={1} max={12}
+                       noTab={riteMonth !== null} auto={monthAuto().rite} />
         </div>
         <NextYear eventMonth={birthMonth} riteMonth={riteMonth} year={year} rite="крещение"
                   checked={riteNextYear} onChange={setRiteNextYear} />
@@ -1038,7 +1094,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       <PersonBlock hidden={motherFolded}
         title="Мать"
         person={mother}
-        onChange={setMother}
+        onChange={setMotherFromBlock}
         inputRef={motherIof}
         rankKind="rank"
         placeDefaults={placeDefaults}

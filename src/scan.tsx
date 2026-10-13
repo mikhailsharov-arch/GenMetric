@@ -37,6 +37,9 @@ type Scan = {
   url: (name: string) => string;
   /** Листание человеком. */
   step: (by: 1 | -1) => void;
+  /** Переход к развороту по порядковому номеру с нуля (Роман 12.10.2026:
+   *  «нажимать на стрелку 52 раза — не вариант»). */
+  goTo: (index: number) => void;
   /**
    * Показать разворот записи по ссылке «скан». Место набора запоминается —
    * к нему возвращает кнопка «к набору». Год — год книги записи: папка у
@@ -68,6 +71,8 @@ export function useScan(): Scan {
 }
 
 export const FORM_WIDTH = 470;
+/** Шаг сдвига скана клавишами — доля видимой части. */
+const PAN_STEP = 0.25;
 const FORM_MIN = 380;
 
 export function ScanProvider({ year, ready, children }: { year: number | null; ready: boolean; children: React.ReactNode }) {
@@ -130,7 +135,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   const chosen = useCallback((s: ScanFiles) => {
     apply(s);
     setOn(true);
-    if (!s.missing && s.files.length === 0) warn("В папке нет сканов", "программа показывает файлы .jpg и .jpeg; вложенные папки не читаются");
+    if (!s.missing && s.files.length === 0) warn("В папке нет сканов", "программа показывает файлы .jpg, .jpeg и .png; вложенные папки не читаются");
   }, [apply, setOn]);
 
   const pickDir = useCallback(() => {
@@ -207,6 +212,10 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
         // набора теперь тут. При правке записи место набора ждёт её конца.
         if (away === "link") { held.current = null; setAway(null); }
         go(at + by);
+      },
+      goTo: (i) => {
+        if (away === "link") { held.current = null; setAway(null); }
+        go(i);
       },
       show: (name, entryYear) => {
         if (entryYear !== year) return "другое дело";
@@ -308,6 +317,38 @@ export function ScanLink({ file, year }: { file: string | null | undefined; year
 }
 
 type Viewer = import("openseadragon").Viewer;
+type Osd = typeof import("openseadragon");
+
+/** Просмотрщик открытого блока — для клавиш, которые слушает всё окно. */
+const live: { viewer: Viewer | null; osd: Osd | null } = { viewer: null, osd: null };
+
+/** Сдвинуть вид на долю видимой части: `dx`, `dy` — в долях ширины и высоты блока. */
+function panView(dx: number, dy: number) {
+  const { viewer: v, osd } = live;
+  if (!v || !osd) return;
+  const size = v.viewport.getContainerSize();
+  v.viewport.panBy(v.viewport.deltaPointsFromPixels(new osd.Point(size.x * dx, size.y * dy)));
+  v.viewport.applyConstraints();
+}
+
+/**
+ * Вид — к верхнему краю листа, масштаб и место по горизонтали прежние (Роман
+ * 12.10.2026: «дойдя до последней записи, я оказываюсь в самом низу… при
+ * смене слайда масштаб должен сохраняться, но фокус просмотра должен
+ * автоматически сбрасываться на самый верх новой страницы»). Считаем в
+ * точках блока: так верно и для повёрнутого листа. Лист виден целиком по
+ * высоте — двигать нечего.
+ */
+function toTop(v: Viewer, osd: Osd) {
+  const item = v.world.getItemAt(0);
+  if (!item) return;
+  const b = item.getBounds(true);
+  const ys = [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]
+    .map(([x, y]) => v.viewport.viewportToViewerElementCoordinates(new osd.Point(x, y)).y);
+  const top = Math.min(...ys), bottom = Math.max(...ys);
+  if (bottom - top <= v.viewport.getContainerSize().y) return;
+  v.viewport.panBy(v.viewport.deltaPointsFromPixels(new osd.Point(0, top)), true);
+}
 
 /** Блок скана: справа от формы. */
 export function ScanPane() {
@@ -353,6 +394,9 @@ export function ScanPane() {
         zoomPerScroll: 1.25,
       });
       viewer.current = v;
+      live.viewer = v;
+      live.osd = OpenSeadragon;
+      let opened = 0;
       // Просмотрщик на щелчке забирает фокус себе (canvas.focus() в его
       // коде), а уход курсора из поля формы — это сверка недописанного имени
       // и окно поверх набора. Курсор остаётся форме: клавиатурой просмотрщик
@@ -365,14 +409,20 @@ export function ScanPane() {
         const c = v.viewport.getCenter(true);
         pane.dataset.scanView = `${v.viewport.getZoom(true).toFixed(3)} ${c.x.toFixed(3)} ${c.y.toFixed(3)} ${v.viewport.getRotation()}`;
       });
-      v.addHandler("open", () => { setProblem(null); setLoaded(scan.files[v.currentPage()] ?? null); });
+      v.addHandler("open", () => {
+        setProblem(null);
+        setLoaded(scan.files[v.currentPage()] ?? null);
+        // Первый разворот открывается целиком; следующие — с верха листа.
+        if (opened++ > 0) toTop(v, OpenSeadragon);
+      });
       v.addHandler("open-failed", () => {
         setLoaded(null);
-        setProblem(`Файл «${scan.files[want.current] ?? ""}» не открылся: его нет на месте или это не картинка JPG.`);
+        setProblem(`Файл «${scan.files[want.current] ?? ""}» не открылся: его нет на месте или это не картинка JPG или PNG.`);
       });
     }).catch((e) => { if (!gone) { setProblem("Просмотрщик не запустился."); report("Не удалось запустить просмотрщик сканов", e); } });
     return () => {
       gone = true;
+      if (live.viewer === viewer.current) live.viewer = null;
       viewer.current?.destroy();
       viewer.current = null;
       setLoaded(null);
@@ -391,7 +441,21 @@ export function ScanPane() {
   const count = scan.files.length;
   const empty = !scan.dir ? "Папка со сканами этого дела не выбрана."
     : scan.missing ? `Папка сканов не открылась: ${scan.missing}`
-    : count === 0 ? "В папке нет файлов .jpg и .jpeg." : null;
+    : count === 0 ? "В папке нет файлов .jpg, .jpeg и .png." : null;
+
+  // Номер разворота — поле: набрали, Enter — открыт. Курсор после этого
+  // возвращается в поле формы, из которого пришли.
+  const [typedNo, setTypedNo] = useState<string | null>(null);
+  const cameFrom = useRef<HTMLElement | null>(null);
+  function leaveNo(apply: boolean) {
+    const n = Number(typedNo);
+    if (apply && typedNo && Number.isInteger(n) && n >= 1) scan.goTo(Math.min(count, n) - 1);
+    setTypedNo(null);
+    const back = cameFrom.current;
+    cameFrom.current = null;
+    if (back && back.isConnected) back.focus();
+    else (document.activeElement as HTMLElement | null)?.blur();
+  }
 
   return (
     <aside className="scanpane" data-scan data-scan-file={scan.file ?? ""} data-scan-count={count}
@@ -399,14 +463,29 @@ export function ScanPane() {
            // Нажатие мыши в блоке не уводит курсор из поля формы: набор
            // продолжается в том же поле (спека, п. 2.3). Перетаскивание и
            // колесо у просмотрщика — на событиях указателя, им это не мешает.
-           onMouseDownCapture={(e) => e.preventDefault()}>
+           // Поле номера разворота — исключение: в него щёлкают, чтобы набрать.
+           onMouseDownCapture={(e) => { if (!(e.target as HTMLElement).closest("[data-scan-no]")) e.preventDefault(); }}>
       <div className="scanbar">
         <button type="button" className="toggle small" data-scan-prev disabled={count === 0 || scan.index === 0} {...keep}
                 onClick={() => scan.step(-1)} title="Предыдущий разворот (Alt+PageUp)">←</button>
         <button type="button" className="toggle small" data-scan-next disabled={count === 0 || scan.index >= count - 1} {...keep}
                 onClick={() => scan.step(1)} title="Следующий разворот (Alt+PageDown)">→</button>
         <span className="scanname" title={scan.dir ?? ""}>
-          {count > 0 && !scan.missing ? <><b>{scan.index + 1} из {count}</b> · {scan.file}</> : "скан"}
+          {count > 0 && !scan.missing ? (
+            <>
+              <input className="scanno" data-scan-no inputMode="numeric" aria-label="Номер разворота" tabIndex={-1}
+                     title="Номер разворота: наберите и нажмите Enter"
+                     value={typedNo ?? String(scan.index + 1)}
+                     onFocus={(e) => { cameFrom.current = e.relatedTarget as HTMLElement | null; setTypedNo(""); }}
+                     onChange={(e) => setTypedNo(e.target.value.replace(/[^0-9]/g, "").slice(0, 5))}
+                     onBlur={() => { if (typedNo !== null) { setTypedNo(null); cameFrom.current = null; } }}
+                     onKeyDown={(e) => {
+                       if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); leaveNo(true); }
+                       else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); leaveNo(false); }
+                     }} />
+              <b> из {count}</b> · {scan.file}
+            </>
+          ) : "скан"}
         </span>
         {scan.away === "link" && (
           <button type="button" className="toggle small" data-scan-back {...keep} onClick={scan.back}
@@ -414,15 +493,15 @@ export function ScanPane() {
         )}
         <span className="scantools">
           <button type="button" className="toggle small" data-scan-width disabled={!loaded} {...keep}
-                  onClick={view((v) => v.viewport.fitHorizontally())} title="Разворот по ширине блока">по ширине</button>
+                  onClick={view((v) => v.viewport.fitHorizontally())} title="Разворот по ширине блока"><span className="long">по ширине</span><span className="short" aria-hidden>↔</span></button>
           <button type="button" className="toggle small" data-scan-whole disabled={!loaded} {...keep}
-                  onClick={view((v) => v.viewport.goHome())} title="Разворот целиком">целиком</button>
+                  onClick={view((v) => v.viewport.goHome())} title="Разворот целиком"><span className="long">целиком</span><span className="short" aria-hidden>▢</span></button>
           <button type="button" className="toggle small" data-scan-rotate disabled={!loaded} {...keep}
-                  onClick={view((v) => v.viewport.setRotation((v.viewport.getRotation() + 90) % 360))} title="Повернуть на 90° по часовой стрелке">повернуть</button>
+                  onClick={view((v) => v.viewport.setRotation((v.viewport.getRotation() + 90) % 360))} title="Повернуть на 90° по часовой стрелке"><span className="long">повернуть</span><span className="short" aria-hidden>⟳</span></button>
           <button type="button" className="toggle small" data-scan-dir {...keep} onClick={scan.pickDir}
-                  title={scan.dir ? `Папка: ${scan.dir}` : "Выбрать папку со сканами дела"}>папка…</button>
+                  title={scan.dir ? `Папка: ${scan.dir}` : "Выбрать папку со сканами дела"}><span className="long">папка…</span><span className="short" aria-hidden>📁</span></button>
           <button type="button" className="toggle small" data-scan-hide {...keep} onClick={() => scan.setOn(false)}
-                  title="Убрать скан; вернуть — кнопкой на экране «Дело»">скрыть</button>
+                  title="Убрать скан; вернуть — кнопкой на экране «Дело»"><span className="long">скрыть</span><span className="short" aria-hidden>✕</span></button>
         </span>
       </div>
       {empty ? (
@@ -430,8 +509,8 @@ export function ScanPane() {
           <p>{empty}</p>
           <button type="button" className="toggle" {...keep} onClick={scan.pickDir}>Выбрать папку…</button>
           <p className="hint">
-            Можно и перетащить папку (или любой её файл) мышью на окно программы. Сканы — файлы JPG, один файл —
-            один разворот; они идут по порядку имён. У каждого дела папка своя.
+            Можно и перетащить папку (или любой её файл) мышью на окно программы. Сканы — файлы JPG или PNG, один
+            файл — один разворот или одна страница; они идут по порядку имён. У каждого дела папка своя.
           </p>
         </div>
       ) : (
@@ -474,7 +553,8 @@ export function ScanSplitter() {
 
 /**
  * Окно из двух частей: слева колонка формы, справа скан. Здесь же листание с
- * клавиатуры из любого поля: Alt+PageDown и Alt+PageUp — набранное не трогают.
+ * клавиатуры из любого поля: Alt+PageDown и Alt+PageUp листают, Alt+стрелки
+ * двигают лист — набранное не трогают.
  */
 export function ScanShell({ children }: { children: React.ReactNode }) {
   const scan = useScan();
@@ -484,8 +564,24 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
   onRef.current = scan.on;
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey || (e.key !== "PageDown" && e.key !== "PageUp")) return;
-      if (!onRef.current) return;
+      // Только пока есть что двигать и листать: блок включён, а папки нет —
+      // клавиши остаются полям.
+      if (!e.altKey || e.ctrlKey || e.metaKey || !onRef.current || !live.viewer) return;
+      // Alt+стрелки двигают увеличенный лист (Роман 12.10.2026: «не снимать
+      // руки с клавиатуры при чтении документа»). Стрелка — куда идёт
+      // взгляд: Alt+↓ показывает то, что ниже. Числовое поле при видимом
+      // скане своё Alt+← и Alt+→ («число ±1») уступает.
+      const pan = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key];
+      // Alt+↓ в поле с перечнем («Причина», «Родство», архив) открывает
+      // перечень — это остаётся полю (ревьюер 13.10.2026).
+      if (pan && e.key === "ArrowDown" && (e.target as HTMLElement | null)?.matches?.("[data-browse], select")) return;
+      if (pan) {
+        e.preventDefault();
+        e.stopPropagation();
+        panView(pan[0] * PAN_STEP, pan[1] * PAN_STEP);
+        return;
+      }
+      if (e.key !== "PageDown" && e.key !== "PageUp") return;
       e.preventDefault();
       e.stopPropagation();
       stepRef.current(e.key === "PageDown" ? 1 : -1);
@@ -527,8 +623,9 @@ export function ScanCaseBlock() {
       <p className="hint">
         {scan.dir
           ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, файлов: ${scan.files.length}`}. </>
-          : "Сканы дела — файлы JPG в одной папке, один файл — один разворот. Папку можно и перетащить мышью на окно программы. "}
-        Листать, не уходя из поля: Alt+PageDown и Alt+PageUp. Запись запоминает разворот, с которого набрана.
+          : "Сканы дела — файлы JPG или PNG в одной папке. Папку можно и перетащить мышью на окно программы. "}
+        Листать, не уходя из поля: Alt+PageDown и Alt+PageUp; двигать лист — Alt+стрелки. Запись запоминает
+        разворот, с которого набрана.
       </p>
     </div>
   );

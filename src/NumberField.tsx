@@ -25,10 +25,13 @@ type Props = {
   noTab?: boolean;
   /** Человек ушёл из поля — значение набрано до конца (месяц по дню, month.ts). */
   onLeave?: () => void;
+  /** Значение поставила программа, и оно не то, что в прошлой записи (месяц
+   *  переключился сам) — поле подсвечено нейтральным цветом. */
+  auto?: boolean;
 };
 
 export default function NumberField({
-  label, value, onChange, min = 0, max: limit, width, inputRef, noTab, onLeave,
+  label, value, onChange, min = 0, max: limit, width, inputRef, noTab, onLeave, auto,
 }: Props) {
   const max = limit ?? 9999;
   const own = useRef<HTMLInputElement>(null);
@@ -88,7 +91,8 @@ export default function NumberField({
           tabIndex={noTab ? -1 : undefined}
           data-skip={noTab ? "" : undefined}
           inputMode="numeric"
-          className={rejected ? "rejected" : undefined}
+          className={rejected ? "rejected" : auto ? "auto" : undefined}
+          data-auto={auto ? "" : undefined}
           value={value ?? ""}
           onChange={(e) => {
             const raw = e.target.value.replace(/[^0-9]/g, "");
