@@ -31,7 +31,27 @@ export type Person = {
   confession: string;
   note: string;
   maiden: string;
+  /** Отметка «ИФ» (Роман 14.10.2026): в поле имя и фамилия, второе слово —
+   *  не отчество. Действует только при двух словах (`nameSurnameNow`). */
+  nameSurname?: boolean;
 };
+
+/** Тот же человек в поле: поле не пустое и первое слово (имя) не сменилось.
+ *  Иначе отметка «ИФ» прежнего человека снимается — её не видно, когда в поле
+ *  снова два слова, а она бы сработала (ревьюер и проверяющий 14.10.2026). */
+export const sameHuman = (was: string, now: string): boolean => {
+  const first = (t: string) => t.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return now.trim() !== "" && first(was) === first(now);
+};
+
+/** Отметка «ИФ» действует, только когда в поле ровно два слова. */
+export const nameSurnameNow = (p: { iof: string; nameSurname?: boolean }): boolean =>
+  !!p.nameSurname && p.iof.trim().split(/\s+/).length === 2;
+
+/** Запись поднята на правку: два слова, второе сохранено фамилией, отчества
+ *  нет — это и есть «ИФ». */
+export const nameSurnameOf = (m: { first_name?: string | null; patronymic?: string | null; surname?: string | null }): boolean =>
+  !!m.first_name && !m.patronymic && !!m.surname && !/\s/.test(m.surname.trim());
 
 export const EMPTY_PERSON: Person = {
   iof: "", parsed: null, place: "", rank: "", confession: "", note: "", maiden: "",
@@ -399,12 +419,20 @@ export default function PersonBlock({
     <IofField
         label="ИОФ"
         value={person.iof}
-        onChange={(iof, parsed) => set({ iof, parsed, note: staleDocNotes(person.note, iof, docFor.current) })}
+        onChange={(iof, parsed) => set({ iof, parsed, note: staleDocNotes(person.note, iof, docFor.current),
+                                         nameSurname: sameHuman(latest.current.iof, iof) && latest.current.nameSurname })}
         onResolved={(iof, note) => {
           markDocNotes(iof, note, docFor.current);
           set({ iof, parsed: null, note: appendNote(person.note, note) });
         }}
-        onPickPerson={onPickPerson}
+        onPickPerson={(hint) => {
+          // Выбран другой человек — отметка прежнего к нему не относится
+          // (ревьюер и проверяющий 14.10.2026).
+          if (latest.current.nameSurname) set({ nameSurname: false });
+          onPickPerson?.(hint);
+        }}
+        nameSurname={nameSurnameNow(person)}
+        onNameSurname={(on) => set({ nameSurname: on, parsed: null })}
         inputRef={inputRef}
         gender={sex}
         preferInfant={preferInfant}

@@ -313,6 +313,9 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
   font-size: 0.74rem;
 }
 .parsedline .modern { color: var(--muted); font-style: italic; }
+/* Флажок «ИФ» (Роман 14.10.2026) — справа в строке разбора, щелчок мышью. */
+.parsedline .namesurname { display: inline-flex; align-items: center; gap: 0.2em; margin-left: auto; cursor: pointer; }
+.parsedline .namesurname input { width: auto; margin: 0; }
 .tag {
   color: var(--muted);
   background: var(--field);
@@ -699,9 +702,10 @@ button.toggle { white-space: nowrap; }
    ============================================================================ */
 /* Набранное в поле числа не принято — поле коротко мигает (NumberField). */
 .numrow input.rejected { border-color: #b3261e; background: #fdecea; }
-/* Месяц, который программа переключила сама (Роман 12.10.2026): нейтральный
-   фон — заметно, но не тревожно. */
-.numrow input.auto { background: #cfe0f5; border-color: #5f86b8; }
+/* Месяц, который программа переключила сама (Роман 12.10.2026); цвет —
+   его, 14.10.2026: прежний бледный «в процессе быстрого набора глаз не
+   цепляет». */
+.numrow input.auto { background: #e5bce4; border-color: #a86aa6; }
 /* Форма занята, годы-опечатки в файле: заметнее обычной подсказки. */
 .reviewbusy {
   margin: 0 0 0.5em; padding: 0.4em 0.6em; font-size: 0.85rem; line-height: 1.35;
@@ -882,18 +886,21 @@ button.toggle { white-space: nowrap; }
 .dossier h3 { margin: 0.5em 0 0.2em; font-size: 0.9rem; color: var(--accent); }
 .dossier .when { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
 .dossier .sub { color: var(--muted); font-size: 0.82rem; }
-/* «Семья» и события — два разных блока (Роман 12.10.2026: «визуально
-   сливаются в единое текстовое полотно»): у семьи фон и полоса слева, у
-   событий — своя плашка-заголовок. */
-.dossierfamily {
-  margin: 0.6em 0 0.9em; padding: 0.4em 0.7em 0.5em;
-  background: #f3f7fc; border-left: 0.2em solid var(--accent); border-radius: 0.3em;
+/* «Семья» и события — два разных блока (Роман 12.10 и 14.10.2026: «чтобы
+   блоки „Семья“ и „События“ не сливались вообще и их границы считывались
+   моментально»): у каждого рамка, свой фон и заголовок-плашка во всю ширину,
+   между ними отступ. */
+.dossierfamily, .dossierevents {
+  margin: 0.8em 0 1.1em; padding: 0 0.7em 0.5em;
+  border: 0.125em solid; border-radius: 0.4em; overflow: hidden;
 }
-.dossierfamily h3 { margin-top: 0; }
-.dossier h3.eventshead {
-  margin: 0.9em 0 0.3em; padding: 0.25em 0.7em;
-  background: #f1f1ee; border-left: 0.2em solid var(--muted); border-radius: 0.3em; color: var(--ink);
+.dossierfamily { background: #f1f6fd; border-color: #6f93bf; }
+.dossierevents { background: #fff; border-color: #a99a6b; }
+.dossierfamily h3, .dossier .dossierevents h3.eventshead {
+  margin: 0 -0.7em 0.4em; padding: 0.3em 0.7em; font-size: 0.95rem; color: #fff;
 }
+.dossierfamily h3 { background: #3f6aa0; }
+.dossier .dossierevents h3.eventshead { background: #8a7a45; }
 .dossierfamily p { margin: 0.15em 0; }
 .dossierfamily ul { margin: 0 0 0.3em; padding-left: 1.2em; list-style: none; }
 .dossierfamily li { margin: 0.1em 0; }

@@ -25,7 +25,21 @@ pub const MIGRATE_SQL: &str = include_str!("../../../db/migrate.sql");
 /// со старой базой. Именно так вышло 13.08.2026 — у тестировщика не появилась
 /// таблица name_form, и половина сборки молча не работала.
 pub fn open_database(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
-    if !db_path.exists() {
+    // Пустой файл (0 байт) — не база: его оставляет, например, sqlite3 или
+    // оборванное копирование. Раньше программа открывала его как есть и
+    // падала на «no such table: setting» (найдено 10.10.2026) — теперь он
+    // считается новым приходом и наполняется из поставки.
+    let empty = std::fs::metadata(db_path).map(|m| m.len() == 0).unwrap_or(false);
+    if !db_path.exists() || empty {
+        if empty {
+            // Чужие -wal и -shm рядом с пустым файлом SQLite наложил бы на
+            // базу поставки (ревьюер 14.10.2026).
+            for tail in ["-wal", "-shm"] {
+                let mut side = db_path.as_os_str().to_owned();
+                side.push(tail);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(side));
+            }
+        }
         std::fs::copy(bundled, db_path)?;
         let conn = Connection::open(db_path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
@@ -185,6 +199,25 @@ mod tests {
     /// сборок: вложенную цепочку replace один разбирал, другой отвечал «parser
     /// stack overflow» (так упала сборка 08.10.2026). У человека это было бы
     /// «база не обновилась».
+    /// Пустой файл базы (0 байт) — новый приход из поставки, а не ошибка
+    /// «no such table: setting» (техдолг п. 53, 10.10.2026).
+    #[test]
+    fn empty_file_becomes_new_parish() {
+        let Some(seed) = seed() else {
+            crate::seed_missing("тест пустого файла пропущен");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("genmetric-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("genmetric.sqlite");
+        std::fs::write(&path, b"").unwrap();
+        let conn = open_database(&seed, &path).expect("пустой файл открывается");
+        let tables: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('setting', 'entry')", [], |r| r.get(0)).unwrap();
+        assert_eq!(tables, 2, "в пустой файл легла база поставки");
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn upgrade_runs_in_app_sqlite() {
         let Some(seed) = seed() else {

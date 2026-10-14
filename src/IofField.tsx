@@ -113,6 +113,10 @@ type Props = {
    *  есть. В остальных полях звание жены показывается по званию мужа —
    *  «крестьянская жена» (Роман 06.10.2026). */
   keepWifeRank?: boolean;
+  /** Отметка «ИФ»: второе слово — фамилия (Роман 14.10.2026). Флажок
+   *  показывается, когда в поле два слова; без обработчика — не показывается. */
+  nameSurname?: boolean;
+  onNameSurname?: (on: boolean) => void;
 };
 
 export default function IofField({
@@ -120,8 +124,10 @@ export default function IofField({
   infantRows,
   infantYear,
   infantPlace,
-  singleWord, enterToEmpty, onLeave, noSurnameMark, keepWifeRank,
+  singleWord, enterToEmpty, onLeave, noSurnameMark, keepWifeRank, nameSurname, onNameSurname,
 }: Props) {
+  const nameSurnameRef = useRef(!!nameSurname);
+  nameSurnameRef.current = !!nameSurname;
   const onLeaveRef = useRef(onLeave);
   onLeaveRef.current = onLeave;
   // Ушли из поля — можно показать отметку о новой фамилии; пока набирают,
@@ -170,7 +176,7 @@ export default function IofField({
     const mine = ++parseSeq.current;
     // Флаг набора читается здесь, до эффекта подсказок, который его снимает.
     const byKeyboard = typed.current;
-    invoke<Parsed>("parse_iof", { text: value })
+    invoke<Parsed>("parse_iof", { text: value, nameSurname: !!nameSurname })
       .then((result) => {
         if (mine !== parseSeq.current) return; // поле уже изменилось
         parsedRef.current = result;
@@ -191,7 +197,7 @@ export default function IofField({
         setParsed(null);
         report("Не удалось разобрать имя, отчество и фамилию", e);
       });
-  }, [value]);
+  }, [value, nameSurname]);
 
   /**
    * Закрывает список и отменяет всё, что уже улетело за подсказками.
@@ -418,7 +424,7 @@ export default function IofField({
     if (!text) return;
     let p: Parsed;
     try {
-      p = await invoke<Parsed>("parse_iof", { text });
+      p = await invoke<Parsed>("parse_iof", { text, nameSurname: nameSurnameRef.current });
     } catch {
       return; // ошибка разбора уже показана эффектом выше
     }
@@ -485,7 +491,7 @@ export default function IofField({
    *  менялся, и эффект разбора сам не сработает. */
   function reparseAfterAlias() {
     const mine = ++parseSeq.current;
-    invoke<Parsed>("parse_iof", { text: valueRef.current })
+    invoke<Parsed>("parse_iof", { text: valueRef.current, nameSurname: nameSurnameRef.current })
       .then((result) => {
         if (mine !== parseSeq.current) return;
         parsedRef.current = result;
@@ -611,6 +617,21 @@ export default function IofField({
        parsed.surname].filter(Boolean).join(" ")
     : "";
 
+  // Флажок «ИФ» (Роман 14.10.2026, вместе со вторым тестировщиком): «если мы
+  // ставим в него галочку, программа жестко фиксирует, что введенные данные —
+  // это именно имя и фамилия». Виден при двух словах в поле; щелчок курсор
+  // из поля не уводит.
+  const twoWords = value.trim().split(/\s+/).length === 2;
+  const nameSurnameBox = onNameSurname && (twoWords || nameSurname) ? (
+    <label className="tag namesurname" data-name-surname
+           title="Имя и фамилия: второе слово — фамилия, а не отчество"
+           onMouseDown={(e) => e.preventDefault()}>
+      <input type="checkbox" tabIndex={-1} checked={!!nameSurname}
+             onChange={(e) => onNameSurname(e.target.checked)} />
+      ИФ
+    </label>
+  ) : null;
+
   // Второе слово принято за фамилию (отчества нет): раньше программа об этом
   // молчала — «Никанор Орнатский» у поручителя (Роман 06.10.2026). Окна тут
   // не нужно, но понять, как она поняла слово, человек должен.
@@ -735,7 +756,11 @@ export default function IofField({
             {value.trim() && !parsed?.known_name && (
               <span className="tag warn">имени нет в словаре</span>
             )}
+            {nameSurnameBox}
           </div>
+        )}
+        {!(modern || parsed?.gender || parsed?.name_missing || surnameOnly || surnameNew) && nameSurnameBox && (
+          <div className="parsedline">{nameSurnameBox}</div>
         )}
         {open && (total > 0 || elsewhere > 0) && (
           <ul className="suggest">

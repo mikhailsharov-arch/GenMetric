@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf } from "./PersonBlock";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
-import { pageOverflow } from "./page";
+import { pageOverflow, turnPage } from "./page";
 import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { parseAge } from "./age";
 import { focusNextField } from "./focus";
@@ -230,10 +230,11 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   }, [saved]);
   const [busy, setBusy] = useState(false);
   // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
-  const entryScan = useEntryScan(editingId !== null, year);
+  const root = useRef<HTMLDivElement>(null);
+  // Страница идёт за сканом при перелистывании на один файл (Роман 14.10.2026).
+  const entryScan = useEntryScan(editingId !== null, year, (by) => setPage((p) => turnPage(p, by) ?? p), root);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
-  const root = useRef<HTMLDivElement>(null);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
 
   // Список «Набрано» — записи года книги, который стоит на форме: после
@@ -345,7 +346,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     if (!text) return;
     let sex: Sex | null = sexManual;
     try {
-      const p = await invoke<Parsed>("parse_iof", { text });
+      const p = await invoke<Parsed>("parse_iof", { text, nameSurname: nameSurnameNow(latestDead.current) });
       sex = (p.gender as Sex | null) ?? sexManual;
     } catch (e) {
       report("Не удалось разобрать имя умершего", e);
@@ -481,9 +482,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
     // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
     const iof = titleCase(p.iof);
-    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof }) };
+    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof, nameSurname: nameSurnameNow({ ...p, iof }) }) };
     if (!p.iof.trim() || p.parsed) return p;
-    return { ...p, parsed: await invoke<Parsed>("parse_iof", { text: p.iof }) };
+    return { ...p, parsed: await invoke<Parsed>("parse_iof", { text: p.iof, nameSurname: nameSurnameNow(p) }) };
   }
 
   function payload(role: string, order: number, p: Person, extra: Record<string, unknown> = {},
@@ -659,7 +660,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
         beforeEdit.current = { page, count, year, deathMonth, burialMonth };
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
-        m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
+        m ? { ...base, iof: iof(m), parsed: null, nameSurname: nameSurnameOf(m), place: m.place ?? "", rank: m.rank ?? "",
               confession: m.confession ?? "", note: m.note ?? "" } : { ...base, note: "" };
       const by = (role: string) => e.persons.find((m) => m.role_code === role);
       const dm = by("deceased");

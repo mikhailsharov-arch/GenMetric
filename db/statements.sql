@@ -782,7 +782,9 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
 -- Роман 03.10.2026: на «Евдокия» 19 строк — искать дольше, чем набрать отца.
 -- По его файлу до двух лет умирают 93 % детей, но одно окно список не
 -- сокращает (медиана 6 строк), сокращает деревня (1 строка у 63 %, до трёх —
--- у 97 %). Поэтому: :year — год формы смертей, дети за 2 года до него;
+-- у 97 %). Поэтому: :year — год формы смертей, дети за 4 года до него (до
+-- 14.10.2026 — за 2; Роман: «этого диапазона не хватает… текущий год на
+-- форме смертей плюс 4 предыдущих года»);
 -- :place — НП умершего, если уже набран: только дети этой деревни (по НП
 -- отца, нет отца — матери); :name и :parent — второе слово в поле отбирает по
 -- началу имени родителя («Евдокия Ив»).
@@ -816,7 +818,7 @@ SELECT k.iof, k.gender,
             AND CASE WHEN f.iof <> '' THEN f.iof ELSE m.iof END
                 IN (SELECT iof FROM person_index WHERE iof_norm LIKE :parent ESCAPE '\')))
    AND (:gender IS NULL OR k.gender IS NULL OR k.gender = :gender)
-   AND (:year IS NULL OR k.event_year IS NULL OR k.event_year BETWEEN :year - 2 AND :year)
+   AND (:year IS NULL OR k.event_year IS NULL OR k.event_year BETWEEN :year - 4 AND :year)
    AND (:place IS NULL OR CASE WHEN f.iof <> '' THEN f.place_norm ELSE m.place_norm END = :place)
  ORDER BY k.event_year DESC, k.event_month DESC, k.event_day DESC, k.eid DESC
  LIMIT :limit;
@@ -839,7 +841,7 @@ SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || null
  WHERE c.role_code = 'child'
    AND trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) = :iof
    AND trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) <> ''
-   AND (:year IS NULL OR e.event_year IS NULL OR e.event_year BETWEEN :year - 2 AND :year)
+   AND (:year IS NULL OR e.event_year IS NULL OR e.event_year BETWEEN :year - 4 AND :year)
    AND (:place IS NULL OR (SELECT p.name_norm FROM place p WHERE p.id = f.place_id) = :place)
  ORDER BY e.id DESC
  LIMIT 1;

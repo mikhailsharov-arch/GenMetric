@@ -1,6 +1,6 @@
 // Проверка шага по номеру страницы (src/page.ts). Запуск:
 //     node --experimental-strip-types scripts/test_page.mjs
-import { stepPage, normalizePage, pageOverflow } from "../src/page.ts";
+import { stepPage, normalizePage, pageOverflow, turnPage } from "../src/page.ts";
 
 let ok = 0, fail = 0;
 function check(title, got, want) {
@@ -38,6 +38,20 @@ check("страница на форме не указана — молчит", p
 check("записи без страницы в среднее не идут", pageOverflow([...usual, null, null, null, ...on(4)], "7"), null);
 check("пробелы вокруг номера не мешают",
       pageOverflow([...usual, ...on(6)], " 7 ") !== null, true);
+
+// Перелистывание скана (Роман 14.10.2026): разворот — как кнопка, страница — по листу.
+for (const [from, by, want] of [
+  ["938об-939", 1, "939об-940"], ["938об-939", -1, "937об-938"],
+  ["938", 1, "938об"], ["938об", 1, "939"], ["939", -1, "938об"], ["938об", -1, "938"],
+  ["12 об", 1, "13"], ["12об.", -1, "12"], ["0", -1, "0"], ["1", -1, "1"], ["2", -1, "1об"],
+  ["", 1, null], [null, 1, null], ["   ", -1, null],
+  ["л. 5", 1, "л. 6"], ["без номера", 1, "без номера"],
+]) {
+  const got = turnPage(from, by);
+  const good = got === want;
+  if (good) ok++; else fail++;
+  console.log(`  ${good ? "[ок]    " : "[ОШИБКА]"} листание ${by > 0 ? "вперёд" : "назад"}: «${from}» → «${got}»${good ? "" : ` (ждали «${want}»)`}`);
+}
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

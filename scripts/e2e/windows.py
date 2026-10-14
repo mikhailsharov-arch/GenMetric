@@ -587,8 +587,21 @@ def run(driver, wait, archive):
         born = [(i.get("iof"), i.get("born")) for i in infants["list"]]
         check("подсказка детей: «Мар» находит Марию из рождений 1897 года",
               any(iof == "Мария" and "1897" in (b or "") for iof, b in born), str(born))
-        check("подсказка детей: отбор по полу и окно в два года действуют",
+        check("подсказка детей: отбор по полу и окно в четыре года действуют",
               infants["girls"] == 0 and infants["late"] == 0, f"{infants['girls']} / {infants['late']}")
+
+    # Отметка «ИФ» (Роман 14.10.2026): параметр доходит до настоящего Rust —
+    # «Иван Петров» с отметкой разбирается как имя и фамилия.
+    ns = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  const plain = await call('parse_iof', {text: 'Иван Петров'});"
+        "  const marked = await call('parse_iof', {text: 'Иван Петров', nameSurname: true});"
+        "  return {plain: [plain.patronymic, plain.surname], marked: [marked.patronymic, marked.surname]};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("отметка «ИФ» через настоящий Rust: без неё «Петров» — отчество, с ней — фамилия",
+          "error" not in ns and ns["plain"] == ["Петров", None] and ns["marked"] == [None, "Петров"], str(ns))
 
     # Ctrl+F настоящими клавишами: свой экран вместо поиска по странице,
     # который есть у окна WebView2. Курсор — в поле формы.

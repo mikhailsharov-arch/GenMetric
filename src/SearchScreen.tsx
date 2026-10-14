@@ -363,6 +363,8 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
           {!short && found && found.persons.length === 0 && (
             <p className="hint" data-search-empty>
               Никого не нашлось{!own && !part && !clergy ? ": не отмечена ни одна группа ролей" : place.trim() ? " в этом пункте — попробуйте стереть НП" : ""}.
+              {skip.length > 0 && ` Выключены роли: ${(Object.keys(ROLES) as RoleGroup[]).flatMap((g) => ROLES[g])
+                .filter(([r]) => skip.includes(r)).map(([, t]) => t).join(", ")} — см. «роли по отдельности».`}
               {!clergy && (own || part) && " Церковнослужителей ищет флажок «причт»."}
             </p>
           )}
@@ -443,6 +445,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
               </div>
             )}
 
+            <div className="dossierevents" data-events>
             <h3 className="eventshead" data-events-head>События</h3>
             <table className="events">
               <tbody>
@@ -473,6 +476,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                 })}
               </tbody>
             </table>
+            </div>
           </section>
         )}
       </div>

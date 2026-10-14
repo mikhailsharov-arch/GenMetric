@@ -56,6 +56,14 @@ type Scan = {
   back: () => void;
   /** Показан не тот разворот, на котором шёл набор: запись на правке или ссылка «скан». */
   away: "edit" | "link" | null;
+  /** Подписаться на перелистывание человеком на один файл (Alt+PageDown,
+   *  Alt+PageUp, «←» и «→») — по нему форма сдвигает страницу (Роман
+   *  14.10.2026). Переход по номеру, ссылка «скан», показ записи на правке не
+   *  считаются. Возвращает отписку. */
+  onTurn: (fn: (by: 1 | -1) => void) => () => void;
+  /** При перелистывании — то же место листа (true) или верх листа (false). */
+  keepPlace: boolean;
+  setKeepPlace: (on: boolean) => void;
   /** Ширина колонки формы при включённом блоке, px. */
   formWidth: number;
   setFormWidth: (px: number, save: boolean) => void;
@@ -80,6 +88,8 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   const [state, setState] = useState<ScanFiles>(EMPTY);
   const [index, setIndex] = useState(0);
   const [formWidth, setFormWidthState] = useState(FORM_WIDTH);
+  const [keepPlace, setKeepPlaceState] = useState(false);
+  const turnListeners = useRef(new Set<(by: 1 | -1) => void>());
   /** Разворот, на котором шёл набор, пока показан другой: запись на правке
    *  или ссылка «скан». */
   const held = useRef<number | null>(null);
@@ -100,6 +110,9 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
     invoke<string | null>("get_setting", { key: "ui_scan_on" })
       .then((v) => { if (v === "1") setOnState(true); })
       .catch((e) => report("Не удалось прочитать, показан ли блок скана", e));
+    invoke<string | null>("get_setting", { key: "ui_scan_keep_place" })
+      .then((v) => { if (v === "1") setKeepPlaceState(true); })
+      .catch((e) => report("Не удалось прочитать, как вести скан при перелистывании", e));
     invoke<string | null>("get_setting", { key: "ui_scan_form_width" })
       .then((v) => { const n = Number(v); if (Number.isFinite(n) && n >= FORM_MIN) setFormWidthState(n); })
       .catch((e) => report("Не удалось прочитать ширину колонки формы", e));
@@ -210,8 +223,23 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       step: (by) => {
         // Листают после ссылки «скан» — значит, работают уже здесь: место
         // набора теперь тут. При правке записи место набора ждёт её конца.
+        const wasAway = away !== null;
         if (away === "link") { held.current = null; setAway(null); }
-        go(at + by);
+        const to = Math.min(Math.max(0, count - 1), Math.max(0, at + by));
+        go(to);
+        // Страница формы идёт за сканом, только если скан и правда сменился
+        // и показан разворот набора, а не чужой записи.
+        if (to !== at && !wasAway) turnListeners.current.forEach((fn) => fn(by));
+      },
+      onTurn: (fn) => {
+        turnListeners.current.add(fn);
+        return () => { turnListeners.current.delete(fn); };
+      },
+      keepPlace,
+      setKeepPlace: (value) => {
+        setKeepPlaceState(value);
+        invoke("set_setting", { key: "ui_scan_keep_place", value: value ? "1" : "0" })
+          .catch((e) => report("Как вести скан при перелистывании — изменено, но не сохранено", e));
       },
       goTo: (i) => {
         if (away === "link") { held.current = null; setAway(null); }
@@ -249,7 +277,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
           .catch((e) => report("Ширина колонки формы не сохранена", e));
       },
     };
-  }, [on, setOn, year, state, at, file, count, pickDir, formWidth, away]);
+  }, [on, setOn, year, state, at, file, count, pickDir, formWidth, away, keepPlace]);
 
   return <ScanContext.Provider value={scan}>{children}</ScanContext.Provider>;
 }
@@ -263,11 +291,24 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
  * разворот; молчаливая привязка тысяч прежних записей к чужим листам хуже
  * записи без скана (ревьюер и проверяющий 10.10.2026).
  */
-export function useEntryScan(editing: boolean, year: number | null) {
+export function useEntryScan(editing: boolean, year: number | null,
+                             turn?: (by: 1 | -1) => void, root?: React.RefObject<HTMLElement>) {
   const scan = useScan();
   const [own, setOwn] = useState<string | null>(null);
   const [rebind, setRebind] = useState(false);
   const open = scan.current(year);
+  // Страница сама при перелистывании (Роман 14.10.2026): только новая
+  // запись, только видимая форма (три формы живут в окне одновременно),
+  // только когда открыта папка дела года этой формы.
+  const now = useRef({ editing, open, turn });
+  now.current = { editing, open, turn };
+  const subscribe = scan.onTurn;
+  useEffect(() => subscribe((by) => {
+    const { editing: busy, open: file, turn: fn } = now.current;
+    if (busy || !file || !fn) return;
+    if (root?.current && root.current.offsetParent === null) return;
+    fn(by);
+  }), [subscribe]);
   const bind = (
     <button type="button" className="linkish" data-scan-rebind onMouseDown={(e) => e.preventDefault()}
             onClick={() => setRebind(true)}>привязать к открытому</button>
@@ -360,6 +401,8 @@ export function ScanPane() {
   const filesKey = `${scan.dir}|${scan.files.join("|")}`;
   const want = useRef(scan.index);
   want.current = scan.index;
+  const keepRef = useRef(scan.keepPlace);
+  keepRef.current = scan.keepPlace;
 
   // Просмотрщик создаётся, когда есть что показывать, и пересоздаётся при
   // смене папки: набор разворотов у него задаётся целиком.
@@ -413,7 +456,7 @@ export function ScanPane() {
         setProblem(null);
         setLoaded(scan.files[v.currentPage()] ?? null);
         // Первый разворот открывается целиком; следующие — с верха листа.
-        if (opened++ > 0) toTop(v, OpenSeadragon);
+        if (opened++ > 0 && !keepRef.current) toTop(v, OpenSeadragon);
       });
       v.addHandler("open-failed", () => {
         setLoaded(null);
@@ -498,6 +541,14 @@ export function ScanPane() {
                   onClick={view((v) => v.viewport.goHome())} title="Разворот целиком"><span className="long">целиком</span><span className="short" aria-hidden>▢</span></button>
           <button type="button" className="toggle small" data-scan-rotate disabled={!loaded} {...keep}
                   onClick={view((v) => v.viewport.setRotation((v.viewport.getRotation() + 90) % 360))} title="Повернуть на 90° по часовой стрелке"><span className="long">повернуть</span><span className="short" aria-hidden>⟳</span></button>
+          <button type="button" className={scan.keepPlace ? "toggle small on" : "toggle small"} data-scan-keep
+                  aria-pressed={scan.keepPlace} {...keep} onClick={() => scan.setKeepPlace(!scan.keepPlace)}
+                  title={scan.keepPlace
+                    ? "Следующий разворот — на том же месте листа. Нажмите, чтобы открывать с верха листа"
+                    : "Следующий разворот — с верха листа. Нажмите, чтобы оставлять то же место листа"}>
+            <span className="long">{scan.keepPlace ? "то же место" : "к верху"}</span>
+            <span className="short" aria-hidden>{scan.keepPlace ? "⇔" : "⤒"}</span>
+          </button>
           <button type="button" className="toggle small" data-scan-dir {...keep} onClick={scan.pickDir}
                   title={scan.dir ? `Папка: ${scan.dir}` : "Выбрать папку со сканами дела"}><span className="long">папка…</span><span className="short" aria-hidden>📁</span></button>
           <button type="button" className="toggle small" data-scan-hide {...keep} onClick={() => scan.setOn(false)}

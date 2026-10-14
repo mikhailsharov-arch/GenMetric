@@ -142,6 +142,14 @@ pub fn looks_like_patronymic(word: &str) -> bool {
 }
 
 pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
+    parse_iof_with(conn, text, false)
+}
+
+/// Разбор ИОФ с отметкой «ИФ» (Роман 14.10.2026): `name_surname` — человек
+/// сказал, что в поле имя и фамилия; второе слово тогда не ищется среди
+/// отчеств, даже если такое отчество в справочнике есть («Анна Баженова»,
+/// «Иван Романов»), и не сверяется как отчество.
+pub fn parse_iof_with(conn: &Connection, text: &str, name_surname: bool) -> Result<ParsedIof, String> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let mut out = ParsedIof {
         first_name: None,
@@ -217,7 +225,7 @@ pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> 
     }
 
     let mut rest = &tokens[1..];
-    if let Some(first_rest) = rest.first() {
+    if let Some(first_rest) = rest.first().filter(|_| !name_surname) {
         let mut patr_word = first_rest.to_string();
         // Соответствие отчества без цели — «Это не отчество»: человек сказал,
         // что второе слово — часть фамилии; больше не спрашивать (техдолг,
@@ -1133,6 +1141,16 @@ mod tests {
         assert!(!parse_iof_in(&conn, "Анна Иванова Томилина").unwrap().surname_new);
         assert!(parse_iof_in(&conn, "Иван Петров Тамилин").unwrap().surname_new, "опечатка видна");
         assert!(!parse_iof_in(&conn, "Иван Петров").unwrap().surname_new, "нет фамилии — нет отметки");
+        // Отметка «ИФ» (14.10.2026): второе слово — фамилия, даже если такое
+        // отчество есть в справочнике; без отметки — как было.
+        let plain = parse_iof_in(&conn, "Иван Петров").unwrap();
+        assert!(plain.patronymic.is_some() && plain.surname.is_none(), "без отметки «Петров» — отчество");
+        let marked = parse_iof_with(&conn, "Иван Петров", true).unwrap();
+        assert_eq!((marked.patronymic.as_deref(), marked.patronymic_modern.as_deref(), marked.surname.as_deref(), marked.patr_unknown.as_deref()),
+                   (None, None, Some("Петров"), None), "с отметкой — фамилия, сверки отчества нет");
+        assert_eq!(marked.first_name_modern.as_deref(), Some("Иван"), "имя разбирается как обычно");
+        let three = parse_iof_with(&conn, "Анна Ивановна Петрова", true).unwrap();
+        assert_eq!(three.surname.as_deref(), Some("Ивановна Петрова"), "отметка при трёх словах — всё после имени фамилия (флажок для двух слов)");
         for known in ["Толстой", "Белый", "Ивановъ"] {
             conn.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) VALUES ('surname', 'global', '', ?1, ?2, 1)",
                          rusqlite::params![known, normalize(known)]).unwrap();

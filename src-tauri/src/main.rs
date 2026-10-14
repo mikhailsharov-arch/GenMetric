@@ -18,7 +18,7 @@ use tauri::{Manager, State};
 mod export;
 
 use genmetric_core::parish;
-use genmetric_core::records::{extend_lookup, parse_iof_in, save_case, save_entry, Case, CaseSaved, EntryInput, ParsedIof, Saved};
+use genmetric_core::records::{extend_lookup, parse_iof_with, save_case, save_entry, Case, CaseSaved, EntryInput, ParsedIof, Saved};
 use genmetric_core::statement;
 use genmetric_core::text::{normalize, normalize_name, normalize_words};
 
@@ -517,8 +517,8 @@ fn rank_default(app: State<App>, role: String, gender: Option<String>) -> Result
 /// случаев, предложенное осовременивание совпадает с выбором индексатора
 /// в 99,9%.
 #[tauri::command]
-fn parse_iof(app: State<App>, text: String) -> Result<ParsedIof, String> {
-    with_conn(&app, &format!("Разбор «{text}»"), |conn| parse_iof_in(conn, &text))
+fn parse_iof(app: State<App>, text: String, name_surname: Option<bool>) -> Result<ParsedIof, String> {
+    with_conn(&app, &format!("Разбор «{text}»"), |conn| parse_iof_with(conn, &text, name_surname.unwrap_or(false)))
 }
 
 

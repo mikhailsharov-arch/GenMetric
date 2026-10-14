@@ -451,10 +451,10 @@ def main() -> int:
         check("год формы: дети, родившиеся позже него, не предлагаются",
               all(k[8] is None or k[8] <= 1893 for k in in_window) and any(k[8] == 1893 for k in in_window),
               f"{years} → {[k[8] for k in in_window]}")
-        check("…и родившиеся больше чем за 2 года до него — тоже (Роман 03.10: окно 2 года)",
-              all(k[8] is None or k[8] >= 1894 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1896}).fetchall())
-              and not any(k[8] == 1893 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1896}).fetchall())
-              and any(k[8] == 1893 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1895}).fetchall()))
+        check("…и родившиеся больше чем за 4 года до него — тоже (Роман 14.10: окно 4 года, было 2)",
+              all(k[8] is None or k[8] >= 1894 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1898}).fetchall())
+              and not any(k[8] == 1893 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1898}).fetchall())
+              and any(k[8] == 1893 for k in db.execute(sql["infant_suggest"], {**iq, "year": 1897}).fetchall()))
         f93 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1893, "place": None}).fetchone()
         f80 = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": 1880, "place": None}).fetchone()
         check("отец ищется среди рождений того же окна лет", f93 is not None and f80 is None, f"{f93} / {f80}")

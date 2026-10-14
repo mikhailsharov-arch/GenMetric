@@ -36,7 +36,7 @@ const NAME_MAX: usize = 60;
 // ui_scan_on и ui_scan_form_width — блок скана и ширина колонки формы: вид
 // окна, общий для всех приходов. Папка сканов (scan_dir_<год>) — у прихода.
 pub const COMMON_SETTINGS: &[&str] = &["ui_font_scale", "ui_one_column", "clergy_open", "familio_about",
-                                       "ui_scan_on", "ui_scan_form_width"];
+                                       "ui_scan_on", "ui_scan_form_width", "ui_scan_keep_place"];
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ParishRow {
@@ -172,8 +172,10 @@ pub fn list(dir: &Path) -> Result<Vec<ParishRow>, String> {
             // с правом записи (файл не создаёт, записей не меняет) при
             // закрытии убирает их само, долив в основной файл то, что
             // оставалось в -wal, — как при обычном закрытии прихода.
+            // Запасного открытия «только чтение» нет (техдолг п. 46): SQLite
+            // открывает файл лениво, и защищённый от записи файл он сам
+            // открывает на чтение — запасная ветка не срабатывала никогда.
             Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-                .or_else(|_| Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY))
                 .ok()
         };
         let entries = peek

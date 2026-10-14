@@ -18,6 +18,26 @@ export function stepPage(value: string | null, delta: number): string {
   return text.replace(/\d+/g, (digits) => String(Math.max(0, Number(digits) + delta)));
 }
 
+/**
+ * Шаг страницы при перелистывании скана на один файл (Роман 14.10.2026).
+ * Разворот («938об-939») шагает как кнопка «+»: «939об-940». Одиночная
+ * страница — по листу: «938» → «938об» → «939», назад — «939» → «938об» →
+ * «938»; в делах «файл — страница» он пишет именно так, а кнопка «+» у «938»
+ * дала бы «939». Пустое поле не трогаем: страницы ещё нет. Строка без чисел
+ * или непривычного вида — как кнопка.
+ */
+export function turnPage(value: string | null, delta: 1 | -1): string | null {
+  const text = (value ?? "").trim();
+  if (text === "") return null;
+  const single = /^(\d+)(\s*об\.?)?$/i.exec(text);
+  if (!single) return stepPage(text, delta) || null;
+  const n = Number(single[1]);
+  const back = single[2] ?? "";
+  if (delta > 0) return back ? String(n + 1) : `${n}об`;
+  if (back) return String(n);
+  return n > 1 ? `${n - 1}об` : text;
+}
+
 /** Строка пуста — страницы нет. Пробелы по краям не хранятся. */
 export function normalizePage(value: string): string | null {
   const text = value.trim();

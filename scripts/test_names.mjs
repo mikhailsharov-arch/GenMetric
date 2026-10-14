@@ -1,6 +1,6 @@
 // Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { feminineSurname, onlyFeminineOf, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
+import { feminineSurname, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -92,6 +92,26 @@ for (const [value, typed, want] of [
   ["Палий", "Палий", false],
   ["Курынина", "", false],
 ]) same(`«${value}» при набранном «${typed}» — ${want ? "убрать" : "оставить"}`, onlyFeminineOf(value, typed), want);
+
+console.log("\nЗвание по роли при выборе персоны (Роман 14.10.2026)");
+for (const [rank, role, want] of [
+  ["крестьянский сын", "father", "крестьянин"],
+  ["Крестьянскій сынъ", "father", "крестьянин"],
+  ["умершего крестьянина сын", "father", "крестьянин"],
+  ["умершаго крестьянина сынъ", "father", "крестьянин"],
+  ["мещанский сын", "father", "мещанин"],
+  ["крестьянин", "father", "крестьянин"],
+  ["солдатский сын", "father", "солдатский сын"],
+  ["отставной рядовой", "father", "отставной рядовой"],
+  ["крестьянин", "groom", "крестьянский сын"],
+  ["крестьянинъ", "groom", "крестьянский сын"],
+  ["мещанин", "groom", "мещанский сын"],
+  ["вдовый крестьянин", "groom", "вдовый крестьянин"],
+  ["крестьянский сын", "groom", "крестьянский сын"],
+  ["запасной рядовой", "groom", "запасной рядовой"],
+  ["", "groom", ""],
+  [null, "father", null],
+]) same(`«${rank}» — ${role === "father" ? "отцом" : "женихом"} → «${want}»`, rankForRole(rank, role), want);
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

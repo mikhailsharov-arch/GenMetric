@@ -132,6 +132,8 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
       ...people[index],
       iof: hint.iof,
       rank: hint.rank ?? people[index].rank,
+      // Отметка «ИФ» была у прежнего человека (ревьюер 14.10.2026).
+      nameSurname: false,
     });
     setPickerFor(null);
   }
@@ -176,12 +178,12 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
         onChange={(e) => {
           const key = e.target.value;
           if (key === "") {
-            onChange(i, { ...now, iof: "", parsed: null, rank: "", note: "" });
+            onChange(i, { ...now, iof: "", parsed: null, rank: "", note: "", nameSurname: false });
             return;
           }
           const hint = fit.find((h) => hintKey(h.iof, h.rank) === key);
           // Примечание («Имя в документе: …») принадлежало прежнему человеку.
-          if (hint) onChange(i, { ...now, iof: hint.iof, parsed: null, rank: hint.rank ?? "", note: "" });
+          if (hint) onChange(i, { ...now, iof: hint.iof, parsed: null, rank: hint.rank ?? "", note: "", nameSurname: false });
         }}
         onKeyDown={(e) => {
           if (e.key !== "Enter") return;

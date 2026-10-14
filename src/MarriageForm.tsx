@@ -2,17 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf } from "./PersonBlock";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import { useFormClergy } from "./clergy";
 import Suggest from "./Suggest";
 import { dismissWarn, report, warn } from "./errors";
-import { pageOverflow } from "./page";
+import { pageOverflow, turnPage } from "./page";
 import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
 import { setDirty } from "./dirty";
-import { titleCase } from "./names";
+import { rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
@@ -128,10 +128,11 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   const [saved, setSaved] = useState<Brief[]>([]);
   const [busy, setBusy] = useState(false);
   // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
-  const entryScan = useEntryScan(editingId !== null, year);
+  const root = useRef<HTMLDivElement>(null);
+  // Страница идёт за сканом при перелистывании на один файл (Роман 14.10.2026).
+  const entryScan = useEntryScan(editingId !== null, year, (by) => setPage((p) => turnPage(p, by) ?? p), root);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
-  const root = useRef<HTMLDivElement>(null);
   const placeDefaults = { guberniya: mkCase.guberniya ?? "", uyezd: mkCase.uyezd ?? "" };
 
   const witnessSetters = [setW1, setW2, setW3, setW4, setW5, setW6];
@@ -221,9 +222,9 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
     // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
     const iof = titleCase(p.iof);
-    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof }) };
+    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof, nameSurname: nameSurnameNow({ ...p, iof }) }) };
     if (!p.iof.trim() || p.parsed) return p;
-    return { ...p, parsed: await invoke<Parsed>("parse_iof", { text: p.iof }) };
+    return { ...p, parsed: await invoke<Parsed>("parse_iof", { text: p.iof, nameSurname: nameSurnameNow(p) }) };
   }
 
   function payload(role: string, order: number, p: Person, extra: Record<string, unknown> = {},
@@ -379,7 +380,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       witnessPlaceManual.current = [false, false, false, false, false, false];
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
-        m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
+        m ? { ...base, iof: iof(m), parsed: null, nameSurname: nameSurnameOf(m), place: m.place ?? "", rank: m.rank ?? "",
               confession: m.confession ?? "", note: m.note ?? "" } : { ...base, note: "" };
       const by = (role: string) => e.persons.find((m) => m.role_code === role);
       const spouse = (m: MentionOut | undefined): Spouse =>
@@ -534,7 +535,10 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
           <PersonBlock hidden={groomFolded} title="Жених" person={groom} onChange={(p) => setGroom((s) => ({ ...s, ...p }))}
                        gender="М" withConfession confessionLabel="Вероисп."
                        defaultRank={fresh ? "groom" : undefined}
-                       onPickPerson={pickInto(setGroom)} {...common}
+                       onPickPerson={(hint) => pickInto(setGroom)(
+                         // Звание — по роли: «крестьянин» из рождений женихом —
+                         // «крестьянский сын» (Роман 14.10.2026). Только в новой записи.
+                         editingId === null ? { ...hint, rank: rankForRole(hint.rank, "groom") } : hint)} {...common}
                        titleAfter={<FoldLink block="marriage_groom" onFold={() => foldGroom(true)} />}
                        extra={spouseExtra(groom, setGroom)} />
           {groomRelFolded && (

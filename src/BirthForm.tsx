@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person, nameSurnameNow, nameSurnameOf } from "./PersonBlock";
 import { focusNextField } from "./focus";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
@@ -10,12 +10,12 @@ import ClergyBlock from "./ClergyBlock";
 import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
-import { pageOverflow } from "./page";
+import { pageOverflow, turnPage } from "./page";
 import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
-import { feminineSurname, titleCase } from "./names";
+import { feminineSurname, rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
@@ -284,12 +284,13 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   editingRef.current = editingId;
   const [busy, setBusy] = useState(false);
   // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
-  const entryScan = useEntryScan(editingId !== null, year);
+  const root = useRef<HTMLDivElement>(null);
+  // Страница идёт за сканом при перелистывании на один файл (Роман 14.10.2026).
+  const entryScan = useEntryScan(editingId !== null, year, (by) => setPage((p) => turnPage(p, by) ?? p), root);
   const countField = useRef<HTMLInputElement>(null);
   const dayField = useRef<HTMLInputElement>(null);
   // Поиск внутри своей формы: рядом в DOM скрытые браки и смерти со своими
   // «.sexpick» и «Год» (проверяющий 27.09.2026).
-  const root = useRef<HTMLDivElement>(null);
 
   // Список «Набрано» — записи года книги, который стоит на форме: после
   // импорта из Excel в приходе тысячи записей (спека 2026-10-02, п. 3.4).
@@ -391,10 +392,13 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
 
   /** Выбрали отца из базы — подставляем его населённый пункт, звание и жену. */
   function pickFather(hint: PersonHint) {
+    // Звание — по роли: «крестьянский сын» из брака отцом — «крестьянин»
+    // (Роман 14.10.2026). Только в новой записи.
+    const rank = editingId === null ? rankForRole(hint.rank, "father") : hint.rank;
     setFatherState((f) => ({
       ...f,
       place: hint.place ?? f.place,
-      rank: hint.rank ?? f.rank,
+      rank: rank ?? f.rank,
     }));
     if (hint.place) copiedPlace.current = hint.place;
     setMother((m) => ({
@@ -453,7 +457,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     if (!text || !fathers || surnameDoneFor.current === text) return;
     let p: Parsed;
     try {
-      p = await invoke<Parsed>("parse_iof", { text });
+      p = await invoke<Parsed>("parse_iof", { text, nameSurname: nameSurnameNow(latestMother.current) });
     } catch (e) {
       report("Не удалось разобрать имя, отчество и фамилию", e);
       return;
@@ -570,9 +574,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
     // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
     const iof = titleCase(p.iof);
-    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof }) };
+    if (iof !== p.iof) return { ...p, iof, parsed: await invoke<Parsed>("parse_iof", { text: iof, nameSurname: nameSurnameNow({ ...p, iof }) }) };
     if (!p.iof.trim() || p.parsed) return p;
-    const parsed = await invoke<Parsed>("parse_iof", { text: p.iof });
+    const parsed = await invoke<Parsed>("parse_iof", { text: p.iof, nameSurname: nameSurnameNow(p) });
     return { ...p, parsed };
   }
 
@@ -830,7 +834,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       }
       const iof = (m: MentionOut) => [m.first_name, m.patronymic, m.surname].filter(Boolean).join(" ");
       const person = (m: MentionOut | undefined, base: Person): Person =>
-        m ? { ...base, iof: iof(m), parsed: null, place: m.place ?? "", rank: m.rank ?? "",
+        m ? { ...base, iof: iof(m), parsed: null, nameSurname: nameSurnameOf(m), place: m.place ?? "", rank: m.rank ?? "",
               confession: m.confession ?? base.confession, note: m.note ?? "" }
           : { ...base };
       const by = (role: string) => e.persons.find((m) => m.role_code === role);

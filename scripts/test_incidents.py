@@ -765,10 +765,10 @@ def incident_20261003_otvet_na_prihody():
           'label="Год книги"' in ch and 'r.status === "exists"' in ch and "save(true)" in ch)
     blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
     inf = strip_comments(blocks.get("infant_suggest", ""))
-    check("подсказка младенца: окно 2 года, деревня, имя родителя",
-          ":year - 2 AND :year" in inf and ":place" in inf and ":parent" in inf and ":year - 7" not in inf)
+    check("подсказка младенца: окно 4 года (с 14.10, было 2), деревня, имя родителя",
+          ":year - 4 AND :year" in inf and ":place" in inf and ":parent" in inf and ":year - 7" not in inf)
     check("отец по записи о рождении — в том же окне и деревне",
-          ":year - 2 AND :year" in strip_comments(blocks.get("birth_father", "")) and ":place" in blocks.get("birth_father", ""))
+          ":year - 4 AND :year" in strip_comments(blocks.get("birth_father", "")) and ":place" in blocks.get("birth_father", ""))
     te = read("db/test_entry.py")
     check("поведение проверено в test_entry", "НП набран — только дети этой деревни" in te
           and "второе слово отбирает по началу имени родителя" in te)
@@ -1064,7 +1064,7 @@ def incident_20261007_otvet_na_sborku_06_10():
     check("причт: списки не исчезают, когда выбрано «никого», а выбирать есть из кого",
           "if (!open && filled.length === 0 && known.length === 0) {" in clergy)
     check("причт: примечание прежнего человека не переезжает к выбранному",
-          'rank: hint.rank ?? "", note: "" });' in clergy)
+          'rank: hint.rank ?? "", note: "", nameSurname: false });' in clergy)
     focus = read("src/focus.ts")
     check("обход клавишами знает выпадающие списки и не зовёт у них select()",
           'FIELDS = "input[data-field], select[data-field]"' in focus and 'typeof el.select === "function"' in focus)
@@ -1341,7 +1341,7 @@ def incident_20261010_skany_ryadom_s_formoj():
     check("три формы пишут файл скана, показывают разворот при «Открыть» и возвращают место набора после правки",
           all("scan_file: entryScan.forSave()," in f and "entryScan.opened(e.scan_file ?? null, " in f
               and "entryScan.closed();" in f and "<ScanLink file={e.scan_file} year={" in f
-              and "useEntryScan(editingId !== null, year)" in f for f in forms))
+              and "useEntryScan(editingId !== null, year, (by) => setPage((p) => turnPage(p, by) ?? p), root)" in f for f in forms))
     records = read("src-tauri/core/src/records.rs")
     check("в базу идёт только имя файла, без пути",
           "f.rsplit(['/', '\\\\']).next()" in records and '":scan_file": scan_file' in records)
@@ -1472,12 +1472,56 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
           "export function pastDecember(" in month and "pastDecember(last, s.riteDay ?? s.eventDay)" in month)
     scan = read("src/scan.tsx")
     check("скан: переход по номеру, вид к верху листа при смене разворота, Alt+стрелки, PNG",
-          "data-scan-no" in scan and "if (opened++ > 0) toTop(v, OpenSeadragon);" in scan
+          "data-scan-no" in scan and "if (opened++ > 0 && !keepRef.current) toTop(v, OpenSeadragon);" in scan
           and "panView(pan[0] * PAN_STEP, pan[1] * PAN_STEP);" in scan
           and 'lower.ends_with(".png")' in read("src-tauri/core/src/scans.rs"))
 
 
+def incident_20261014_stranica_i_dovodka():
+    """
+    14.10.2026, ответ Романа на сборку 13.10 (intent/2026-10-14-…, спека
+    2026-10-14-stranica-i-dovodka). Не поломки, а то, что нельзя вернуть:
+    страница идёт за сканом только при листании на один файл в новой записи;
+    «к верху листа» сбивало выравнивание на большом мониторе — нужен режим
+    «то же место»; «Анна Баженова» из двух слов не размечалась фамилией.
+    Поведение держат scripts/test_page.mjs (turnPage), test_names.mjs
+    (rankForRole), тест крейта (parse_iof_with, пустой файл базы).
+    """
+    scan = read("src/scan.tsx")
+    check("страница за сканом: только листание на один файл с разворота набора, не переход по номеру",
+          "if (to !== at && !wasAway) turnListeners.current.forEach((fn) => fn(by));" in scan
+          and "turnListeners" not in scan.split("goTo: (i) => {", 1)[1].split("},", 1)[0]
+          and "if (busy || !file || !fn) return;" in scan
+          and "root.current.offsetParent === null" in scan)
+    forms = [read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")]
+    check("три формы сдвигают страницу правилом turnPage",
+          all("(by) => setPage((p) => turnPage(p, by) ?? p), root)" in f for f in forms)
+          and "export function turnPage(" in read("src/page.ts") and "turnPage(" in read("scripts/test_page.mjs"))
+    check("режим «то же место» — общая настройка окна, и toTop его слушается",
+          '"ui_scan_keep_place"' in read("src-tauri/core/src/parish.rs").split("pub const COMMON_SETTINGS", 1)[-1].split(";", 1)[0]
+          and "if (opened++ > 0 && !keepRef.current) toTop(v, OpenSeadragon);" in scan and "data-scan-keep" in scan)
+    iof, records = read("src/IofField.tsx"), read("src-tauri/core/src/records.rs")
+    check("отметка «ИФ»: доходит до разбора, второе слово не ищется среди отчеств",
+          'invoke<Parsed>("parse_iof", { text: value, nameSurname: !!nameSurname })' in iof
+          and "}, [value, nameSurname]);" in iof
+          and "if let Some(first_rest) = rest.first().filter(|_| !name_surname) {" in records
+          and "name_surname: Option<bool>" in read("src-tauri/src/main.rs")
+          and all("nameSurname: nameSurnameOf(m)," in f and "nameSurname: nameSurnameNow(p)" in f for f in forms))
+    check("звание по роли при выборе персоны — отцом в рождениях и женихом в браках, только в новой записи",
+          'editingId === null ? rankForRole(hint.rank, "father") : hint.rank' in forms[0]
+          and 'editingId === null ? { ...hint, rank: rankForRole(hint.rank, "groom") } : hint' in forms[1]
+          and "rankForRole(" in read("scripts/test_names.mjs"))
+    block, clergy = read("src/PersonBlock.tsx"), read("src/ClergyBlock.tsx")
+    check("отметка «ИФ» снимается при смене человека: другое имя, пустое поле, выбор из подсказки, причт из списка",
+          "nameSurname: sameHuman(latest.current.iof, iof) && latest.current.nameSurname" in block
+          and "if (latest.current.nameSurname) set({ nameSurname: false });" in block
+          and clergy.count("nameSurname: false") == 3)
+    check("подсветка месяца — цвет Романа #e5bce4", ".numrow input.auto { background: #e5bce4;" in read("src/styles.css"))
+    check("пустой файл базы — новый приход из поставки", "let empty = std::fs::metadata(db_path).map(|m| m.len() == 0)" in read("src-tauri/core/src/db.rs"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261014_stranica_i_dovodka,
     incident_20261012_otvet_romana_na_sborku_10_10,
     incident_20261010_skany_ryadom_s_formoj,
     incident_20261010_tehnicheskij_sprint,
