@@ -618,7 +618,9 @@ def run(driver, wait, archive):
         "  return {hint: who(hint), list: who(list), last: who(last), mask: who(mask).length, short: short.length};"
         "})().then(done, (e) => done({error: String(e)}));")
     check("память «ИФ» через настоящий Rust: подсказка, список причта и причт после перезапуска — с отметкой",
-          "error" not in mem and mem["hint"] == [True] and mem["list"] == [True] and mem["last"] == [True], str(mem))
+          # Строк причта у человека может быть несколько (разные звания, архив
+          # Excel) — отметка обязана быть у каждой.
+          "error" not in mem and mem["hint"] == [True] and mem["list"] and all(mem["list"]) and mem["last"] == [True], str(mem))
     check("подсказка по маске «*** Рождественский» находит человека, «*** Р» — никого",
           "error" not in mem and mem["mask"] == 1 and mem["short"] == 0, str(mem))
 
