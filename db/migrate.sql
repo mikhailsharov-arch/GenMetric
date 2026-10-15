@@ -190,6 +190,25 @@ DELETE FROM person_index
 UPDATE person_index SET place = coalesce(place, ''), rank = coalesce(rank, '')
  WHERE place IS NULL OR rank IS NULL;
 
+-- Отметка «ИФ» в памяти персон и причта (Роман 15.10.2026: выбор из
+-- подсказки должен ставить её сам). Память, набранная раньше, получает её по
+-- сохранённым упоминаниям: человек с тем же ИОФ, сохранённый с именем и
+-- фамилией без отчества, — 1, остальные — 0. Один раз: строки с отметкой
+-- не трогаются. Некоррелированный IN — множество считается один раз.
+UPDATE person_index SET name_surname = 1
+ WHERE name_surname IS NULL
+   AND iof IN (SELECT trim(m.first_name) || ' ' || trim(m.surname) FROM person_mention m
+                WHERE nullif(trim(m.first_name), '') IS NOT NULL AND nullif(trim(m.patronymic), '') IS NULL
+                  AND nullif(trim(m.surname), '') IS NOT NULL AND instr(trim(m.surname), ' ') = 0);
+UPDATE person_index SET name_surname = 0 WHERE name_surname IS NULL;
+UPDATE clergy_index SET name_surname = 1
+ WHERE name_surname IS NULL
+   AND iof IN (SELECT trim(m.first_name) || ' ' || trim(m.surname) FROM person_mention m
+                WHERE m.role_code IN ('clergy1', 'clergy2', 'clergy3')
+                  AND nullif(trim(m.first_name), '') IS NOT NULL AND nullif(trim(m.patronymic), '') IS NULL
+                  AND nullif(trim(m.surname), '') IS NOT NULL AND instr(trim(m.surname), ' ') = 0);
+UPDATE clergy_index SET name_surname = 0 WHERE name_surname IS NULL;
+
 -- Память причта — то же самое: NULL в звании задваивал причт (UNIQUE (iof, rank)).
 UPDATE clergy_index SET
     uses = (SELECT sum(c.uses) FROM clergy_index c

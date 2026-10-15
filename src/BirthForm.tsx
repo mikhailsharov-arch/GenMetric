@@ -406,7 +406,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       place: hint.place ?? m.place,
       rank: m.rank || MOTHER_RANK,
     }));
-    invoke<{ iof: string; place: string | null; rank: string | null } | null>(
+    invoke<{ iof: string; place: string | null; rank: string | null; name_surname?: boolean } | null>(
       // НП мужа — чтобы не пришла жена его тёзки из другой деревни (Роман 09.10.2026).
       "suggest_spouse", { husband: hint.iof, place: hint.place ?? (latestFather.current.place.trim() || null) },
     )
@@ -415,6 +415,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         setMother((m) => ({
           ...m,
           iof: m.iof || wife.iof,
+          // «ИФ» жены — из памяти, если подставили её (Роман 15.10.2026).
+          nameSurname: m.iof ? m.nameSurname : !!wife.name_surname,
           place: wife.place ?? m.place,
           rank: wife.rank ?? m.rank,
         }));

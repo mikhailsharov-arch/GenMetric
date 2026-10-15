@@ -602,6 +602,25 @@ def run(driver, wait, archive):
         "})().then(done, (e) => done({error: String(e)}));")
     check("отметка «ИФ» через настоящий Rust: без неё «Петров» — отчество, с ней — фамилия",
           "error" not in ns and ns["plain"] == ["Петров", None] and ns["marked"] == [None, "Петров"], str(ns))
+    # Память «ИФ» (Роман 15.10.2026): причт «Александр Рождественский» сохранён
+    # фамилией без отчества — подсказка, список причта и причт для перезапуска
+    # отдают отметку; подсказка по маске «*** Рождественский» его находит.
+    mem = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  const who = (l) => l.filter((h) => h.iof === 'Александр Рождественский').map((h) => h.name_surname);"
+        "  const hint = await call('suggest_person', {prefix: 'Александр Рож', limit: 6});"
+        "  const list = await call('list_clergy', {limit: 100});"
+        "  const last = await call('last_clergy', {section: 0});"
+        "  const mask = await call('suggest_person', {prefix: '*** Рождественский', limit: 6});"
+        "  const short = await call('suggest_person', {prefix: '*** Р', limit: 6});"
+        "  return {hint: who(hint), list: who(list), last: who(last), mask: who(mask).length, short: short.length};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("память «ИФ» через настоящий Rust: подсказка, список причта и причт после перезапуска — с отметкой",
+          "error" not in mem and mem["hint"] == [True] and mem["list"] == [True] and mem["last"] == [True], str(mem))
+    check("подсказка по маске «*** Рождественский» находит человека, «*** Р» — никого",
+          "error" not in mem and mem["mask"] == 1 and mem["short"] == 0, str(mem))
 
     # Ctrl+F настоящими клавишами: свой экран вместо поиска по странице,
     # который есть у окна WebView2. Курсор — в поле формы.
@@ -771,6 +790,33 @@ def run(driver, wait, archive):
     check("запись читается с полем файла скана (у прежней записи оно пусто)",
           "error" not in saved_scan and saved_scan.get("has") and saved_scan.get("list") and saved_scan.get("value") is None,
           str(saved_scan))
+    # Запись со сканом через окно и настоящий Rust (долг п. 56): прежнюю запись
+    # открыли, «привязать к открытому», «Сохранить изменения» — у записи в
+    # базе имя файла без пути.
+    click(driver, "(//table[contains(@class,'saved')]//button[starts-with(normalize-space(),'Открыть')])[1]")
+    # Не wait.until: не открылась правка — одна проваленная проверка, а не
+    # упавший сценарий (ревьюер 15.10.2026).
+    check("запись открыта на правку", wait_for(lambda: bool(driver.find_elements(By.CSS_SELECTOR, ".editbar")), 10),
+          error_details(driver))
+    rebind = driver.find_elements(By.CSS_SELECTOR, "[data-scan-rebind]")
+    check("у открытой записи без скана есть «привязать к открытому»", bool(rebind), error_details(driver))
+    if rebind:
+        rebind[0].click()
+        check("после «привязать» — «скан: запишется лист 1.jpg»", wait_for(lambda: driver.execute_script(
+            "const b = document.querySelector('[data-scan-bind=rebound]'); return !!b && b.textContent.includes('лист 1.jpg');"), 3),
+            error_details(driver))
+    click(driver, "//button[starts-with(normalize-space(),'Сохранить изменения')]")
+    check("правка сохранена, режим правки снят",
+          wait_for(lambda: not driver.find_elements(By.CSS_SELECTOR, ".editbar"), 10), error_details(driver))
+    bound = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "(async () => {"
+        "  const full = await call('entry_load', {id: arguments[0]});"
+        "  return {value: full.scan_file};"
+        "})().then(done, (e) => done({error: String(e)}));", saved_scan.get("id"))
+    check("запись со сканом сохранена: в базе «лист 1.jpg», без пути",
+          "error" not in bound and bound.get("value") == "лист 1.jpg", str(bound))
     driver.execute_script("document.querySelector('[data-scan-hide]').click();")
     check("«скрыть» убирает блок, окно возвращается к прежней ширине",
           wait_for(lambda: scan_attr("data-scan-count") is None)

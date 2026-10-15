@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { report, warn } from "./errors";
+import { panStep } from "./page";
 
 /**
  * Сканы рядом с формой (спека 2026-10-10-skany-ryadom-s-formoj).
@@ -79,8 +80,6 @@ export function useScan(): Scan {
 }
 
 export const FORM_WIDTH = 470;
-/** Шаг сдвига скана клавишами — доля видимой части. */
-const PAN_STEP = 0.25;
 const FORM_MIN = 380;
 
 export function ScanProvider({ year, ready, children }: { year: number | null; ready: boolean; children: React.ReactNode }) {
@@ -363,13 +362,26 @@ type Osd = typeof import("openseadragon");
 /** Просмотрщик открытого блока — для клавиш, которые слушает всё окно. */
 const live: { viewer: Viewer | null; osd: Osd | null } = { viewer: null, osd: null };
 
-/** Сдвинуть вид на долю видимой части: `dx`, `dy` — в долях ширины и высоты блока. */
-function panView(dx: number, dy: number) {
+/** Сдвинуть вид на долю видимой части: `dx`, `dy` — в долях ширины и высоты
+ *  блока. `now` — без анимации: повторы удержанной клавиши идут ровно. */
+function panView(dx: number, dy: number, now = false) {
   const { viewer: v, osd } = live;
   if (!v || !osd) return;
   const size = v.viewport.getContainerSize();
-  v.viewport.panBy(v.viewport.deltaPointsFromPixels(new osd.Point(size.x * dx, size.y * dy)));
-  v.viewport.applyConstraints();
+  v.viewport.panBy(v.viewport.deltaPointsFromPixels(new osd.Point(size.x * dx, size.y * dy)), now);
+  v.viewport.applyConstraints(now);
+}
+
+/** Лист виден по ширине целиком — двигать вбок нечего (долг п. 58): тогда
+ *  Alt+← и Alt+→ остаются полю («±1» в числовом, переход по словам на Mac). */
+function fitsWidth(): boolean {
+  const { viewer: v, osd } = live;
+  const item = v?.world.getItemAt(0);
+  if (!v || !osd || !item) return true;
+  const b = item.getBounds(true);
+  const xs = [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]
+    .map(([x, y]) => v.viewport.viewportToViewerElementCoordinates(new osd.Point(x, y)).x);
+  return Math.max(...xs) - Math.min(...xs) <= v.viewport.getContainerSize().x + 1;
 }
 
 /**
@@ -521,7 +533,20 @@ export function ScanPane() {
                      value={typedNo ?? String(scan.index + 1)}
                      onFocus={(e) => { cameFrom.current = e.relatedTarget as HTMLElement | null; setTypedNo(""); }}
                      onChange={(e) => setTypedNo(e.target.value.replace(/[^0-9]/g, "").slice(0, 5))}
-                     onBlur={() => { if (typedNo !== null) { setTypedNo(null); cameFrom.current = null; } }}
+                     onBlur={(e) => {
+                       // Из поля номера ушли не Enter и не Esc, а щелчком в
+                       // другое поле: поле, из которого пришли, своего ухода
+                       // ещё не прожило (сверка имени, пробел — долг п. 61).
+                       // Проводим курсор через него: правила сработают, как
+                       // при обычном переходе из него в новое поле. Кроме
+                       // выпадающего списка: открытый щелчком, он бы закрылся
+                       // (ревьюер 15.10.2026) — сохранение правила повторит.
+                       const back = cameFrom.current, to = e.relatedTarget as HTMLElement | null;
+                       if (back && back.isConnected && to && to !== back && to.matches?.("input, textarea")) {
+                         setTimeout(() => { back.focus(); to.focus(); }, 0);
+                       }
+                       if (typedNo !== null) { setTypedNo(null); cameFrom.current = null; }
+                     }}
                      onKeyDown={(e) => {
                        if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); leaveNo(true); }
                        else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); leaveNo(false); }
@@ -614,6 +639,8 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
   const onRef = useRef(scan.on);
   onRef.current = scan.on;
   useEffect(() => {
+    // Удержание стрелки: с какого момента и какой клавишей — для разгона.
+    const held = { key: "", since: 0 };
     const on = (e: KeyboardEvent) => {
       // Только пока есть что двигать и листать: блок включён, а папки нет —
       // клавиши остаются полям.
@@ -626,10 +653,16 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
       // Alt+↓ в поле с перечнем («Причина», «Родство», архив) открывает
       // перечень — это остаётся полю (ревьюер 13.10.2026).
       if (pan && e.key === "ArrowDown" && (e.target as HTMLElement | null)?.matches?.("[data-browse], select")) return;
+      if (pan && pan[0] !== 0 && fitsWidth()) return;
       if (pan) {
         e.preventDefault();
         e.stopPropagation();
-        panView(pan[0] * PAN_STEP, pan[1] * PAN_STEP);
+        // Короткое нажатие — заметный шаг, удержание — ползёт и разгоняется
+        // (Роман 15.10.2026; panStep в page.ts).
+        const repeat = e.repeat && held.key === e.key;
+        if (!repeat) { held.key = e.key; held.since = performance.now(); }
+        const step = panStep(repeat, performance.now() - held.since);
+        panView(pan[0] * step, pan[1] * step, repeat);
         return;
       }
       if (e.key !== "PageDown" && e.key !== "PageUp") return;

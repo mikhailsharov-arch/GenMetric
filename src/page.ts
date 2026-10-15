@@ -74,3 +74,20 @@ export function pageOverflow(pages: (string | null)[], current: string | null):
   const usual = total / perPage.size;
   return onPage + 1 > usual * 1.5 ? { onPage, usual } : null;
 }
+
+/**
+ * Шаг сдвига скана Alt+стрелкой — доля видимой части блока (Роман 15.10.2026:
+ * «нажимаешь стрелку, чтобы чуть-чуть подвинуть текст, а полстроки сразу
+ * улетает… зажал стрелку — лист начинает ползти медленно для
+ * микро-подстройки, а при долгом удержании скорость плавно нарастает»).
+ * Короткое нажатие — 1/20 (было 1/4). Удержание: шаг каждого повтора клавиши
+ * растёт с 1/100 до 1/20 за полторы секунды, плавно (по квадрату времени).
+ */
+export const PAN_TAP = 0.05;
+export const PAN_CRAWL = 0.01;
+export const PAN_RAMP_MS = 1500;
+export function panStep(repeat: boolean, heldMs: number): number {
+  if (!repeat) return PAN_TAP;
+  const t = Math.min(Math.max(heldMs / PAN_RAMP_MS, 0), 1);
+  return PAN_CRAWL + (PAN_TAP - PAN_CRAWL) * t * t;
+}

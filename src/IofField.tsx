@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { feminineSurname, onlyFeminineOf, showNoName, titleCase, typedCase } from "./names";
-import { focusNextField, focusNextEmptyField, scrollInList } from "./focus";
+import { feminineSurname, noNameWord, onlyFeminineOf, showNoName, titleCase, typedCase } from "./names";
+import { focusNextField, focusNextEmptyField, scrollInList, toScanNo } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
 import NameResolve from "./NameResolve";
@@ -38,6 +38,9 @@ export type PersonHint = {
   rank: string | null;
   gender: string | null;
   uses: number;
+  /** Сохранён как имя и фамилия без отчества — выбор ставит «ИФ» сам (Роман
+   *  15.10.2026). У ребёнка из записи о рождении — нет. */
+  name_surname?: boolean;
   /** Ребёнок из записи о рождении (подсказка умершего): его родитель, место
    *  родителя и дата рождения — чтобы различать тёзок (Роман 30.09.2026). */
   infant?: { kin: string | null; parent: string | null; place: string | null;
@@ -325,7 +328,13 @@ export default function IofField({
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);
-        setActive(twins && !namesFirst ? -1 : 0);
+        // Маска «*** Иванов Кулаев»: того, кого набирают, в памяти нет (имени
+        // нет — в память не идёт), в списке только другие люди. Заранее не
+        // выбрана ни одна строка: привычный Enter иначе подставил бы самого
+        // частого из них (ревьюер 15.10.2026). Выбор — стрелкой или мышью.
+        const first = value.trim().split(/\s+/)[0] ?? "";
+        const masked = /\s/.test(value.trim()) && (first.includes("*") || noNameWord(first));
+        setActive((twins || masked) && !namesFirst ? -1 : 0);
         setOpen(foundPersons.length + shownWords.length > 0);
         setElsewhere(0);
         // НП умершего отсеял всех детей — узнать, есть ли они в приходе
@@ -707,6 +716,7 @@ export default function IofField({
           onKeyDown={onKeyDown}
           onBlur={(e) => {
             closeSuggestions();
+            if (toScanNo(e.relatedTarget)) return;
             // «иван иванов» → «Иван Иванов» (Роман 03.10.2026). До сверки:
             // она читает текст из valueRef.
             // Только при настоящем уходе из поля: окно программы потеряло

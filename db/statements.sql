@@ -555,7 +555,11 @@ SELECT m.role_code,
        trim(coalesce(m.first_name, '')
             || CASE WHEN m.patronymic IS NULL THEN '' ELSE ' ' || m.patronymic END
             || CASE WHEN m.surname IS NULL THEN '' ELSE ' ' || m.surname END) AS iof,
-       m.rank, m.note
+       m.rank, m.note,
+       -- Отметка «ИФ» — по сохранённому, как у записи на правке (Роман
+       -- 15.10.2026: «то же самое касается и записей причта после перезапуска»).
+       (nullif(trim(m.first_name), '') IS NOT NULL AND nullif(trim(m.patronymic), '') IS NULL
+        AND nullif(trim(m.surname), '') IS NOT NULL AND instr(trim(m.surname), ' ') = 0) AS name_surname
   FROM person_mention m
  WHERE m.entry_id = (SELECT max(e.id) FROM entry e WHERE (:section = 0 OR e.section = :section))
    AND m.role_code IN ('clergy1', 'clergy2', 'clergy3')
@@ -691,11 +695,13 @@ SELECT value, 4, 0 FROM lookup
 -- Пустые место и звание — пустой строкой, не NULL: в UNIQUE у SQLite NULL
 -- не равен NULL, и персона без места задваивалась при каждом сохранении
 -- (техдолг В6, 27.09.2026). Наружу пустое отдаётся снова как NULL.
-INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses, last_used_at)
-VALUES (:iof, :iof_norm, coalesce(:place, ''), coalesce(:rank, ''), :gender, 1, datetime('now'))
+-- Отметка «ИФ» (:name_surname) — последняя сохранённая: выбор из подсказки
+-- ставит её сам (Роман 15.10.2026).
+INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses, last_used_at, name_surname)
+VALUES (:iof, :iof_norm, coalesce(:place, ''), coalesce(:rank, ''), :gender, 1, datetime('now'), :name_surname)
 ON CONFLICT(iof, place, rank) DO UPDATE SET
     uses = uses + 1, last_used_at = datetime('now'),
-    gender = coalesce(excluded.gender, gender);
+    gender = coalesce(excluded.gender, gender), name_surname = excluded.name_surname;
 
 -- @person_suggest
 -- Подсказка персонами. Сначала те, кого вводили чаще: заказчик работает
@@ -713,9 +719,12 @@ ON CONFLICT(iof, place, rank) DO UPDATE SET
 -- без. По логике они должны были слиться»). Без НП человек попадает в память
 -- причтом — у причта НП нет. Частота спрятанной строки прибавляется строкам
 -- с НП. Память и здесь не переписывается.
-SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
+SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, coalesce(name_surname, 0) AS name_surname
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
+               -- «ИФ» — как сохранили последний раз, при любом звании.
+               first_value(p.name_surname) OVER (PARTITION BY p.iof, p.place
+                                                 ORDER BY coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
                sum(p.uses) OVER (PARTITION BY p.iof, p.place)
                  + CASE WHEN p.place <> ''
                         THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
@@ -725,6 +734,37 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
                                   ORDER BY (p.rank = ''), coalesce(p.last_used_at, '') DESC, p.id DESC) AS rn
           FROM person_index p
          WHERE p.iof_norm LIKE :prefix ESCAPE '\'
+           AND (:gender IS NULL OR p.gender IS NULL OR p.gender = :gender))
+ WHERE rn = 1 AND (place <> '' OR has_place = 0)
+ ORDER BY uses DESC, iof
+ LIMIT :limit;
+
+-- @person_suggest_mask
+-- Подсказка по маске (Роман 15.10.2026): «*** Иванов Кулаев» — все Ивановичи
+-- Кулаевы прихода; «Ф*** Иванов Кулаев» — только имена на «Ф». Образцы
+-- собирает records::person_mask: :name — для первого слова (имени), :rest —
+-- для остального; «*** Кулаев» находит фамилию и сразу после имени, и после
+-- отчества. Первое слово отрезается до пробела — «%» маски через него не
+-- перескочит. Индекс по началу строки здесь не помогает: память персон
+-- прихода — тысячи строк, полный проход — миллисекунды. Свёртка строк — как
+-- в person_suggest.
+SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, coalesce(name_surname, 0) AS name_surname
+  FROM (SELECT p.iof, p.place, p.rank,
+               max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
+               first_value(p.name_surname) OVER (PARTITION BY p.iof, p.place
+                                                 ORDER BY coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
+               sum(p.uses) OVER (PARTITION BY p.iof, p.place)
+                 + CASE WHEN p.place <> ''
+                        THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
+                        ELSE 0 END AS uses,
+               max(p.place <> '') OVER (PARTITION BY p.iof) AS has_place,
+               row_number() OVER (PARTITION BY p.iof, p.place
+                                  ORDER BY (p.rank = ''), coalesce(p.last_used_at, '') DESC, p.id DESC) AS rn
+          FROM person_index p
+         WHERE instr(p.iof_norm, ' ') > 0
+           AND substr(p.iof_norm, 1, instr(p.iof_norm, ' ') - 1) LIKE :name ESCAPE '\'
+           AND (substr(p.iof_norm, instr(p.iof_norm, ' ') + 1) LIKE :rest ESCAPE '\'
+                OR substr(p.iof_norm, instr(p.iof_norm, ' ') + 1) LIKE '% ' || :rest ESCAPE '\')
            AND (:gender IS NULL OR p.gender IS NULL OR p.gender = :gender))
  WHERE rn = 1 AND (place <> '' OR has_place = 0)
  ORDER BY uses DESC, iof
@@ -748,9 +788,12 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
 -- без. По логике они должны были слиться»). Без НП человек попадает в память
 -- причтом — у причта НП нет. Частота спрятанной строки прибавляется строкам
 -- с НП. Память и здесь не переписывается.
-SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses
+SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, coalesce(name_surname, 0) AS name_surname
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
+               -- «ИФ» — как сохранили последний раз, при любом звании.
+               first_value(p.name_surname) OVER (PARTITION BY p.iof, p.place
+                                                 ORDER BY coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
                sum(p.uses) OVER (PARTITION BY p.iof, p.place)
                  + CASE WHEN p.place <> ''
                         THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
@@ -834,7 +877,10 @@ SELECT k.iof, k.gender,
 SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || nullif(trim(f.patronymic), ''), '') || coalesce(' ' || nullif(trim(f.surname), ''), '')) AS iof,
        (SELECT p.name FROM place p WHERE p.id = f.place_id) AS place,
        f.rank,
-       count(*) OVER () AS births
+       count(*) OVER () AS births,
+       -- Отец сохранён именем и фамилией — «ИФ» (Роман 15.10.2026).
+       (nullif(trim(f.first_name), '') IS NOT NULL AND nullif(trim(f.patronymic), '') IS NULL
+        AND nullif(trim(f.surname), '') IS NOT NULL AND instr(trim(f.surname), ' ') = 0) AS name_surname
   FROM person_mention c
   JOIN entry e ON e.id = c.entry_id AND e.section = 1
   JOIN person_mention f ON f.entry_id = c.entry_id AND f.role_code = 'father'
@@ -873,15 +919,15 @@ UPDATE review_item SET done = :done WHERE id = :id;
 -- в базу и появляется в списке».
 -- Пустое звание — пустой строкой: NULL в UNIQUE задваивал причт на каждой
 -- записи (ревьюер 27.09.2026, то же, что В6 у персон).
-INSERT INTO clergy_index (iof, iof_norm, rank, uses, last_used_at)
-VALUES (:iof, :iof_norm, coalesce(:rank, ''), 1, datetime('now'))
+INSERT INTO clergy_index (iof, iof_norm, rank, uses, last_used_at, name_surname)
+VALUES (:iof, :iof_norm, coalesce(:rank, ''), 1, datetime('now'), :name_surname)
 ON CONFLICT(iof, rank) DO UPDATE SET
-    uses = uses + 1, last_used_at = datetime('now');
+    uses = uses + 1, last_used_at = datetime('now'), name_surname = excluded.name_surname;
 
 -- @clergy_list
 -- Весь список целиком, без ввода первых букв: причт в приходе меняется редко,
 -- за год-два это те же три человека.
-SELECT iof, nullif(rank, '') AS rank, uses FROM clergy_index
+SELECT iof, nullif(rank, '') AS rank, uses, coalesce(name_surname, 0) AS name_surname FROM clergy_index
  ORDER BY uses DESC, last_used_at DESC, iof
  LIMIT :limit;
 
@@ -932,6 +978,16 @@ SELECT wife_iof, wife_place, wife_rank, uses
                     WHERE x.husband_norm = :husband_norm) <= 1
              ELSE coalesce(wife_place, '') IN ('', :place) END)
  ORDER BY (coalesce(wife_place, '') = coalesce(:place, '')) DESC, uses DESC
+ LIMIT 1;
+
+-- @person_name_surname
+-- Отметка «ИФ» человека из памяти персон — как сохранили последний раз, свой
+-- пункт первым (жена по мужу; Роман 15.10.2026: держать отметку в голове
+-- «неприемлемо»). Отдельным запросом: подзапрос с ORDER BY, ссылающийся на
+-- внешнюю таблицу, rusqlite не собирает (грабля 08.10.2026).
+SELECT coalesce(name_surname, 0) FROM person_index
+ WHERE iof = :iof
+ ORDER BY (place = coalesce(:place, '')) DESC, coalesce(last_used_at, '') DESC, id DESC
  LIMIT 1;
 
 -- @wife_husband_rank

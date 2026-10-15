@@ -322,7 +322,7 @@ def main() -> int:
                                  ("Василий Смирнов", "псаломщик", 1)]:
             for _ in range(times):
                 db.execute(sql["clergy_remember"],
-                           {"iof": iof, "iof_norm": norm(iof), "rank": rank})
+                           {"iof": iof, "iof_norm": norm(iof), "rank": rank, "name_surname": 0})
         rows = db.execute(sql["clergy_list"], {"limit": 20}).fetchall()
         check("список причта не пуст", len(rows) == 2, f"{len(rows)}")
         check("частый впереди", rows[0][0] == "Иоанн Предтеченский", str(rows[0]))

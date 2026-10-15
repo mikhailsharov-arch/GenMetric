@@ -111,7 +111,12 @@ for (const [rank, role, want] of [
   ["запасной рядовой", "groom", "запасной рядовой"],
   ["", "groom", ""],
   [null, "father", null],
-]) same(`«${rank}» — ${role === "father" ? "отцом" : "женихом"} → «${want}»`, rankForRole(rank, role), want);
+  // Поручитель — как отец (Роман 15.10.2026).
+  ["крестьянский сын", "guarantor", "крестьянин"],
+  ["мещанский сын", "guarantor", "мещанин"],
+  ["крестьянин", "guarantor", "крестьянин"],
+  ["вдовый крестьянин", "guarantor", "вдовый крестьянин"],
+]) same(`«${rank}» — ${({ father: "отцом", groom: "женихом", guarantor: "поручителем" })[role]} → «${want}»`, rankForRole(rank, role), want);
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

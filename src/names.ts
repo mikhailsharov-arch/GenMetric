@@ -51,6 +51,9 @@ export function feminineSurname(surname: string): string {
  * «крестьянским сыном». По его базе так верно примерно в 70 % случаев (те же
  * люди женихом и отцом: «крестьянский сын» → «крестьянин» 314 раз из 470).
  * Пары — только те, где сословие одно и то же; остальные звания как есть.
+ * Поручитель — как отец (Роман 15.10.2026: «в поручителях не могли выступать
+ * „крестьянские сыновья“ — ими записывали только взрослых полноправных
+ * „крестьян“»); восприемников правило не касается.
  * Регистр, «ъ» на конце слова и «і» не различаются.
  */
 const RANK_FOR_FATHER: Record<string, string> = {
@@ -65,10 +68,10 @@ const RANK_FOR_GROOM: Record<string, string> = {
   "крестьянин": "крестьянский сын",
   "мещанин": "мещанский сын",
 };
-export function rankForRole(rank: string | null | undefined, role: "father" | "groom"): string | null {
+export function rankForRole(rank: string | null | undefined, role: "father" | "groom" | "guarantor"): string | null {
   if (!rank) return rank ?? null;
   const key = rank.trim().toLowerCase().replace(/і/g, "и").replace(/ѣ/g, "е").replace(/ъ(?=\s|$)/g, "").replace(/\s+/g, " ");
-  return (role === "father" ? RANK_FOR_FATHER : RANK_FOR_GROOM)[key] ?? rank;
+  return (role === "groom" ? RANK_FOR_GROOM : RANK_FOR_FATHER)[key] ?? rank;
 }
 
 /**

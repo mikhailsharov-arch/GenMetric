@@ -30,7 +30,10 @@ type Shared = {
 const EMPTY_TRIO: Trio = [EMPTY_PERSON, EMPTY_PERSON, EMPTY_PERSON];
 const Ctx = createContext<Shared | null>(null);
 
-type LastClergy = { role_code: string; iof: string; rank: string | null; note: string | null };
+type LastClergy = { role_code: string; iof: string; rank: string | null; note: string | null;
+                    /** Сохранён именем и фамилией — «ИФ» (Роман 15.10.2026: «то же самое
+                     *  касается и записей причта после перезапуска»). */
+                    name_surname?: boolean };
 
 export function ClergyProvider({ children }: { children: React.ReactNode }) {
   const [people, setPeople] = useState<Trio>(EMPTY_TRIO);
@@ -54,7 +57,8 @@ export function ClergyProvider({ children }: { children: React.ReactNode }) {
         for (const r of rows) {
           const i = idx[r.role_code];
           if (i !== undefined && r.iof.trim())
-            setAt(i, (p) => (p.iof.trim() ? p : { ...p, iof: r.iof, rank: r.rank ?? "", note: r.note ?? "" }));
+            setAt(i, (p) => (p.iof.trim() ? p : { ...p, iof: r.iof, rank: r.rank ?? "", note: r.note ?? "",
+                                                   nameSurname: !!r.name_surname }));
         }
         if (rows.length > 0) setSavedTimes((n) => n + 1); // свернуть заполненный причт
       })

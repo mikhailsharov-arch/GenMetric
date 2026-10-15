@@ -51,7 +51,7 @@ export const nameSurnameNow = (p: { iof: string; nameSurname?: boolean }): boole
 /** Запись поднята на правку: два слова, второе сохранено фамилией, отчества
  *  нет — это и есть «ИФ». */
 export const nameSurnameOf = (m: { first_name?: string | null; patronymic?: string | null; surname?: string | null }): boolean =>
-  !!m.first_name && !m.patronymic && !!m.surname && !/\s/.test(m.surname.trim());
+  !!m.first_name?.trim() && !m.patronymic?.trim() && !!m.surname?.trim() && !/\s/.test(m.surname.trim());
 
 export const EMPTY_PERSON: Person = {
   iof: "", parsed: null, place: "", rank: "", confession: "", note: "", maiden: "",
@@ -426,9 +426,10 @@ export default function PersonBlock({
           set({ iof, parsed: null, note: appendNote(person.note, note) });
         }}
         onPickPerson={(hint) => {
-          // Выбран другой человек — отметка прежнего к нему не относится
-          // (ревьюер и проверяющий 14.10.2026).
-          if (latest.current.nameSurname) set({ nameSurname: false });
+          // Отметка — того, кого выбрали: сохранённого именем и фамилией
+          // программа помнит (Роман 15.10.2026: «сама автоматически
+          // проставлять флажок „ИФ“»); у прежнего человека она своя.
+          if (!!latest.current.nameSurname !== !!hint.name_surname) set({ nameSurname: !!hint.name_surname });
           onPickPerson?.(hint);
         }}
         nameSurname={nameSurnameNow(person)}

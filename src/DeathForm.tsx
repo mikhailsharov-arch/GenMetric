@@ -450,7 +450,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
       setDead((d) => (d.rank === staleRank ? { ...d, rank: "" } : d));
     autoPlace.current = null;
     autoRank.current = null;
-    invoke<{ iof: string; place: string | null; rank: string | null; births: number } | null>(
+    invoke<{ iof: string; place: string | null; rank: string | null; births: number; name_surname?: boolean } | null>(
       "birth_father", { iof: hint.iof, year, place: hint.place ? null : placeTyped?.trim() || null })
       .then((f) => {
         if (mine !== pickSeq.current) return;
@@ -470,7 +470,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
           return;
         }
         setRel((r) => (replaceable(r) ? {
-          ...NEW_RELATIVE, kinship: KIN_DEFAULT, iof: f.iof, parsed: null,
+          ...NEW_RELATIVE, kinship: KIN_DEFAULT, iof: f.iof, parsed: null, nameSurname: !!f.name_surname,
           place: f.place ?? "", rank: f.rank ?? "",
         } : r));
         autoRel.current = f.iof;

@@ -626,6 +626,8 @@ struct PersonHint {
     rank: Option<String>,
     gender: Option<String>,
     uses: i64,
+    /// Сохранён как имя и фамилия — выбор ставит отметку «ИФ» сам (Роман 15.10.2026).
+    name_surname: bool,
 }
 
 #[derive(Serialize)]
@@ -633,6 +635,7 @@ struct SpouseHint {
     iof: String,
     place: Option<String>,
     rank: Option<String>,
+    name_surname: bool,
 }
 
 #[derive(Serialize)]
@@ -724,22 +727,30 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: O
     // Умерший: младенцы из записей о рождении — первыми (Роман 28.09.2026).
     // Имя блока — литералом в каждой ветке: так его видит проверка
     // параметров в test_incidents.py.
-    let sql = if prefer_infant.unwrap_or(false) { statement("person_suggest_infant")? }
+    // Маска «*** Иванов Кулаев» — свой запрос (Роман 15.10.2026).
+    let mask = genmetric_core::records::person_mask(&prefix);
+    let sql = if mask.is_some() { statement("person_suggest_mask")? }
+              else if prefer_infant.unwrap_or(false) { statement("person_suggest_infant")? }
               else { statement("person_suggest")? };
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(8).clamp(1, 50);
     with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(rusqlite::named_params! {
-                ":prefix": pattern, ":limit": limit, ":gender": gender,
-            }, |r| {
-                Ok(PersonHint {
-                    iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?,
-                    gender: r.get(3)?, uses: r.get(4)?,
-                })
+        let hint = |r: &rusqlite::Row| -> rusqlite::Result<PersonHint> {
+            Ok(PersonHint {
+                iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?,
+                gender: r.get(3)?, uses: r.get(4)?, name_surname: r.get(5)?,
             })
-            .map_err(|e| e.to_string())?;
+        };
+        let rows = match &mask {
+            Some((name, rest)) => stmt.query_map(rusqlite::named_params! {
+                ":name": name, ":rest": rest, ":limit": limit, ":gender": gender,
+            }, hint),
+            None => stmt.query_map(rusqlite::named_params! {
+                ":prefix": pattern, ":limit": limit, ":gender": gender,
+            }, hint),
+        }
+        .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(|e| e.to_string())?);
@@ -826,6 +837,7 @@ struct FatherHint {
     /// Сколько записей о рождении с таким ребёнком в деле: больше одной —
     /// отец не подставляется, форма просит выбрать самому.
     births: i64,
+    name_surname: bool,
 }
 
 /// Отец ребёнка из записи о рождении — для «Смертей»: выбрали умершего
@@ -838,7 +850,7 @@ fn birth_father(app: State<App>, iof: String, year: Option<i64>, place: Option<S
     with_conn(&app, "Отец из записи о рождении", |conn| {
         conn.query_row(&statement("birth_father")?, rusqlite::named_params! {
             ":iof": iof.trim(), ":year": year, ":place": place,
-        }, |r| Ok(FatherHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, births: r.get(3)? }))
+        }, |r| Ok(FatherHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, births: r.get(3)?, name_surname: r.get(4)? }))
             .optional()
             .map_err(|e| e.to_string())
             .map(|o| o.filter(|f| !f.iof.is_empty()))
@@ -955,6 +967,7 @@ struct ClergyHint {
     iof: String,
     rank: Option<String>,
     uses: i64,
+    name_surname: bool,
 }
 
 /// Весь список причта. Не подсказка по префиксу, а именно список для выбора:
@@ -966,7 +979,7 @@ fn list_clergy(app: State<App>, limit: Option<i64>) -> Result<Vec<ClergyHint>, S
         let mut stmt = conn.prepare(&statement("clergy_list")?).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::named_params! { ":limit": limit }, |r| {
-                Ok(ClergyHint { iof: r.get(0)?, rank: r.get(1)?, uses: r.get(2)? })
+                Ok(ClergyHint { iof: r.get(0)?, rank: r.get(1)?, uses: r.get(2)?, name_surname: r.get(3)? })
             })
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
@@ -983,13 +996,19 @@ fn suggest_spouse(app: State<App>, husband: String, place: Option<String>) -> Re
     // НП мужа — чтобы не подставить жену его тёзки из другой деревни.
     let place = place.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     with_conn(&app, "Поиск жены", |conn| {
-        conn.query_row(
+        let wife = conn.query_row(
             &statement("spouse_lookup")?,
             rusqlite::named_params! { ":husband_norm": normalize(&husband), ":place": place },
-            |r| Ok(SpouseHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)? }),
+            |r| Ok(SpouseHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, name_surname: false }),
         )
         .optional()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        let Some(mut wife) = wife else { return Ok(None) };
+        wife.name_surname = conn.query_row(&statement("person_name_surname")?,
+                                           rusqlite::named_params! { ":iof": wife.iof, ":place": wife.place },
+                                           |r| r.get(0))
+            .optional().map_err(|e| e.to_string())?.unwrap_or(false);
+        Ok(Some(wife))
     })
 }
 
@@ -1418,6 +1437,7 @@ struct ClergyMention {
     iof: String,
     rank: Option<String>,
     note: Option<String>,
+    name_surname: bool,
 }
 
 /// Причт последней записи дела — форма продолжает с ним после перезапуска.
@@ -1427,7 +1447,7 @@ fn last_clergy(app: State<App>, section: i64) -> Result<Vec<ClergyMention>, Stri
         let mut stmt = conn.prepare(&statement("last_clergy")?).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::named_params! { ":section": section }, |r| {
-                Ok(ClergyMention { role_code: r.get(0)?, iof: r.get(1)?, rank: r.get(2)?, note: r.get(3)? })
+                Ok(ClergyMention { role_code: r.get(0)?, iof: r.get(1)?, rank: r.get(2)?, note: r.get(3)?, name_surname: r.get(4)? })
             })
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();

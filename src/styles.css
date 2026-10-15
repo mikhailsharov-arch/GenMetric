@@ -907,8 +907,10 @@ button.toggle { white-space: nowrap; }
 .dossier .who { font-size: inherit; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); }
 .dossier .who:hover { color: var(--accent); }
 table.events { width: 100%; border-collapse: collapse; }
+/* Между событиями — «воздух» (Роман 15.10.2026: «строки прилегают друг к
+   другу слишком плотно»; было 0.25em). */
 table.events td {
-  padding: 0.25em 0.5em 0.25em 0;
+  padding: 0.5em 0.5em 0.5em 0;
   vertical-align: top;
   border-top: 1px solid var(--line);
   line-height: 1.35;
@@ -927,7 +929,7 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
 @container dossier (max-width: 38em) {
   table.events, table.events tbody, table.events tr { display: block; }
   table.events tr {
-    padding: 0.25em 0;
+    padding: 0.55em 0;
     border-top: 1px solid var(--line);
   }
   table.events td {

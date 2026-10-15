@@ -350,6 +350,10 @@ CREATE TABLE person_index (
   gender        TEXT,
   uses          INTEGER NOT NULL DEFAULT 0,
   last_used_at  TEXT,
+  -- 1 — сохранён как имя и фамилия, без отчества (отметка «ИФ»; Роман
+  -- 15.10.2026: выбор из подсказки должен ставить её сам). NULL — не знаем:
+  -- так же, как 0. Колонка простая — её добавляет обновление.
+  name_surname  INTEGER,
   UNIQUE (iof, place, rank)
 );
 CREATE INDEX ix_person_index_norm ON person_index (iof_norm, uses DESC);
@@ -382,6 +386,7 @@ CREATE TABLE clergy_index (
   rank          TEXT,
   uses          INTEGER NOT NULL DEFAULT 0,
   last_used_at  TEXT,
+  name_surname  INTEGER,                -- отметка «ИФ», как у person_index
   UNIQUE (iof, rank)
 );
 CREATE INDEX ix_clergy_uses ON clergy_index (uses DESC, iof);

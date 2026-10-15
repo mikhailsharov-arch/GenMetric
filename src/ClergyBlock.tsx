@@ -32,7 +32,7 @@ import { CLERGY_LOCK, useParishFlag } from "./flags";
  * «никого» (отдельная кнопка не нужна — его слова).
  */
 
-type ClergyHint = { iof: string; rank: string | null; uses: number };
+type ClergyHint = { iof: string; rank: string | null; uses: number; name_surname?: boolean };
 
 type Props = {
   people: [Person, Person, Person];
@@ -132,8 +132,8 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
       ...people[index],
       iof: hint.iof,
       rank: hint.rank ?? people[index].rank,
-      // Отметка «ИФ» была у прежнего человека (ревьюер 14.10.2026).
-      nameSurname: false,
+      // Отметка «ИФ» — того, кого выбрали: память причта её хранит (Роман 15.10.2026).
+      nameSurname: !!hint.name_surname,
     });
     setPickerFor(null);
   }
@@ -183,7 +183,8 @@ export default function ClergyBlock({ people, onChange, reloadKey }: Props) {
           }
           const hint = fit.find((h) => hintKey(h.iof, h.rank) === key);
           // Примечание («Имя в документе: …») принадлежало прежнему человеку.
-          if (hint) onChange(i, { ...now, iof: hint.iof, parsed: null, rank: hint.rank ?? "", note: "", nameSurname: false });
+          if (hint) onChange(i, { ...now, iof: hint.iof, parsed: null, rank: hint.rank ?? "", note: "",
+                                  nameSurname: !!hint.name_surname });
         }}
         onKeyDown={(e) => {
           if (e.key !== "Enter") return;

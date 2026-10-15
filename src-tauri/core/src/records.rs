@@ -69,6 +69,37 @@ pub fn is_no_name(word: &str) -> bool {
 /// Слова-заглушки вместо имени. Тот же список — в `src/names.ts`.
 pub const NO_NAME_WORDS: &[&str] = &["имя", "нрзб", "н/д", "неизвестно", "неизв", "нет", "б/и"];
 
+/// Подсказка по маске (Роман 15.10.2026): «после ввода известной части,
+/// например *** Иванов Кулаев, программа формировала выпадающий список из всех
+/// подходящих людей в базе». Первое слово — маска, если в нём есть «*» или это
+/// заглушка (`is_no_name`); каждая «*» — любые буквы: «Ф***» — имена на «Ф».
+/// Отдаёт образцы LIKE для имени и для остального (оба с экраном `\`), или
+/// `None` — не маска, или после маски меньше двух букв: «***» одна вывела бы
+/// всю память прихода.
+pub fn person_mask(prefix: &str) -> Option<(String, String)> {
+    let text = prefix.trim();
+    let (first, rest) = text.split_once(char::is_whitespace)?;
+    if !first.contains('*') && !is_no_name(first) {
+        return None;
+    }
+    let rest = normalize(rest);
+    if rest.chars().filter(|c| c.is_alphabetic()).count() < 2 {
+        return None;
+    }
+    let escape = |s: &str| s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let name = if first.contains('*') && first.chars().any(char::is_alphabetic) {
+        // Подряд идущие «*» — один «%».
+        let mut out = String::new();
+        for c in escape(&normalize(first)).chars() {
+            if c != '*' { out.push(c); } else if !out.ends_with('%') || out.ends_with("\\%") { out.push('%'); }
+        }
+        out
+    } else {
+        "%".to_string()
+    };
+    Some((name, format!("{}%", escape(&rest))))
+}
+
 /// Мужская и женская формы одной фамилии — ключи поиска обеих: «томилин» и
 /// «томилина», «томский» и «томская». У фамилии без родового окончания
 /// («шевченко») обе одинаковы. Копия для окна — `feminineSurname` в
@@ -778,6 +809,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 if !iof.is_empty() && !nameless {
                     conn.execute(&statement("clergy_remember")?, rusqlite::named_params! {
                         ":iof": iof, ":iof_norm": normalize(&iof), ":rank": person.rank,
+                        ":name_surname": name_surname(person),
                     }).map_err(|e| e.to_string())?;
                 }
             }
@@ -792,6 +824,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 conn.execute(&statement("person_remember")?, rusqlite::named_params! {
                     ":iof": iof, ":iof_norm": normalize(&iof),
                     ":place": place_name, ":rank": person.rank, ":gender": person.gender,
+                    ":name_surname": name_surname(person),
                 }).map_err(|e| e.to_string())?;
             }
         }
@@ -839,6 +872,17 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
 /// Имя персоны — системное «***» (в книге не указано).
 fn no_first_name(p: &PersonInput) -> bool {
     p.first_name.as_deref().map(str::trim) == Some(NO_NAME)
+}
+
+/// Сохранён как имя и фамилия без отчества — отметка «ИФ» (Роман 15.10.2026).
+/// Правило то же, что у записи на правке (`nameSurnameOf` в `PersonBlock.tsx`)
+/// и у обновления старой памяти (`migrate.sql`).
+pub fn name_surname(p: &PersonInput) -> bool {
+    fn part(v: &Option<String>) -> Option<&str> {
+        v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+    part(&p.first_name).is_some() && part(&p.patronymic).is_none()
+        && part(&p.surname).is_some_and(|s| !s.contains(char::is_whitespace))
 }
 
 /// Собирает ИОФ из частей — в том порядке, в каком он записан в книге.
@@ -917,6 +961,20 @@ pub fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn person_mask_patterns() {
+        assert_eq!(person_mask("*** Иванов Кулаев"), Some(("%".into(), "иванов кулаев%".into())));
+        assert_eq!(person_mask("нрзб Кулаев"), Some(("%".into(), "кулаев%".into())));
+        assert_eq!(person_mask("Ф*** Иванов"), Some(("ф%".into(), "иванов%".into())));
+        assert_eq!(person_mask("*ван Кулаев"), Some(("%ван".into(), "кулаев%".into())));
+        assert_eq!(person_mask("Ф*д*р Ив"), Some(("ф%д%р".into(), "ив%".into())));
+        assert_eq!(person_mask("*** К"), None, "меньше двух букв после маски");
+        assert_eq!(person_mask("***"), None);
+        assert_eq!(person_mask("Иван Кулаев"), None, "не маска");
+        assert_eq!(person_mask("*** 100%_"), None, "без букв");
+        assert_eq!(person_mask("*** Ку_л%"), Some(("%".into(), "ку\\_л\\%%".into())));
+    }
+
     use super::*;
     use std::path::Path;
 
@@ -1071,6 +1129,43 @@ mod tests {
                 ("Александр Рождественский".to_string(), None, 1),
             ], "{block}");
         }
+
+        // Отметка «ИФ» в памяти (Роман 15.10.2026): имя и фамилия без отчества — 1.
+        save_entry(&conn, &birth(vec![person("father", "Иван", "", Some("Кулаев"), Some("Воспица"), "М")])).unwrap();
+        let flag = |iof: &str| -> i64 {
+            conn.query_row("SELECT name_surname FROM person_index WHERE iof = ?1", [iof], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(flag("Иван Кулаев"), 1, "сохранён без отчества — «ИФ»");
+        assert_eq!(flag("Семён Иванов"), 0, "второе слово — отчество");
+        // Жена по мужу приходит с отметкой из памяти персон (ревьюер 15.10.2026).
+        save_entry(&conn, &birth(vec![person("father", "Семён", "Петров", Some("Кулаев"), Some("Воспица"), "М"),
+                                      person("mother", "Анна", "", Some("Кулаева"), Some("Воспица"), "Ж")])).unwrap();
+        let wife_iof: String = conn.query_row(&statement("spouse_lookup").unwrap(),
+            rusqlite::named_params! { ":husband_norm": normalize("Семён Петров Кулаев"), ":place": "Воспица" },
+            |r| r.get(0)).unwrap();
+        let wife_flag: i64 = conn.query_row(&statement("person_name_surname").unwrap(),
+            rusqlite::named_params! { ":iof": wife_iof, ":place": "Воспица" }, |r| r.get(0)).unwrap();
+        assert_eq!((wife_iof.as_str(), wife_flag), ("Анна Кулаева", 1), "жена по мужу — с «ИФ»");
+
+        // Подсказка по маске — настоящим rusqlite (спека 2026-10-15, п. 3).
+        for (first, patr) in [("Иван", "Иванов"), ("Фёдор", "Иванов"), ("Пётр", "Сидоров")] {
+            save_entry(&conn, &birth(vec![person("father", first, patr, Some("Кулаев"), Some("Воспица"), "М")])).unwrap();
+        }
+        let masked = |typed: &str| -> Vec<String> {
+            let Some((name, rest)) = person_mask(typed) else { return vec![] };
+            let mut got: Vec<String> = conn.prepare(&statement("person_suggest_mask").unwrap()).unwrap()
+                .query_map(rusqlite::named_params! { ":name": name, ":rest": rest, ":limit": 10, ":gender": "М" },
+                           |r| r.get(0)).unwrap()
+                .map(Result::unwrap).collect();
+            got.sort();
+            got
+        };
+        assert_eq!(masked("*** Иванов Кулаев"), vec!["Иван Иванов Кулаев", "Фёдор Иванов Кулаев"]);
+        assert_eq!(masked("Ф*** Иванов Кулаев"), vec!["Фёдор Иванов Кулаев"]);
+        assert_eq!(masked("ф*д*р иванов"), vec!["Фёдор Иванов Кулаев"], "«ё» как «е», без регистра");
+        assert_eq!(masked("*** Кулаев"), vec!["Иван Иванов Кулаев", "Иван Кулаев", "Пётр Сидоров Кулаев", "Семён Петров Кулаев", "Фёдор Иванов Кулаев"],
+                   "фамилия и после имени, и после отчества");
+        assert!(masked("*** К").is_empty() && masked("***").is_empty());
         drop(conn);
         let _ = std::fs::remove_file(&path);
     }

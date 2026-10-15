@@ -225,6 +225,8 @@ def main() -> int:
         check("причт последней записи читается", len(clergy) == 1 and clergy[0][0] == "clergy1", str(clergy))
         check("ИОФ причта собран из частей без лишних пробелов",
               clergy and clergy[0][1] == "Александр Рождественский" and clergy[0][2] == "священник")
+        check("причт после перезапуска приходит с отметкой «ИФ» (фамилия без отчества)",
+              clergy and clergy[0][4] == 1, str(clergy))
 
         # Заказчик 22.09.2026: правка сохранённой записи — форма поднимает запись
         # теми же запросами, что и приложение.
@@ -246,7 +248,8 @@ def main() -> int:
             ("Никифор Иванов", "Чертеж Малый", "солдат", "М"),
         ]:
             db.execute(sql["person_remember"], {"iof": iof, "iof_norm": norm(iof),
-                                                "place": place_name, "rank": rank, "gender": gender})
+                                                "place": place_name, "rank": rank, "gender": gender,
+                                                "name_surname": 0})
         check("персоны запомнены без задвоения",
               one("SELECT count(*) FROM person_index")[0] == 3, "три разные связки ИОФ+НП+звание")
         check("повторный ввод увеличил счётчик",
@@ -265,17 +268,33 @@ def main() -> int:
         # NULL в UNIQUE не равен NULL. Теперь пустое хранится пустой строкой.
         for _ in range(2):
             db.execute(sql["person_remember"], {"iof": "Фома Без Места", "iof_norm": norm("Фома Без Места"),
-                                                "place": None, "rank": None, "gender": "М"})
+                                                "place": None, "rank": None, "gender": "М", "name_surname": None})
         check("персона без места и звания не задваивается",
               one("SELECT count(*) || '/' || max(uses) FROM person_index WHERE iof='Фома Без Места'")[0] == "1/2")
         row = db.execute(sql["person_suggest"], {"prefix": norm("Фома") + "%", "limit": 8, "gender": None}).fetchone()
         check("наружу пустые место и звание — снова NULL", row[1] is None and row[2] is None, str(row))
         for _ in range(2):
-            db.execute(sql["clergy_remember"], {"iof": "Иоанн Скворцов", "iof_norm": norm("Иоанн Скворцов"), "rank": None})
+            db.execute(sql["clergy_remember"], {"iof": "Иоанн Скворцов", "iof_norm": norm("Иоанн Скворцов"), "rank": None,
+                                                "name_surname": 0})
         check("причт без звания не задваивается",
               one("SELECT count(*) || '/' || max(uses) FROM clergy_index WHERE iof='Иоанн Скворцов'")[0] == "1/2")
         row = [r for r in db.execute(sql["clergy_list"], {"limit": 20}) if r[0] == "Иоанн Скворцов"][0]
         check("в списке причта пустое звание — NULL", row[1] is None, str(row))
+        # Отметка «ИФ» живёт в памяти вместе с человеком (Роман 15.10.2026:
+        # «программа [должна] сама автоматически проставлять флажок „ИФ“»).
+        ann = {"iof": "Анна Баженова", "iof_norm": norm("Анна Баженова"), "place": "Кнышево",
+               "rank": "крестьянка", "gender": "Ж"}
+        db.execute(sql["person_remember"], {**ann, "name_surname": 1})
+        hint = lambda: db.execute(sql["person_suggest"], {"prefix": norm("Анна Баж") + "%", "limit": 8, "gender": None}).fetchone()
+        check("«ИФ»: подсказка отдаёт отметку сохранённого человека", hint() is not None and hint()[5] == 1, str(hint()))
+        db.execute(sql["person_remember"], {**ann, "rank": "солдатка", "name_surname": 0})
+        check("«ИФ»: отметка — по последнему сохранению, при любом звании", hint()[5] == 0, str(hint()))
+        infant = db.execute(sql["person_suggest_infant"], {"prefix": norm("Анна Баж") + "%", "limit": 8, "gender": None}).fetchone()
+        check("«ИФ»: подсказка умершего отдаёт отметку тоже", infant is not None and len(infant) == 6, str(infant))
+        db.execute(sql["clergy_remember"], {"iof": "Иоанн Скворцов", "iof_norm": norm("Иоанн Скворцов"), "rank": None,
+                                            "name_surname": 1})
+        row = [r for r in db.execute(sql["clergy_list"], {"limit": 20}) if r[0] == "Иоанн Скворцов"][0]
+        check("«ИФ»: список причта отдаёт отметку", row[3] == 1, str(row))
 
         print("\n9. Память о супругах: выбор отца заполняет мать")
         db.execute(sql["spouse_remember"], {
@@ -399,7 +418,7 @@ def main() -> int:
         print("\n9в0. Умерший младенец (Роман 28.09.2026)")
         for iof, uses in (("Татьяна Никитична", 1), ("Татьяна Иванова", 9)):
             db.execute(sql["person_remember"], {"iof": iof, "iof_norm": norm(iof), "place": None,
-                                                "rank": None, "gender": "Ж"})
+                                                "rank": None, "gender": "Ж", "name_surname": 0})
             db.execute("UPDATE person_index SET uses = ? WHERE iof = ?", (uses, iof))
         q = {"prefix": norm("Татьяна") + "%", "limit": 6, "gender": None}
         plain = [r[0] for r in db.execute(sql["person_suggest"], q)]
@@ -410,7 +429,7 @@ def main() -> int:
         f = db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None, "place": None}).fetchone()
         place_name = one("SELECT name FROM place WHERE id = ?", place_id)[0]
         check("отец ребёнка из записи о рождении — ИОФ, НП, звание, одна запись",
-              f == ("Никита Алексеев", place_name, "крестьянин", 1), str(f))
+              f == ("Никита Алексеев", place_name, "крестьянин", 1, 0), str(f))  # 0 — «Алексеев» отчество, не «ИФ»
         check("чужого ИОФ в рождениях нет — отца нет",
               db.execute(sql["birth_father"], {"iof": "Татьяна Иванова", "year": None, "place": None}).fetchone() is None)
         # С 02.10.2026 дело — на год: отец ищется по всему приходу (файлу).
@@ -467,7 +486,7 @@ def main() -> int:
         # Отец попадает в память персон при сохранении записи; здесь запись
         # заведена напрямую, поэтому запоминаем его тем же запросом.
         db.execute(sql["person_remember"], dict(iof="Никита Петров", iof_norm=norm("Никита Петров"),
-                                                place=None, rank=None, gender="М"))
+                                                place=None, rank=None, gender="М", name_surname=0))
         by_parent = db.execute(sql["infant_suggest"], {**iq, "prefix": norm("Татьяна Никита П") + "%",
                                                        "name": norm("Татьяна") + "%", "parent": norm("Никита П") + "%"}).fetchall()
         check("второе слово отбирает по началу имени родителя",

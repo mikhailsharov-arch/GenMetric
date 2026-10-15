@@ -228,6 +228,13 @@ def build_old_database(path: Path) -> None:
     # И память причта: без звания — дубль на каждой записи (ревьюер 27.09.2026).
     db.executemany("INSERT INTO clergy_index (iof, iof_norm, rank, uses) VALUES (?,?,?,?)",
                    [("Иоанн Скворцов", "иоанн скворцов", None, 1)] * 3)
+    # Отметка «ИФ» (15.10.2026): «Пётр Сидоров» и причт «Иоанн Скворцов»
+    # сохранены именем и фамилией без отчества — память получит 1;
+    # «Иван Петров» с отчеством «Петров» — 0.
+    db.executemany("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, patronymic, surname) "
+                   "VALUES (1, ?, ?, ?, ?, ?)",
+                   [("clergy1", 170, "Пётр", None, "Сидоров"), ("clergy1", 180, "Иоанн", None, "Скворцов"),
+                    ("clergy1", 190, "Иван", "Петров", None)])
     db.commit()
     db.close()
 
@@ -359,6 +366,11 @@ def main() -> int:
               one("SELECT gender FROM person_index WHERE iof='Иван Петров'") == "М")
         check("в памяти персон не осталось NULL в месте и звании",
               one("SELECT count(*) FROM person_index WHERE place IS NULL OR rank IS NULL") == 0)
+        check("«ИФ»: память персон получила отметку по сохранённым упоминаниям",
+              one("SELECT group_concat(iof || '=' || name_surname, ', ') FROM "
+                  "(SELECT iof, name_surname FROM person_index ORDER BY iof)") == "Иван Петров=0, Пётр Сидоров=1")
+        check("«ИФ»: причт, сохранённый фамилией, — с отметкой",
+              one("SELECT group_concat(name_surname) FROM clergy_index WHERE iof='Иоанн Скворцов'") == "1")
         check("дубли причта без звания слиты, частоты сложены",
               one("SELECT count(*) || '/' || max(uses) FROM clergy_index WHERE iof='Иоанн Скворцов'") == "1/3")
         check("роли поручителей 5 и 6 доехали",

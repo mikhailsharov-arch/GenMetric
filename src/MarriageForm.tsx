@@ -589,7 +589,10 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
                          // «набран руками»: НП жениха или невесты его не
                          // подменит (ревьюер 06.10.2026).
                          if (hint.place) witnessPlaceManual.current[i] = true;
-                         pickInto(witnessSetters[i])(hint);
+                         // Звание по роли: «крестьянский сын» поручителем —
+                         // «крестьянин» (Роман 15.10.2026). Только в новой записи.
+                         pickInto(witnessSetters[i])(
+                           editingId === null ? { ...hint, rank: rankForRole(hint.rank, "guarantor") } : hint);
                        }} {...common}
                        // Поручителями были только мужчины (Роман 06.10.2026) —
                        // женских имён, отчеств и фамилий не предлагаем.

@@ -16,6 +16,12 @@
 /** Поле обхода: строка ввода или выпадающий список (причт, 08.10.2026). */
 export const FIELDS = "input[data-field], select[data-field]";
 
+/** Фокус уходит в поле номера скана — это не уход из поля формы (долг п. 61):
+ *  номер набирают посреди записи, Enter или Esc вернут курсор обратно. Ни
+ *  сверки недописанного имени, ни обрезки пробела, ни правил «после ухода». */
+export const toScanNo = (to: EventTarget | null): boolean =>
+  to instanceof HTMLElement && to.matches("[data-scan-no]");
+
 /** Встать в поле; у строки ввода — выделить текст, у списка выделять нечего. */
 function enter(el: HTMLInputElement): void {
   el.focus();

@@ -1064,7 +1064,7 @@ def incident_20261007_otvet_na_sborku_06_10():
     check("причт: списки не исчезают, когда выбрано «никого», а выбирать есть из кого",
           "if (!open && filled.length === 0 && known.length === 0) {" in clergy)
     check("причт: примечание прежнего человека не переезжает к выбранному",
-          'rank: hint.rank ?? "", note: "", nameSurname: false });' in clergy)
+          'rank: hint.rank ?? "", note: "",\n                                  nameSurname: !!hint.name_surname });' in clergy)
     focus = read("src/focus.ts")
     check("обход клавишами знает выпадающие списки и не зовёт у них select()",
           'FIELDS = "input[data-field], select[data-field]"' in focus and 'typeof el.select === "function"' in focus)
@@ -1473,7 +1473,7 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
     scan = read("src/scan.tsx")
     check("скан: переход по номеру, вид к верху листа при смене разворота, Alt+стрелки, PNG",
           "data-scan-no" in scan and "if (opened++ > 0 && !keepRef.current) toTop(v, OpenSeadragon);" in scan
-          and "panView(pan[0] * PAN_STEP, pan[1] * PAN_STEP);" in scan
+          and "panView(pan[0] * step, pan[1] * step, repeat);" in scan
           and 'lower.ends_with(".png")' in read("src-tauri/core/src/scans.rs"))
 
 
@@ -1512,15 +1512,73 @@ def incident_20261014_stranica_i_dovodka():
           and 'editingId === null ? { ...hint, rank: rankForRole(hint.rank, "groom") } : hint' in forms[1]
           and "rankForRole(" in read("scripts/test_names.mjs"))
     block, clergy = read("src/PersonBlock.tsx"), read("src/ClergyBlock.tsx")
-    check("отметка «ИФ» снимается при смене человека: другое имя, пустое поле, выбор из подсказки, причт из списка",
+    # С 15.10.2026 выбор из подсказки и причт из списка ставят отметку
+    # выбранного человека (его память), а не просто снимают прежнюю.
+    check("отметка «ИФ» прежнего человека не переходит к новому: другое имя, пустое поле, выбор из подсказки, причт из списка",
           "nameSurname: sameHuman(latest.current.iof, iof) && latest.current.nameSurname" in block
-          and "if (latest.current.nameSurname) set({ nameSurname: false });" in block
-          and clergy.count("nameSurname: false") == 3)
+          and "set({ nameSurname: !!hint.name_surname })" in block
+          and clergy.count("nameSurname: false") == 1 and clergy.count("nameSurname: !!hint.name_surname") == 2)
     check("подсветка месяца — цвет Романа #e5bce4", ".numrow input.auto { background: #e5bce4;" in read("src/styles.css"))
     check("пустой файл базы — новый приход из поставки", "let empty = std::fs::metadata(db_path).map(|m| m.len() == 0)" in read("src-tauri/core/src/db.rs"))
 
 
+def incident_20261015_pamyat_if_i_dovodka():
+    """
+    15.10.2026, ответ Романа на сборку 14.10 (intent/2026-10-15-…, спека
+    2026-10-15-pamyat-if-i-dovodka). «Неприемлемо»: выбранный из подсказки
+    человек, сохранённый именем и фамилией, приходил без отметки «ИФ», причт
+    после перезапуска — тоже. Шаг Alt+стрелок — четверть блока, «полстроки
+    улетает». Щелчок в поле номера скана посреди имени открывал сверку (долг
+    п. 61); Alt+← и Alt+→ отнимались у числового поля и тогда, когда двигать
+    лист вбок некуда (п. 58). Поведение держат тест крейта
+    (spouse_by_place_and_person_rows, person_mask_patterns), db/test_entry.py,
+    db/test_upgrade.py, scripts/test_page.mjs (panStep), test_names.mjs,
+    e2e и стенд s58.
+    """
+    sql, records, main = read("db/statements.sql"), read("src-tauri/core/src/records.rs"), read("src-tauri/src/main.rs")
+    block = lambda name: sql.split(f"-- @{name}\n", 1)[1].split("\n-- @", 1)[0]
+    check("«ИФ» пишется в память персон и причта при каждом сохранении",
+          "name_surname = excluded.name_surname" in block("person_remember")
+          and "name_surname = excluded.name_surname" in block("clergy_remember")
+          and records.count('":name_surname": name_surname(person),') == 2)
+    check("«ИФ» отдают подсказка (обычная, умершего, по маске), список причта и причт для перезапуска",
+          all("coalesce(name_surname, 0) AS name_surname" in block(b)
+              for b in ("person_suggest", "person_suggest_infant", "person_suggest_mask", "clergy_list"))
+          and "AS name_surname" in block("last_clergy")
+          and main.count("name_surname: r.get(") == 4
+          and "nameSurname: !!r.name_surname" in read("src/clergy.tsx"))
+    check("память, набранная до 15.10, получает «ИФ» по сохранённым упоминаниям — при обновлении",
+          "UPDATE person_index SET name_surname = 1" in read("db/migrate.sql")
+          and "UPDATE clergy_index SET name_surname = 1" in read("db/migrate.sql")
+          and "name_surname" in read("db/schema.sql").split("CREATE TABLE person_index", 1)[1].split(");", 1)[0]
+          and "name_surname" in read("db/schema.sql").split("CREATE TABLE clergy_index", 1)[1].split(");", 1)[0])
+    check("подсказка по маске: свой запрос, образцы — records::person_mask",
+          "pub fn person_mask(" in records and "genmetric_core::records::person_mask(&prefix)" in main
+          and 'statement("person_suggest_mask")' in main)
+    scan = read("src/scan.tsx")
+    check("шаг Alt+стрелок — panStep (короткое нажатие 1/20, удержание с разгоном), не четверть блока",
+          "PAN_STEP" not in scan and "const step = panStep(repeat, performance.now() - held.since);" in scan
+          and "export const PAN_TAP = 0.05;" in read("src/page.ts") and "panStep(" in read("scripts/test_page.mjs"))
+    check("Alt+← и Alt+→ остаются полю, когда лист виден по ширине целиком (п. 58)",
+          "if (pan && pan[0] !== 0 && fitsWidth()) return;" in scan)
+    check("переход в поле номера скана — не уход из поля ИОФ и полей с подсказкой (п. 61)",
+          "if (toScanNo(e.relatedTarget)) return;" in read("src/IofField.tsx")
+          and "if (toScanNo(e.relatedTarget)) return;" in read("src/Suggest.tsx")
+          and "setTimeout(() => { back.focus(); to.focus(); }, 0);" in scan)
+    check("звание по роли у поручителя — как у отца, только в новой записи",
+          'editingId === null ? { ...hint, rank: rankForRole(hint.rank, "guarantor") } : hint' in read("src/MarriageForm.tsx")
+          and '"guarantor"' in read("scripts/test_names.mjs"))
+    check("«воздух» между событиями досье", "padding: 0.5em 0.5em 0.5em 0;" in read("src/styles.css"))
+    check("по маске заранее не выбрана ни одна строка: Enter не подставляет чужого (ревьюер 15.10.2026)",
+          "setActive((twins || masked) && !namesFirst ? -1 : 0);" in read("src/IofField.tsx"))
+    check("«ИФ» несут и жена по мужу, и отец умершего младенца",
+          'statement("person_name_surname")' in main and "AS name_surname" in block("birth_father")
+          and "nameSurname: m.iof ? m.nameSurname : !!wife.name_surname," in read("src/BirthForm.tsx")
+          and "nameSurname: !!f.name_surname," in read("src/DeathForm.tsx"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261015_pamyat_if_i_dovodka,
     incident_20261014_stranica_i_dovodka,
     incident_20261012_otvet_romana_na_sborku_10_10,
     incident_20261010_skany_ryadom_s_formoj,

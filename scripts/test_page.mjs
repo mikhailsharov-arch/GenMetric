@@ -1,6 +1,6 @@
 // Проверка шага по номеру страницы (src/page.ts). Запуск:
 //     node --experimental-strip-types scripts/test_page.mjs
-import { stepPage, normalizePage, pageOverflow, turnPage } from "../src/page.ts";
+import { stepPage, normalizePage, pageOverflow, turnPage, panStep, PAN_TAP, PAN_CRAWL } from "../src/page.ts";
 
 let ok = 0, fail = 0;
 function check(title, got, want) {
@@ -52,6 +52,15 @@ for (const [from, by, want] of [
   if (good) ok++; else fail++;
   console.log(`  ${good ? "[ок]    " : "[ОШИБКА]"} листание ${by > 0 ? "вперёд" : "назад"}: «${from}» → «${got}»${good ? "" : ` (ждали «${want}»)`}`);
 }
+
+console.log("\nШаг Alt+стрелок — Роман 15.10.2026");
+check("короткое нажатие — 1/20 блока (было 1/4)", panStep(false, 0), 0.05);
+check("короткое нажатие не зависит от времени", panStep(false, 5000), PAN_TAP);
+check("удержание начинается медленно — 1/100", panStep(true, 0), PAN_CRAWL);
+check("через полсекунды — ещё медленнее короткого нажатия", panStep(true, 500) < PAN_TAP / 2, true);
+check("шаг растёт с удержанием", panStep(true, 1000) > panStep(true, 500), true);
+check("к полутора секундам — полный шаг", panStep(true, 1500), PAN_TAP);
+check("дальше не растёт", panStep(true, 9000), PAN_TAP);
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

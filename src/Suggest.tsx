@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { focusNextField, scrollInList } from "./focus";
+import { focusNextField, scrollInList, toScanNo } from "./focus";
 import { report } from "./errors";
 import { splitPlaceLabel, typedCase } from "./names";
 
@@ -247,6 +247,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         onKeyDown={onKeyDown}
         onBlur={(e) => {
           closeList();
+          if (toScanNo(e.relatedTarget)) return;
           let leaving = pickedValue.current ?? value;
           // Окно программы потеряло фокус (клик в скан) — не уход из поля:
           // человек вернётся и допишет слово.
