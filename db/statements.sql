@@ -722,9 +722,10 @@ ON CONFLICT(iof, place, rank) DO UPDATE SET
 SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, coalesce(name_surname, 0) AS name_surname
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
-               -- «ИФ» — как сохранили последний раз, при любом звании.
+               -- «ИФ» — как сохранили последний раз, при любом звании; строка
+               -- из архива Excel (отметки нет, NULL) — после известных (e2e 15.10.2026).
                first_value(p.name_surname) OVER (PARTITION BY p.iof, p.place
-                                                 ORDER BY coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
+                                                 ORDER BY (p.name_surname IS NULL), coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
                sum(p.uses) OVER (PARTITION BY p.iof, p.place)
                  + CASE WHEN p.place <> ''
                         THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
@@ -752,7 +753,7 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, 
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
                first_value(p.name_surname) OVER (PARTITION BY p.iof, p.place
-                                                 ORDER BY coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
+                                                 ORDER BY (p.name_surname IS NULL), coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
                sum(p.uses) OVER (PARTITION BY p.iof, p.place)
                  + CASE WHEN p.place <> ''
                         THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
@@ -791,9 +792,10 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, 
 SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, coalesce(name_surname, 0) AS name_surname
   FROM (SELECT p.iof, p.place, p.rank,
                max(p.gender) OVER (PARTITION BY p.iof, p.place) AS gender,
-               -- «ИФ» — как сохранили последний раз, при любом звании.
+               -- «ИФ» — как сохранили последний раз, при любом звании; строка
+               -- из архива Excel (отметки нет, NULL) — после известных (e2e 15.10.2026).
                first_value(p.name_surname) OVER (PARTITION BY p.iof, p.place
-                                                 ORDER BY coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
+                                                 ORDER BY (p.name_surname IS NULL), coalesce(p.last_used_at, '') DESC, p.id DESC) AS name_surname,
                sum(p.uses) OVER (PARTITION BY p.iof, p.place)
                  + CASE WHEN p.place <> ''
                         THEN sum(CASE WHEN p.place = '' THEN p.uses ELSE 0 END) OVER (PARTITION BY p.iof)
@@ -927,7 +929,10 @@ ON CONFLICT(iof, rank) DO UPDATE SET
 -- @clergy_list
 -- Весь список целиком, без ввода первых букв: причт в приходе меняется редко,
 -- за год-два это те же три человека.
-SELECT iof, nullif(rank, '') AS rank, uses, coalesce(name_surname, 0) AS name_surname FROM clergy_index
+-- «ИФ»: строка из архива Excel отметки не знает (NULL) — берёт её у строки того
+-- же человека с другим званием (e2e 15.10.2026).
+SELECT iof, nullif(rank, '') AS rank, uses,
+       coalesce(name_surname, max(name_surname) OVER (PARTITION BY iof), 0) AS name_surname FROM clergy_index
  ORDER BY uses DESC, last_used_at DESC, iof
  LIMIT :limit;
 
@@ -987,7 +992,7 @@ SELECT wife_iof, wife_place, wife_rank, uses
 -- внешнюю таблицу, rusqlite не собирает (грабля 08.10.2026).
 SELECT coalesce(name_surname, 0) FROM person_index
  WHERE iof = :iof
- ORDER BY (place = coalesce(:place, '')) DESC, coalesce(last_used_at, '') DESC, id DESC
+ ORDER BY (name_surname IS NULL), (place = coalesce(:place, '')) DESC, coalesce(last_used_at, '') DESC, id DESC
  LIMIT 1;
 
 -- @wife_husband_rank

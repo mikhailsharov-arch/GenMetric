@@ -27,7 +27,7 @@
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
     python3 db/test_upgrade.py                                  # → «Итог: успешно 88, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 130, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 132, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 83 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»

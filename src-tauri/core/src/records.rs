@@ -1146,6 +1146,16 @@ mod tests {
         let wife_flag: i64 = conn.query_row(&statement("person_name_surname").unwrap(),
             rusqlite::named_params! { ":iof": wife_iof, ":place": "Воспица" }, |r| r.get(0)).unwrap();
         assert_eq!((wife_iof.as_str(), wife_flag), ("Анна Кулаева", 1), "жена по мужу — с «ИФ»");
+        // Список причта — настоящим rusqlite: строка без отметки (архив Excel)
+        // берёт её у того же человека (e2e 15.10.2026).
+        save_entry(&conn, &birth(vec![person("father", "Лука", "Петров", None, Some("Воспица"), "М"),
+                                      person("clergy1", "Александр", "", Some("Рождественский"), None, "М")])).unwrap();
+        conn.execute("INSERT INTO clergy_index (iof, iof_norm, rank, uses) VALUES ('Александр Рождественский', ?1, 'иерей', 9)",
+                     [normalize("Александр Рождественский")]).unwrap();
+        let flags: Vec<i64> = conn.prepare(&statement("clergy_list").unwrap()).unwrap()
+            .query_map(rusqlite::named_params! { ":limit": 20 }, |r| Ok((r.get::<_, String>(0)?, r.get(3)?))).unwrap()
+            .map(Result::unwrap).filter(|(iof, _)| iof == "Александр Рождественский").map(|(_, f)| f).collect();
+        assert_eq!(flags, vec![1, 1], "строка из архива берёт «ИФ» у того же человека");
 
         // Подсказка по маске — настоящим rusqlite (спека 2026-10-15, п. 3).
         for (first, patr) in [("Иван", "Иванов"), ("Фёдор", "Иванов"), ("Пётр", "Сидоров")] {

@@ -295,6 +295,16 @@ def main() -> int:
                                             "name_surname": 1})
         row = [r for r in db.execute(sql["clergy_list"], {"limit": 20}) if r[0] == "Иоанн Скворцов"][0]
         check("«ИФ»: список причта отдаёт отметку", row[3] == 1, str(row))
+        # Строка из архива Excel (отметки нет) — берёт её у того же человека
+        # (e2e 15.10.2026: «Александр Рождественский» пришёл двумя строками).
+        db.execute("INSERT INTO clergy_index (iof, iof_norm, rank, uses) VALUES ('Иоанн Скворцов', ?, 'диакон', 5)",
+                   (norm("Иоанн Скворцов"),))
+        flags = [r[3] for r in db.execute(sql["clergy_list"], {"limit": 20}) if r[0] == "Иоанн Скворцов"]
+        check("«ИФ»: строка причта из архива берёт отметку у того же человека", flags == [1, 1], str(flags))
+        db.execute("INSERT INTO person_index (iof, iof_norm, place, rank, uses, last_used_at) "
+                   "VALUES ('Анна Баженова', ?, 'Кнышево', 'вдова', 9, '2099-01-01')", (norm("Анна Баженова"),))
+        db.execute(sql["person_remember"], {**ann, "rank": "солдатка", "name_surname": 1})
+        check("«ИФ»: строка памяти из архива (новее, без отметки) не перебивает известную", hint()[5] == 1, str(hint()))
 
         print("\n9. Память о супругах: выбор отца заполняет мать")
         db.execute(sql["spouse_remember"], {

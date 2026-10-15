@@ -1543,7 +1543,10 @@ def incident_20261015_pamyat_if_i_dovodka():
           and records.count('":name_surname": name_surname(person),') == 2)
     check("«ИФ» отдают подсказка (обычная, умершего, по маске), список причта и причт для перезапуска",
           all("coalesce(name_surname, 0) AS name_surname" in block(b)
-              for b in ("person_suggest", "person_suggest_infant", "person_suggest_mask", "clergy_list"))
+              for b in ("person_suggest", "person_suggest_infant", "person_suggest_mask"))
+          and "max(name_surname) OVER (PARTITION BY iof), 0) AS name_surname" in block("clergy_list")
+          and all("ORDER BY (p.name_surname IS NULL)" in block(b)
+                  for b in ("person_suggest", "person_suggest_infant", "person_suggest_mask"))
           and "AS name_surname" in block("last_clergy")
           and main.count("name_surname: r.get(") == 4
           and "nameSurname: !!r.name_surname" in read("src/clergy.tsx"))
