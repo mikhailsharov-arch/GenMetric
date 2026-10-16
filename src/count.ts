@@ -70,14 +70,16 @@ export type Counted = { no_male: number | null; no_female: number | null };
  * после № 40 — следующему положен 41, а не 4 (ревьюер 08.10.2026). Замер на
  * данных заказчика сделан так же.
  *
- * null — сказать нечего (год пуст и пол неизвестен): поле не трогаем.
+ * Год пуст (записей с номером нет) — 1 при любом поле: «Счёт — должно
+ * автоматически сбрасываться на 1» (Роман 16.10.2026). До этого при
+ * неизвестном поле поле оставалось пустым.
  */
-export function nextCount(saved: Counted[], sex: Sex | null): number | null {
+export function nextCount(saved: Counted[], sex: Sex | null): number {
   const numbered = saved.filter((e) => e.no_male !== null || e.no_female !== null);
   let of: Sex | null = sex;
   if (of === null) {
     const last = numbered[0];
-    if (!last) return null;
+    if (!last) return 1;
     of = last.no_male !== null ? "М" : "Ж";
   }
   let top = 0;

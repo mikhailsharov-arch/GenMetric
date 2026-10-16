@@ -209,6 +209,12 @@ def main() -> int:
               one("SELECT count(*) FROM usage_stat")[0] == 3)
         check("счётчик стал 2",
               one("SELECT count FROM usage_stat WHERE scope='case'")[0] == 2)
+        # Закрытый перечень (Роман 16.10.2026: «29» в «Каким браком»).
+        for value in ("29", "Первым браком"):
+            db.execute(sql["usage_bump"], {"kind": "marriage_order", "scope": "global", "scope_key": "",
+                                           "value": value, "value_norm": norm(value)})
+        check("закрытый перечень «Каким браком» копит частоту только своим значениям",
+              [r[0] for r in db.execute("SELECT value FROM usage_stat WHERE kind='marriage_order'")] == ["Первым браком"])
 
         print("\n7. Список записей для возврата и правки")
         rows = db.execute(sql["entry_list"], {"section": 1, "year": 1893, "last": 0}).fetchall()

@@ -515,10 +515,16 @@ def run(driver, wait, archive):
     conf_click = ("document.querySelector('.birth button.lock')"
                   ".dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));")
     conf_state = "return [...document.querySelectorAll('.birth input.locked')].filter((i) => i.readOnly).length;"
-    state, value = toggled(conf_click, conf_state, "confession_lock", 2, "1")
-    check("замок вероисповедания: закрыто у отца и у матери, настройка в приходе", state == 2 and value == "1", f"{state} / {value}")
+    # Изначально закрыт (Роман 16.10.2026: «по умолчанию должны быть включены»).
+    check("замок вероисповедания изначально закрыт у отца и у матери",
+          driver.execute_script(conf_state) == 2, str(driver.execute_script(conf_state)))
     state, value = toggled(conf_click, conf_state, "confession_lock", 0, "0")
-    check("замок вероисповедания открыт", state == 0 and value == "0", f"{state} / {value}")
+    check("замок вероисповедания открыт щелчком, настройка в приходе", state == 0 and value == "0", f"{state} / {value}")
+    state, value = toggled(conf_click, conf_state, "confession_lock", 2, "1")
+    check("замок вероисповедания снова закрыт", state == 2 and value == "1", f"{state} / {value}")
+    # Дальше сценарий шёл с открытым замком — оставляем как было.
+    state, value = toggled(conf_click, conf_state, "confession_lock", 0, "0")
+    check("замок вероисповедания открыт для следующих шагов", state == 0 and value == "0", f"{state} / {value}")
 
     fold_state = "return document.querySelectorAll('.birth [data-fold=\"birth_godparents\"]').length;"
     state, value = toggled("document.querySelector('.birth [data-fold-close=\"birth_godparents\"]').click();",

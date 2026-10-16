@@ -1,6 +1,6 @@
 // Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { feminineSurname, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
+import { feminineSurname, maskFragment, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -117,6 +117,16 @@ for (const [rank, role, want] of [
   ["крестьянин", "guarantor", "крестьянин"],
   ["вдовый крестьянин", "guarantor", "вдовый крестьянин"],
 ]) same(`«${rank}» — ${({ father: "отцом", groom: "женихом", guarantor: "поручителем" })[role]} → «${want}»`, rankForRole(rank, role), want);
+
+console.log("\nОбрывок имени со звёздочками — в примечание (Роман 16.10.2026)");
+for (const [text, want] of [
+  ["***кея Васильева Баженова", { text: "*** Васильева Баженова", note: "Имя в документе не читаемо: кея" }],
+  ["Ф*** Иванов", { text: "*** Иванов", note: "Имя в документе не читаемо: Ф" }],
+  ["Ф*д*р", { text: "***", note: "Имя в документе не читаемо: Ф*д*р" }],
+  ["*** Васильева", null],
+  ["Иван ***", null],
+  ["Иван Петров", null],
+]) same(`«${text}»`, JSON.stringify(maskFragment(text)), JSON.stringify(want));
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

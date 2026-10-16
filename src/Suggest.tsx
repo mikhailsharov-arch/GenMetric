@@ -35,6 +35,8 @@ type Props = {
    *  случаев там «отец», Роман 12.10.2026). Пустое поле в обходе остаётся —
    *  иначе до него только мышью. */
   skipFilled?: boolean;
+  /** Первое поле окна при открытии (Modal ищет `data-autofocus`). */
+  autofocus?: boolean;
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -56,7 +58,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock, skipFilled },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock, skipFilled, autofocus },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -229,6 +231,7 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
           else if (ref) ref.current = el;
         }}
         data-field
+        data-autofocus={autofocus ? "" : undefined}
         data-browse={browse ? "" : undefined}
         readOnly={lock?.on}
         tabIndex={lock?.on || (skipFilled && value.trim()) ? -1 : undefined}

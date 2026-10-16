@@ -256,7 +256,14 @@ pub fn parse_iof_with(conn: &Connection, text: &str, name_surname: bool) -> Resu
     }
 
     let mut rest = &tokens[1..];
-    if let Some(first_rest) = rest.first().filter(|_| !name_surname) {
+    // Заглушка на месте отчества — «отчество не читается» (Роман 16.10.2026:
+    // «Петр *** Поздняков» — «*** — это маркер неизвестного/нечитаемого
+    // отчества, а идущее за ним слово „Поздняков“ — это отдельная нормальная
+    // фамилия»). Раньше «***» не находилось среди отчеств и уходило в фамилию.
+    if rest.first().is_some_and(|w| is_no_name(w)) {
+        out.patronymic = Some(NO_NAME.to_string());
+        rest = &rest[1..];
+    } else if let Some(first_rest) = rest.first().filter(|_| !name_surname) {
         let mut patr_word = first_rest.to_string();
         // Соответствие отчества без цели — «Это не отчество»: человек сказал,
         // что второе слово — часть фамилии; больше не спрашивать (техдолг,
@@ -798,7 +805,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             {
                 remember(conn, "surname", surname, case_id, parish)?;
             }
-            if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty() && *v != NO_NAME) {
                 remember(conn, "patronymic", patr, case_id, parish)?;
             }
 
@@ -1201,6 +1208,13 @@ mod tests {
         }
         let plain = parse_iof_in(&conn, "Мария Иванова").unwrap();
         assert!(plain.known_name && !plain.name_missing);
+        // Отчество не читается (Роман 16.10.2026): «***» не прилипает к фамилии.
+        for (text, surname) in [("Петр *** Поздняков", Some("Поздняков")), ("Петр ***", None), ("Петр нрзб Поздняков", Some("Поздняков"))] {
+            let p = parse_iof_in(&conn, text).unwrap();
+            assert_eq!((p.first_name.as_deref(), p.patronymic.as_deref(), p.surname.as_deref(), p.patr_unknown.as_deref()),
+                       (Some("Петр"), Some("***"), surname, None), "{text}");
+            assert!(p.known_name && p.gender.as_deref() == Some("М"), "{text}");
+        }
         // Те же примеры — в scripts/test_names.mjs для копии правила в окне.
         for word in ["***", "*", "—", "?", "-", "Имя", "имя", "ИМЯ", "_", "...", "нрзб", "Нрзб.", "н/д", "Н/Д",
                      "неизвестно", "Неизв", "неизв.", "нет", "Нет", "б/и", "Б/и"] {

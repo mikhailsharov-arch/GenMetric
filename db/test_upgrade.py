@@ -228,13 +228,20 @@ def build_old_database(path: Path) -> None:
     # И память причта: без звания — дубль на каждой записи (ревьюер 27.09.2026).
     db.executemany("INSERT INTO clergy_index (iof, iof_norm, rank, uses) VALUES (?,?,?,?)",
                    [("Иоанн Скворцов", "иоанн скворцов", None, 1)] * 3)
+    # «29» в частотах закрытого перечня «Каким браком» (Роман 16.10.2026).
+    db.executemany("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count) VALUES (?,?,?,?,?,?)",
+                   [("marriage_order", "global", "", "29", "29", 1),
+                    ("marriage_order", "global", "", "Первым браком", "первым браком", 7)])
     # Отметка «ИФ» (15.10.2026): «Пётр Сидоров» и причт «Иоанн Скворцов»
     # сохранены именем и фамилией без отчества — память получит 1;
     # «Иван Петров» с отчеством «Петров» — 0.
-    db.executemany("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, patronymic, surname) "
-                   "VALUES (1, ?, ?, ?, ?, ?)",
-                   [("clergy1", 170, "Пётр", None, "Сидоров"), ("clergy1", 180, "Иоанн", None, "Скворцов"),
-                    ("clergy1", 190, "Иван", "Петров", None)])
+    db.executemany("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, patronymic, surname, place_id) "
+                   "VALUES (1, ?, ?, ?, ?, ?, (SELECT id FROM place WHERE name = ?))",
+                   [("clergy1", 170, "Пётр", None, "Сидоров", "Кнышевка"), ("clergy1", 180, "Иоанн", None, "Скворцов", None),
+                    ("clergy1", 190, "Иван", "Петров", None, None),
+                    # Тёзка «Иван Петров» с фамилией — в другом пункте: строке
+                    # памяти без пункта отметка не переходит (долг п. 65).
+                    ("clergy1", 200, "Иван", None, "Петров", "Кнышевка")])
     db.commit()
     db.close()
 
@@ -366,6 +373,8 @@ def main() -> int:
               one("SELECT gender FROM person_index WHERE iof='Иван Петров'") == "М")
         check("в памяти персон не осталось NULL в месте и звании",
               one("SELECT count(*) FROM person_index WHERE place IS NULL OR rank IS NULL") == 0)
+        check("закрытый перечень: «29» убран из частот, «Первым браком» остался",
+              one("SELECT group_concat(value) FROM usage_stat WHERE kind='marriage_order'") == "Первым браком")
         check("«ИФ»: память персон получила отметку по сохранённым упоминаниям",
               one("SELECT group_concat(iof || '=' || name_surname, ', ') FROM "
                   "(SELECT iof, name_surname FROM person_index ORDER BY iof)") == "Иван Петров=0, Пётр Сидоров=1")

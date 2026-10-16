@@ -190,16 +190,37 @@ DELETE FROM person_index
 UPDATE person_index SET place = coalesce(place, ''), rank = coalesce(rank, '')
  WHERE place IS NULL OR rank IS NULL;
 
+-- Закрытые перечни (autoextend = 0: каким браком, родство) — без чужих
+-- значений в частотах подсказок (Роман 16.10.2026: опечатка «29» в «Каким
+-- браком» стояла в подсказке навсегда). Записи не трогаются: «29» в записи
+-- остаётся как набрано.
+DELETE FROM usage_stat
+ WHERE kind IN (SELECT kind FROM lookup_kind WHERE autoextend = 0)
+   AND value_norm NOT IN (SELECT l.value_norm FROM lookup l WHERE l.kind = usage_stat.kind);
+
+-- «ИФ» старой памяти размечено 15.10.2026 по ИОФ без пункта; с 16.10.2026
+-- правило — ИОФ и пункт (долг п. 65). Один раз переразметить заново: у
+-- обновившихся со сборки 15.10 все строки уже размечены, и правило ниже
+-- (только NULL) их бы не тронуло (ревьюер 16.10.2026). Строка, сохранённая
+-- с «ИФ» после 15.10, своё упоминание в том же пункте имеет — останется 1.
+UPDATE person_index SET name_surname = NULL
+ WHERE NOT EXISTS (SELECT 1 FROM setting WHERE key = 'name_surname_by_place');
+INSERT OR IGNORE INTO setting (key, value) VALUES ('name_surname_by_place', '1');
+
 -- Отметка «ИФ» в памяти персон и причта (Роман 15.10.2026: выбор из
 -- подсказки должен ставить её сам). Память, набранная раньше, получает её по
--- сохранённым упоминаниям: человек с тем же ИОФ, сохранённый с именем и
--- фамилией без отчества, — 1, остальные — 0. Один раз: строки с отметкой
--- не трогаются. Некоррелированный IN — множество считается один раз.
+-- сохранённым упоминаниям: человек с тем же ИОФ и пунктом, сохранённый с
+-- именем и фамилией без отчества, — 1, остальные — 0 (пункт — с 16.10.2026:
+-- тёзка с отчеством из другой деревни отметку не получает, долг п. 65). Один
+-- раз: строки с отметкой не трогаются. Некоррелированный IN — множество
+-- считается один раз.
 UPDATE person_index SET name_surname = 1
  WHERE name_surname IS NULL
-   AND iof IN (SELECT trim(m.first_name) || ' ' || trim(m.surname) FROM person_mention m
-                WHERE nullif(trim(m.first_name), '') IS NOT NULL AND nullif(trim(m.patronymic), '') IS NULL
-                  AND nullif(trim(m.surname), '') IS NOT NULL AND instr(trim(m.surname), ' ') = 0);
+   AND iof || '|' || coalesce(place, '') IN (
+       SELECT trim(m.first_name) || ' ' || trim(m.surname) || '|' || coalesce((SELECT p.name FROM place p WHERE p.id = m.place_id), '')
+         FROM person_mention m
+        WHERE nullif(trim(m.first_name), '') IS NOT NULL AND nullif(trim(m.patronymic), '') IS NULL
+          AND nullif(trim(m.surname), '') IS NOT NULL AND instr(trim(m.surname), ' ') = 0);
 UPDATE person_index SET name_surname = 0 WHERE name_surname IS NULL;
 UPDATE clergy_index SET name_surname = 1
  WHERE name_surname IS NULL

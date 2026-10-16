@@ -56,7 +56,7 @@ check("другой пол: последняя девочка 12 → 13", nextCo
 check("пол ещё не известен — как у последней записи", nextCount(list, null) === 16);
 check("девочек в году ещё нет → 1", nextCount([{ no_male: 3, no_female: null }], "Ж") === 1);
 check("год пуст, пол известен → 1", nextCount([], "М") === 1);
-check("год пуст, пол неизвестен → поле не трогаем", nextCount([], null) === null);
+check("год пуст, пол неизвестен → 1 (Роман 16.10.2026)", nextCount([], null) === 1);
 check("записи без номера пропускаются",
   nextCount([{ no_male: null, no_female: null }, { no_male: null, no_female: 7 }], null) === 8);
 check("добрали пропущенный № 2 после № 40 — следующему 41, а не 3",

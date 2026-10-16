@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf, appendNote } from "./PersonBlock";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
@@ -12,7 +12,7 @@ import { dismissWarn, report, warn } from "./errors";
 import { pageOverflow, turnPage } from "./page";
 import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
 import { setDirty } from "./dirty";
-import { rankForRole, titleCase } from "./names";
+import { maskFragment, rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
@@ -219,6 +219,10 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
 
   /** Персона без разбора (поднята из базы, причт после перезапуска) — разобрать. */
   async function withParsed<T extends Person>(p: T): Promise<T> {
+    // Обрывок имени со звёздочками — «***», обрывок в примечание (Роман
+    // 16.10.2026): Ctrl+Enter прямо из поля ухода не даёт.
+    const masked = maskFragment(p.iof);
+    if (masked) p = { ...p, iof: masked.text, parsed: null, note: appendNote(p.note, masked.note) };
     // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
     // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
     const iof = titleCase(p.iof);
@@ -346,6 +350,13 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
     else yearWhileEditing.current = workYear.year;
+    // Год без записей — форма с чистого листа (Роман 16.10.2026).
+    if (workYear.fresh && editingId === null) {
+      setPage(null);
+      setCount(1);
+      setDay(null);
+      setMonth(1);
+    }
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 2) void openEntry(openReq.id);

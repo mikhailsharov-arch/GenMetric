@@ -60,7 +60,7 @@ export default function App() {
   // «Сохранить дело» с годом — формы встают на него (спека 2026-10-03, п. 1.2);
   // «Открыть запись» из списка на сверку — запись в форме своего раздела.
   // n — счётчик: то же значение второй раз тоже должно сработать.
-  const [workYear, setWorkYear] = useState<{ year: number; n: number } | null>(null);
+  const [workYear, setWorkYear] = useState<{ year: number; n: number; fresh?: boolean } | null>(null);
   const [openReq, setOpenReq] = useState<{ section: number; id: number; n: number } | null>(null);
   function openEntry(section: number, id: number) {
     setScreen(section === 1 ? "births" : section === 2 ? "marriages" : "deaths");
@@ -276,7 +276,7 @@ export default function App() {
           неудобство. */}
       <div hidden={screen !== "case"}>
         <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""}
-                    onWorkYear={(year) => setWorkYear((prev) => ({ year, n: (prev?.n ?? 0) + 1 }))}
+                    onWorkYear={(year, fresh) => setWorkYear((prev) => ({ year, fresh, n: (prev?.n ?? 0) + 1 }))}
                     onOpenEntry={openEntry}
                     viewBlock={<>
                       {/* Кнопка поиска — здесь, а не в верхней строке окна: она

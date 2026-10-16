@@ -1438,7 +1438,8 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
     for form, text, rite in (("BirthForm", birth, "Rite"), ("DeathForm", death, "Burial")):
         check(f"{form}: месяц события, набранный руками, месяц обряда не двигает; уход из дня события ничего не решает",
               "const next = followEvent(was, v, follow, riteFilled.current);" in text and "riteMonthFor" not in text
-              and text.count("riteFilled.current = false;") == 3
+              # Четвёртое место — новый год с чистого листа (16.10.2026).
+              and text.count("riteFilled.current = false;") == 4
               and "export function followEvent(" in month
               and text.count("onLeave={leaveDay}") == 1
               and f"noTab={{{rite[0].lower() + rite[1:]}Month !== null}}" in text)
@@ -1580,7 +1581,51 @@ def incident_20261015_pamyat_if_i_dovodka():
           and "nameSurname: !!f.name_surname," in read("src/DeathForm.tsx"))
 
 
+def incident_20261016_oshibki_i_dovodka():
+    """
+    16.10.2026, ответ Романа на сборку 15.10 (intent/2026-10-16-…, спека
+    2026-10-16-oshibki-i-dovodka). «Петр *** Поздняков» — «***» прилипало к
+    фамилии. Папка сканов, выбранная после «Сохранить дело» с новым годом,
+    записывалась в прежний год (затирала его папку). У нового пункта не было
+    поля названия. Опечатка «29» в «Каким браком» стояла в подсказке навсегда.
+    Обрывок имени «***кея» уходил в сверку со справочником имён. Поведение
+    держат тест крейта (no_name_and_surnames), db/test_entry.py,
+    db/test_upgrade.py, test_names.mjs (maskFragment), test_count.mjs и стенд
+    s59.
+    """
+    records = read("src-tauri/core/src/records.rs")
+    check("заглушка на месте отчества — «отчество не читается», не часть фамилии",
+          "if rest.first().is_some_and(|w| is_no_name(w)) {" in records
+          and "filter(|v| !v.is_empty() && *v != NO_NAME)" in records)
+    case = read("src/CaseHeader.tsx")
+    check("после «Сохранить дело» с новым годом окно встаёт на его дело; пересохранение пустого года форму не сбрасывает",
+          'invoke<Case | null>("case_load", { year: empty ? next.year : null })' in case
+          and 'const fresh = empty && (r.status === "created" || yearMoved);' in case)
+    check("обрывок со звёздочками не открывает сверку имени и по Enter при открытом списке",
+          "if (maskFragment(text)) return;" in read("src/IofField.tsx"))
+    check("у нового пункта курсор — в «Тип», окно отдаёт data-autofocus первым",
+          "autofocus={!existing && !twin && similar.length === 0}" in read("src/PlaceCard.tsx")
+          and 'querySelector<HTMLElement>("[data-autofocus]")' in read("src/Modal.tsx"))
+    check("новый год — форма с чистого листа во всех трёх формах",
+          all("if (workYear.fresh && editingId === null) {" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
+          and "onWorkYear(next.year, fresh);" in case and "if (!last) return 1;" in read("src/count.ts"))
+    check("у нового пункта есть поле названия (кроме тёзки)", "const titleEditable = !!existing || !twin;" in read("src/PlaceCard.tsx"))
+    sql = read("db/statements.sql").split("-- @usage_bump\n", 1)[1].split("\n-- @", 1)[0]
+    check("закрытый перечень копит частоту только своим значениям, обновление убирает чужое",
+          "k.autoextend = 0" in sql
+          and "WHERE kind IN (SELECT kind FROM lookup_kind WHERE autoextend = 0)" in read("db/migrate.sql"))
+    check("обрывок имени со звёздочками — «***» и пометка в примечании: при уходе из поля и при сохранении",
+          "export function maskFragment(" in read("src/names.ts")
+          and "maskFragment(proper)" in read("src/IofField.tsx")
+          and all("const masked = maskFragment(p.iof);" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")))
+    check("замок вероисповедания изначально закрыт",
+          'useParishFlag(CONFESSION_LOCK, "замок вероисповедания");' in read("src/PersonBlock.tsx"))
+    check("«ИФ» старой памяти — по ИОФ и пункту (долг п. 65)",
+          "iof || '|' || coalesce(place, '') IN (" in read("db/migrate.sql"))
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261016_oshibki_i_dovodka,
     incident_20261015_pamyat_if_i_dovodka,
     incident_20261014_stranica_i_dovodka,
     incident_20261012_otvet_romana_na_sborku_10_10,

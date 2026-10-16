@@ -6,7 +6,7 @@ export type FormProps = {
   /** Запись сохранена — дело, к которому она привязана. */
   onSaved: (caseId: number) => void;
   /** Экран «Дело» сохранён с этим годом: форма встаёт на него. */
-  workYear: { year: number; n: number } | null;
+  workYear: { year: number; n: number; fresh?: boolean } | null;
   /** «Открыть запись» из списка на сверку: раздел и номер записи. */
   openReq: { section: number; id: number; n: number } | null;
 };

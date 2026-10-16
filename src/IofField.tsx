@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { feminineSurname, noNameWord, onlyFeminineOf, showNoName, titleCase, typedCase } from "./names";
+import { feminineSurname, maskFragment, noNameWord, onlyFeminineOf, showNoName, titleCase, typedCase } from "./names";
 import { focusNextField, focusNextEmptyField, scrollInList, toScanNo } from "./focus";
 import type { Item } from "./Suggest";
 import { report } from "./errors";
@@ -447,6 +447,10 @@ export default function IofField({
   /** Что делать с разобранным: алиас — подставить, неизвестное — окно. */
   function decide(p: Parsed, text: string) {
     if (modalOpen() || valueRef.current.trim() !== text) return;
+    // Обрывок имени со звёздочками со справочником не сверяется: он уходит в
+    // «***» и примечание (Роман 16.10.2026). Enter при открытом списке
+    // приходил сюда с прежним текстом и открывал окно (проверяющий 16.10.2026).
+    if (maskFragment(text)) return;
     const toks = text.split(/\s+/);
     if (!p.known_name) {
       setResolve({ word: toks[0], kind: "name" });
@@ -732,7 +736,13 @@ export default function IofField({
             const moved = e.relatedTarget !== null && e.currentTarget.offsetParent !== null;
             const cased = showNoName(titleCase(e.currentTarget.value));
             const proper = moved ? cased.replace(/\s+$/, "") : cased;
-            if (proper !== e.currentTarget.value && (e.relatedTarget !== null || document.hasFocus())) {
+            // Обрывок имени со звёздочками — «***», обрывок в примечание (Роман
+            // 16.10.2026). Только при настоящем уходе: недописанное не трогаем.
+            const masked = moved && onResolved ? maskFragment(proper) : null;
+            if (masked) {
+              valueRef.current = masked.text;
+              onResolved!(masked.text, masked.note);
+            } else if (proper !== e.currentTarget.value && (e.relatedTarget !== null || document.hasFocus())) {
               valueRef.current = proper;
               onChange(proper, null);
             }

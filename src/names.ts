@@ -197,3 +197,17 @@ export function splitPlaceLabel(label: string): { name: string; comment: string 
   const m = /^(.*\S) \(([^()]+)\)$/.exec(label.trim());
   return m ? { name: m[1], comment: m[2] } : { name: label, comment: "" };
 }
+
+/**
+ * Обрывок имени со звёздочками — «***кея», «Ф***» (Роман 16.10.2026): «этот
+ * огрызок нельзя пускать в справочник имен и базу. Но и удалять эту
+ * информацию жалко». Первое слово становится «***», обрывок без крайних
+ * звёздочек — пометкой в примечание. Не обрывок (нет звёздочки или букв) —
+ * null.
+ */
+export function maskFragment(text: string): { text: string; note: string } | null {
+  const m = /^(\s*)(\S+)([\s\S]*)$/.exec(text);
+  if (!m || !m[2].includes("*") || !/\p{L}/u.test(m[2])) return null;
+  const frag = m[2].replace(/^\*+|\*+$/g, "");
+  return { text: m[1] + NO_NAME + m[3], note: `Имя в документе не читаемо: ${frag}` };
+}

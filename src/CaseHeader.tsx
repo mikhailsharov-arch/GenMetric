@@ -59,8 +59,9 @@ type CaseSaved = { id: number; status: "saved" | "created" | "exists"; existing:
 
 export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, onOpenEntry, viewBlock }: {
   onSaved: (c: Case) => void; reload: number; parishName: string;
-  /** Дело сохранено с этим годом — формы встают на него (спека 2026-10-03, п. 1.2). */
-  onWorkYear: (year: number) => void;
+  /** Дело сохранено с этим годом — формы встают на него (спека 2026-10-03, п. 1.2).
+   *  `fresh` — в году ещё нет записей: формы начинают с чистого листа (Роман 16.10.2026). */
+  onWorkYear: (year: number, fresh?: boolean) => void;
   /** «Открыть запись» из списка на сверку. */
   onOpenEntry: (section: number, id: number) => void;
   /** Блок «Вид формы» — между кнопкой сохранения и выгрузкой. */
@@ -244,6 +245,7 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
     try {
       // Стёртый год год дела не стирает (так и в базе) — возвращаем его в поле.
       const toSave = c.year === null && loadedYear !== null ? { ...c, year: loadedYear } : c;
+      const yearMoved = toSave.year !== loadedYear;
       const r = await invoke<CaseSaved>("case_save", { case: toSave, overwrite });
       if (r.status === "exists") {
         // У набранного года уже есть своё дело — молча его не переписываем.
@@ -259,14 +261,31 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
       setLoadedYear(next.year);
       setEdited(false);
       // Церковь, село, уезд, губерния и индексатор разошлись на все годы —
-      // формам нужно текущее дело с ними, а не то, что открыто здесь.
-      const current = await invoke<Case | null>("case_load", { year: null });
+      // формам нужно дело с ними, а не то, что открыто здесь. Дело —
+      // сохранённого года: «текущее» (год последней записи) было бы прежним,
+      // и блок скана записал бы папку нового года в прежний, затерев её
+      // (Роман 16.10.2026, воспроизведено на стенде).
+      // Новый год (год сменили или дело заведено, записей в нём нет) — окно
+      // встаёт на дело этого года; правка реквизитов года с записями
+      // оставляет окно на текущем деле, как раньше (ревьюер 16.10.2026).
+      const all = await invoke<CaseYear[]>("case_years").catch((e) => { report("Не удалось прочитать годы дел", e); return null; });
+      if (all) setYears(all);
+      const entries = all?.find((y) => y.year === next.year)?.entries;
+      // Окно — на год без записей (новый или пересохранённый пустой); форма с
+      // чистого листа — только когда год сменили или завели дело.
+      const empty = next.year !== null && entries === 0;
+      const fresh = empty && (r.status === "created" || yearMoved);
+      const current = await invoke<Case | null>("case_load", { year: empty ? next.year : null });
       onSaved(current ?? next);
-      invoke<CaseYear[]>("case_years").then(setYears)
-        .catch((e) => report("Не удалось прочитать годы дел", e));
-      if (next.year !== null) onWorkYear(next.year);
+      if (next.year !== null) onWorkYear(next.year, fresh);
+      const scanDir = next.year !== null
+        ? await invoke<string | null>("get_setting", { key: `scan_dir_${next.year}` })
+            .catch((e) => { report("Не удалось узнать папку сканов нового года", e); return null; })
+        : null;
       setOkText(r.status === "created"
-        ? `Году ${next.year} заведено своё дело. Реквизиты прежнего года не изменились. Формы встали на ${next.year} год.`
+        ? `Году ${next.year} заведено своё дело. Реквизиты прежнего года не изменились. Формы встали на ${next.year} год`
+          + (fresh ? " с чистого листа: страница пуста, счёт 1, январь." : ".")
+          + (scanDir ? "" : " Папку сканов этого года выберите в блоке скана («папка…»).")
         : "Сохранено. Можно переходить к записям.");
       setOk(true);
       // Новый приход: дело сохранено впервые — карточка его села.

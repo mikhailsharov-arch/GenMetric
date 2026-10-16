@@ -15,7 +15,7 @@ import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, set
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
-import { feminineSurname, rankForRole, titleCase } from "./names";
+import { feminineSurname, maskFragment, rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
@@ -521,8 +521,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   }
   useEffect(() => {
     if (editingId !== null || countManual.current) return;
-    // null — год пуст и пол ещё не известен: поле пустое, а не с номером
-    // прошлого года (проверяющий 08.10.2026).
+    // Год пуст — 1 при любом поле (Роман 16.10.2026), а не номер прошлого
+    // года (проверяющий 08.10.2026).
     setCount(nextCount(saved, childSex ?? null));
   }, [saved, childSex, editingId]);
 
@@ -573,6 +573,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
    * с 21.09). Разбираем здесь, той же командой, что и поле.
    */
   async function withParsed(p: Person): Promise<Person> {
+    // Обрывок имени со звёздочками — «***», обрывок в примечание (Роман
+    // 16.10.2026): Ctrl+Enter прямо из поля ухода не даёт.
+    const masked = maskFragment(p.iof);
+    if (masked) p = { ...p, iof: masked.text, parsed: null, note: appendNote(p.note, masked.note) };
     // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
     // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
     const iof = titleCase(p.iof);
@@ -590,6 +594,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
         clergy3 = clergy3Raw;
     let parsedChild = childParsed;
+    let childText = child, noteNow = entryNote;
     if (motherLeaving.current) {
       // Фамилия матери дописывается прямо сейчас — берём то, что получилось.
       await motherLeaving.current;
@@ -619,8 +624,15 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         mother = { ...mother, iof: full, parsed: await invoke<Parsed>("parse_iof", { text: full }) };
         setMother(mother);
       }
-      const properChild = titleCase(child);
-      if (child.trim() && (!parsedChild || properChild !== child))
+      const childMask = maskFragment(child);
+      if (childMask) {
+        childText = childMask.text;
+        noteNow = appendNote(noteNow, childMask.note);
+        setChild(childText);
+        setEntryNote(noteNow);
+      }
+      const properChild = titleCase(childText);
+      if (childText.trim() && (!parsedChild || properChild !== child))
         parsedChild = await invoke<Parsed>("parse_iof", { text: properChild });
     } catch (e) {
       report("Не удалось разобрать имена перед сохранением", e);
@@ -736,7 +748,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
           rite_day: riteDay,
           rite_month: months.riteMonth,
           rite_year: year,
-          note: entryNote.trim() || null,
+          note: noteNow.trim() || null,
           uncertain: null,
           persons,
         },
@@ -759,7 +771,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       if (editingId === null)
         setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
                            event_day: birthDay, event_month: months.eventMonth, event_year: null,
-                           rite_day: riteDay, rite_month: months.riteMonth, rite_year: year, child: titleCase(child).trim() || null,
+                           rite_day: riteDay, rite_month: months.riteMonth, rite_year: year, child: titleCase(childText).trim() || null,
                            father: father.iof.trim() || null, clergy_noname: false }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
@@ -780,6 +792,23 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
     else yearWhileEditing.current = workYear.year;
+    // Год без записей — форма с чистого листа (Роман 16.10.2026): страница
+    // пуста, счёт 1, дни пусты, месяцы — январь.
+    if (workYear.fresh && editingId === null) {
+      setPage(null);
+      countManual.current = false;
+      setCount(1);
+      setBirthDay(null);
+      setRiteDay(null);
+      monthManual.current = false;
+      riteMonthManual.current = false;
+      monthPending.current = NO_WAIT;
+      riteFilled.current = false;
+      monthYear.current = workYear.year;
+      setBirthMonth(1);
+      setRiteMonth(1);
+      setRiteNextYear(false);
+    }
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 1) void openEntry(openReq.id);

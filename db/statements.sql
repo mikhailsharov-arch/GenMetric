@@ -377,8 +377,14 @@ SELECT :kind, :value, :value_norm,
 -- Частота использования: на ней держится порядок подсказок.
 -- Считается в трёх охватах сразу — дело, приход и вся база, — потому что
 -- выдача идёт именно в таком порядке (требование А-1).
+-- Закрытый перечень (autoextend = 0: каким браком, родство) копит частоту
+-- только своим значениям (Роман 16.10.2026: опечатка «29» «намертво
+-- прописалась в выпадающем списке»). Перечни вне lookup_kind (имена,
+-- фамилии, пункты) — как раньше.
 INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count, last_used_at)
-VALUES (:kind, :scope, :scope_key, :value, :value_norm, 1, datetime('now'))
+SELECT :kind, :scope, :scope_key, :value, :value_norm, 1, datetime('now')
+ WHERE NOT EXISTS (SELECT 1 FROM lookup_kind k WHERE k.kind = :kind AND k.autoextend = 0)
+    OR EXISTS (SELECT 1 FROM lookup l WHERE l.kind = :kind AND l.value_norm = :value_norm)
 ON CONFLICT(kind, scope, scope_key, value) DO UPDATE SET
     count = count + 1, last_used_at = datetime('now');
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
-import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf } from "./PersonBlock";
+import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf, appendNote } from "./PersonBlock";
 import NumberField from "./NumberField";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
@@ -16,7 +16,7 @@ import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
-import { titleCase } from "./names";
+import { maskFragment, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
@@ -375,8 +375,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   const deadSex: Sex | null = (nameless ? null : (dead.parsed?.gender as Sex | null | undefined) ?? null) ?? sexManual;
   useEffect(() => {
     if (editingId !== null || countManual.current) return;
-    // null — год пуст и пол ещё не известен: поле пустое, а не с номером
-    // прошлого года (проверяющий 08.10.2026).
+    // Год пуст — 1 при любом поле (Роман 16.10.2026), а не номер прошлого
+    // года (проверяющий 08.10.2026).
     setCount(nextCount(saved, deadSex));
   }, [saved, deadSex, editingId]);
 
@@ -479,6 +479,10 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
   }
 
   async function withParsed<T extends Person>(p: T): Promise<T> {
+    // Обрывок имени со звёздочками — «***», обрывок в примечание (Роман
+    // 16.10.2026): Ctrl+Enter прямо из поля ухода не даёт.
+    const masked = maskFragment(p.iof);
+    if (masked) p = { ...p, iof: masked.text, parsed: null, note: appendNote(p.note, masked.note) };
     // Ctrl+Enter прямо из поля ИОФ: до заглавных букв (уход из поля) дело
     // не дошло — ставим их здесь, иначе в базу легло бы «иван петров».
     const iof = titleCase(p.iof);
@@ -621,6 +625,21 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
     else yearWhileEditing.current = workYear.year;
+    // Год без записей — форма с чистого листа (Роман 16.10.2026).
+    if (workYear.fresh && editingId === null) {
+      setPage(null);
+      countManual.current = false;
+      setCount(1);
+      setDeathDay(null);
+      setBurialDay(null);
+      monthManual.current = false;
+      burialMonthManual.current = false;
+      monthPending.current = NO_WAIT;
+      riteFilled.current = false;
+      monthYear.current = workYear.year;
+      setDeathMonth(1);
+      setBurialMonth(1);
+    }
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 3) void openEntry(openReq.id);

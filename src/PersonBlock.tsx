@@ -141,7 +141,7 @@ type Props = {
  *  компонентом: настройку читают только блоки, где это поле есть. Замок один
  *  на приход — закрыли у отца, закрыто у всех. */
 function ConfessionField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
-  const [locked, setLocked] = useParishFlag(CONFESSION_LOCK, "замок вероисповедания", false);
+  const [locked, setLocked] = useParishFlag(CONFESSION_LOCK, "замок вероисповедания");
   return (
     <Suggest label={label} kind="confession" value={value} onChange={onChange}
              lock={{ on: locked, toggle: () => setLocked(!locked) }} />
@@ -232,7 +232,9 @@ export function staleDocNotes(note: string, iof: string, docFor: DocFor): string
 export function markDocNotes(iof: string, note: string, docFor: DocFor) {
   const toks = iof.trim().split(/\s+/);
   for (const part of note.split(";").map((s) => s.trim())) {
-    if (part.startsWith(DOC_PREFIX.name)) docFor.name = { word: toks[0], note: part };
+    // «Имя в документе не читаемо: кея» (обрывок со звёздочками) — тоже
+    // пометка к имени: набрали настоящее имя — уходит.
+    if (part.startsWith(DOC_PREFIX.name) || part.startsWith("Имя в документе не читаемо:")) docFor.name = { word: toks[0], note: part };
     if (part.startsWith(DOC_PREFIX.patr)) docFor.patr = { word: toks[1], note: part };
   }
 }

@@ -68,8 +68,10 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   const typed = existing ? { name: "", comment: "" } : twin ? { name, comment: "" } : splitPlaceLabel(name);
   const [title, setTitle] = useState(existing?.clean ?? existing?.name ?? typed.name);
   const [commentRaw, setComment] = useState(existing?.comment ?? typed.comment);
-  // Название нового пункта правится в карточке, только если его разложили.
-  const titleEditable = !!existing || typed.comment !== "";
+  // Название — поле и у нового пункта (Роман 16.10.2026: «при первом
+  // заведении НП… отсутствует самое главное поле — само название»). Кроме
+  // тёзки: его название обязано совпадать с уже заведённым.
+  const titleEditable = !!existing || !twin;
   // Известный пункт без единой подробности (заведён одним названием: село
   // прихода, пункт из архива Excel) заполняется как новый — из дела (Роман
   // 06.10.2026: карточка села «остаётся пустой»). Заполненное не трогается.
@@ -86,6 +88,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   const [active, setActive] = useState(0);
   const urlField = useRef<HTMLInputElement>(null);
   const commentField = useRef<HTMLInputElement>(null);
+  const titleField = useRef<HTMLInputElement>(null);
 
   async function save() {
     if (busy) return;
@@ -93,6 +96,12 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
     // Комментарий набрали сразу со скобками — «(Горки)»: скобки программа
     // ставит сама, с лишними вышел бы пункт «Бухарино ((Горки))».
     const comment = commentRaw.trim().replace(/^\((.*)\)$/, "$1").trim();
+    // Стёртое название — ошибка набора, а не поломка (проверяющий 16.10.2026).
+    if (titleEditable && !title.trim()) {
+      warn("Впишите название пункта", "без названия пункт не заводится");
+      titleField.current?.focus();
+      return;
+    }
     if (twin && !comment) {
       warn("Впишите комментарий", "по нему программа отличит этот пункт от одноимённого — например, чей приход или волость");
       commentField.current?.focus();
@@ -215,13 +224,16 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
         <div className="field">
           <label>Название</label>
           <div className="fieldbody">
-            <input data-field value={title} onChange={(e) => setTitle(e.target.value)}
+            <input data-field ref={titleField} value={title} onChange={(e) => setTitle(e.target.value)}
                    autoComplete="off" spellCheck={false}
                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); focusNextField(e.currentTarget, e.shiftKey ? -1 : 1); } }} />
           </div>
         </div>
       )}
-      <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse />
+      {/* Курсор нового пункта — в «Тип», как до поля названия: название уже
+          набрано, а выделенное поле затёрлось бы первым же «д.» (ревьюер
+          16.10.2026). */}
+      <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse autofocus={!existing && !twin && similar.length === 0} />
       {/* Первая буква — заглавная (Роман 07.10.2026). */}
       <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse fix={capFirst} />
       <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse fix={capFirst} />
