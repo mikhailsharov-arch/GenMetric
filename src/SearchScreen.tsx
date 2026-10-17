@@ -4,7 +4,7 @@ import Suggest from "./Suggest";
 import { report } from "./errors";
 import { ScanLink } from "./scan";
 import { focusNextField } from "./focus";
-import { dateOf, describe, family, marriageLine, nameless, personTail, roleKind, type DossierEvent, type Mention, type Part } from "./dossier";
+import { dateOf, describe, diedMark, family, marriageLine, nameless, personTail, roleKind, type DossierEvent, type Mention, type Part } from "./dossier";
 
 /**
  * Экран «Поиск»: персона по приходу и её досье (спека
@@ -16,15 +16,19 @@ import { dateOf, describe, family, marriageLine, nameless, personTail, roleKind,
  * это три фильтра подряд: ИОФ → НП → галочки ролей. Здесь — те же три отбора,
  * а результат — не таблица строк, а досье: события жизни по порядку лет.
  *
- * Программа не связывает записи в одну личность: персона здесь — совпадение
- * ИОФ и НП. Это сказано в заголовке досье, а не только в инструкции.
+ * Программа не связывает записи в одну личность навсегда: персона здесь —
+ * совпадение ИОФ и НП, к которому прикреплены собственное рождение и смерть
+ * младенцем, когда связь однозначна (спека 2026-10-15-semya-celikom). Это
+ * сказано в заголовке досье, а не только в инструкции.
  *
  * Экран только читает. Из строки — одно действие, «Открыть» (его ответ 6А).
  */
 
-type PersonHit = { key: string; iof: string; place: string; mentions: number; year_from: number | null; year_to: number | null };
+type PersonHit = { key: string; iof: string; place: string; mentions: number; year_from: number | null; year_to: number | null;
+                  role?: string; born?: number | null; died?: number | null };
 type Found = { persons: PersonHit[]; total: number };
-type Dossier = { iof: string; place: string; ranks: string[]; mentions: number; events: DossierEvent[] };
+type Dossier = { iof: string; place: string; ranks: string[]; mentions: number; events: DossierEvent[];
+                 born?: number | null; died?: number | null; possible?: PersonHit[] };
 
 /** С чем экран открыли из формы: ИОФ и НП персоны под курсором. */
 export type SearchRequest = { iof: string; place: string; clergy: boolean; n: number };
@@ -45,7 +49,7 @@ const SECTION = ["", "рождение", "брак", "смерть"];
 /** Роли по группам переключателей — имена как у `role_class` в search.rs. */
 type RoleGroup = "own" | "part" | "clergy";
 const ROLES: Record<RoleGroup, [string, string][]> = {
-  own: [["groom", "жених"], ["bride", "невеста"], ["father", "отец"], ["mother", "мать"], ["deceased", "умерший"]],
+  own: [["child", "своё рождение"], ["groom", "жених"], ["bride", "невеста"], ["father", "отец"], ["mother", "мать"], ["deceased", "умерший"]],
   part: [["godparent", "восприемник"], ["witness", "поручитель"], ["groom_relative", "родственник жениха"],
          ["bride_relative", "родственник невесты"], ["deceased_relative", "родственник умершего"]],
   clergy: [["clergy", "причт"]],
@@ -229,7 +233,8 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
     setPlace(m.place);
     // Причт в досье не показывается, но роль человека может быть и такой;
     // и роль, выключенная по отдельности, — тоже: иначе ссылка никого не найдёт.
-    if (roleKind(m.role_code) !== "child") needRole(m.role_code);
+    // Ребёнок — с 17.10.2026 тоже персона (своё рождение).
+    needRole(m.role_code);
     window.scrollTo({ top: 0 });
   }
   function goBack() {
@@ -259,9 +264,8 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
 
   const who = (m: Mention, here: string) => (
     <>
-      {/* Ребёнок — не персона поиска: у него одно имя. */}
+      {/* Ребёнок — тоже персона: его досье — рождение, смерть, взрослая жизнь. */}
       {nameless(m) ? <span className="sub">имя не записано</span>
-        : roleKind(m.role_code) === "child" ? <b>{m.iof.trim()}</b>
         : <button type="button" className="linkish who" data-person={m.iof} title="Показать досье этого человека"
                   onClick={() => go(m)}>{m.iof}</button>}
       {personTail(m, here)}
@@ -281,7 +285,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
     return [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
   })();
   const fam = dossier ? family(dossier.events) : null;
-  const hasFamily = !!fam && (fam.marriages.length > 0 || fam.spouses.length > 0);
+  const hasFamily = !!fam && (!!fam.parents || fam.marriages.length > 0 || fam.spouses.length > 0);
   const short = query.trim().replace(/\s+/g, "").length < 2;
 
   return (
@@ -380,7 +384,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                   return (
                     <li key={`${p.key}|${p.place}`} className={on ? "on" : ""} data-hit={p.iof}
                         onMouseDown={(e) => { e.preventDefault(); setPicked({ key: p.key, place: p.place }); }}>
-                      <span className="val">{p.iof}<span className="sub">{p.place || "без НП"}</span></span>
+                      <span className="val">{p.iof}<span className="sub">{[p.place || "без НП", p.born ? `р. ${p.born}` : "", diedMark(p.died)].filter(Boolean).join(" · ")}</span></span>
                       <span className="tier">{years(p.year_from, p.year_to)} · {p.mentions}</span>
                     </li>
                   );
@@ -403,14 +407,23 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
             <p className="hint">
               {usual && usual !== dossier.iof && <>В записях: {usual}. </>}
               {dossier.ranks.length > 0 && <>{dossier.ranks.join("; ")}. </>}
-              Собрано по совпадению ИОФ и НП: упоминаний {dossier.mentions}. Программа не знает, один это человек или
-              тёзки. Рождение самого человека и его родители сюда пока не попадают: в записи о рождении у ребёнка
-              только имя.
+              Собрано по совпадению ИОФ и НП: упоминаний {dossier.mentions}.{" "}
+              {dossier.born ? `Своё рождение (${dossier.born}) прикреплено: имя, отчество по отцу и пункт сходятся, возраст не противоречит. `
+                : (dossier.possible ?? []).length > 0 ? "Своё рождение не прикреплено: подходящих несколько — см. «Возможно» ниже. " : ""}
+              {dossier.died ? `Смерть — ${dossier.died}. ` : ""}
+              Тёзки с тем же ИОФ в одном пункте пока собираются вместе.
             </p>
 
             {hasFamily && fam && (
               <div className="dossierfamily" data-family>
                 <h3>Семья</h3>
+                {fam.parents && (
+                  <p data-parents>
+                    <span className="when">{fam.parents.event.year ?? "?"}</span> родители:{" "}
+                    {fam.parents.father ? <>отец — {who(fam.parents.father, dossier.place)}</> : "отец не записан"}
+                    {fam.parents.mother && <>; мать — {who(fam.parents.mother, dossier.place)}</>}
+                  </p>
+                )}
                 {fam.marriages.map(({ event, spouse }) => {
                   const line = marriageLine(event);
                   return (
@@ -432,6 +445,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                       {g.children.map((c) => (
                         <li key={c.event.entry_id}>
                           <span className="when">{c.event.year ?? "?"}</span> {c.child ? who(c.child, dossier.place) : "имя не записано"}
+                          {c.child?.died ? <span className="died" data-died> {diedMark(c.child.died)}</span> : null}
                           {c.godparents.length > 0 && (
                             <span className="sub"> · восприемники: {c.godparents.map((gp, k) => (
                               <span key={k}>{k > 0 && ", "}{who(gp, dossier.place)}</span>
@@ -477,6 +491,28 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
               </tbody>
             </table>
             </div>
+
+            {(dossier.possible ?? []).length > 0 && (
+              <div className="dossierpossible" data-possible>
+                <h3>Возможно, тот же человек</h3>
+                <p className="hint">Совпадают имя, отчество и пункт, но однозначно связать нельзя — кандидатов несколько. Программа их не сливает.</p>
+                <ul>
+                  {(dossier.possible ?? []).map((p) => (
+                    <li key={`${p.key}|${p.place}`}>
+                      <button type="button" className="linkish who" data-possible-person={p.iof}
+                              onClick={() => go({ key: p.key, role_code: p.role || "child", iof: p.iof, iof_modern: p.iof, place: p.place,
+                                                  rank: null, gender: null, age: null, death_cause: null, marriage_order: null, kinship: null, note: null })}>
+                        {p.iof}
+                      </button>
+                      <span className="sub"> · {[p.place || "без НП", p.born ? `р. ${p.born}` : "",
+                                                  // Годы — если они не тот же год рождения или смерти.
+                                                  [p.born, p.died].includes(p.year_from) && p.year_from === p.year_to ? "" : years(p.year_from, p.year_to), diedMark(p.died),
+                                                  `упоминаний ${p.mentions}`].filter(Boolean).join(" · ")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </section>
         )}
       </div>

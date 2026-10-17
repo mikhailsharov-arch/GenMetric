@@ -48,6 +48,8 @@ struct App {
     /// Упоминания открытого прихода для экрана «Поиск» и счётчик изменений
     /// соединения, при котором они прочитаны (search.rs, `Index`).
     search: Mutex<Option<(i64, Arc<genmetric_core::search::Index>)>>,
+    /// Память поиска перестраивается в фоне для подсказки (`refresh_search_soon`).
+    search_busy: std::sync::atomic::AtomicBool,
     /// Ширина окна до включения блока скана — к ней окно возвращается, когда
     /// блок скрывают: ширина и положение левого края (в физических точках).
     narrow_width: Mutex<Option<(u32, i32)>>,
@@ -628,6 +630,9 @@ struct PersonHint {
     uses: i64,
     /// Сохранён как имя и фамилия — выбор ставит отметку «ИФ» сам (Роман 15.10.2026).
     name_surname: bool,
+    /// Год смерти: персона умерла, и событий после смерти нет (спека
+    /// 2026-10-15-semya-celikom, п. 1.6). Такие — в конце списка с «†».
+    died: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -720,8 +725,8 @@ fn entry_save(app: State<App>, entry: EntryInput) -> Result<Saved, String> {
 /// отдельно имя, отдельно отчество, отдельно фамилия, — и населённый пункт
 /// со званием приходилось набирать руками для каждой персоны.
 #[tauri::command]
-fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: Option<String>,
-                  prefer_infant: Option<bool>, keep_wife_rank: Option<bool>)
+fn suggest_person(handle: tauri::AppHandle, app: State<App>, prefix: String, limit: Option<i64>, gender: Option<String>,
+                  prefer_infant: Option<bool>, keep_wife_rank: Option<bool>, living: Option<bool>)
     -> Result<Vec<PersonHint>, String>
 {
     // Умерший: младенцы из записей о рождении — первыми (Роман 28.09.2026).
@@ -734,12 +739,12 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: O
               else { statement("person_suggest")? };
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(8).clamp(1, 50);
-    with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
+    let found = with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let hint = |r: &rusqlite::Row| -> rusqlite::Result<PersonHint> {
             Ok(PersonHint {
                 iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?,
-                gender: r.get(3)?, uses: r.get(4)?, name_surname: r.get(5)?,
+                gender: r.get(3)?, uses: r.get(4)?, name_surname: r.get(5)?, died: None,
             })
         };
         let rows = match &mask {
@@ -773,7 +778,79 @@ fn suggest_person(app: State<App>, prefix: String, limit: Option<i64>, gender: O
                 hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());
             }
         }
-        Ok(out)
+        Ok((out, genmetric_core::search::changes(conn)?))
+    })?;
+    let (mut out, now) = found;
+    // Умершие — по памяти поиска (связи «семьи целиком»). Её перестройка
+    // занимает доли секунды, а подсказка идёт на каждую букву: устаревшую
+    // память берём как есть (в ней нет только последних сохранений), а
+    // свежую строим в фоне.
+    let cached = app.search.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if cached.as_ref().map_or(true, |(at, _)| *at != now) {
+        refresh_search_soon(&handle, now);
+    }
+    if let Some((_, index)) = cached {
+        for hint in out.iter_mut() {
+            hint.died = index.died_of(&hint.iof, hint.place.as_deref());
+        }
+        // Роман 16.10.2026: «оставлять, но показывать в самом конце
+        // выпадающего списка с пометкой „† год смерти“». В поле «Умерший» —
+        // как раньше.
+        if living.unwrap_or(false) {
+            out.sort_by_key(|h| h.died.is_some());
+        }
+    }
+    Ok(out)
+}
+
+/// Перестроить память поиска в фоне, если её уже не строят. Читает своё
+/// соединение «только чтение»: база в режиме WAL, и чтение не держит ни замок
+/// соединения окна, ни запись — набор не ждёт (ревьюер 17.10.2026: на
+/// приходе в 100 тысяч упоминаний это около секунды на каждое сохранение).
+/// Память помечается счётчиком изменений `now`, при котором её начали
+/// строить: сохранили что-то за это время — следующая подсказка построит
+/// заново. Приход сменился — построенное выбрасывается.
+fn refresh_search_soon(handle: &tauri::AppHandle, now: i64) {
+    use std::sync::atomic::Ordering;
+    let app = handle.state::<App>();
+    if app.search_busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let handle = handle.clone();
+    std::thread::spawn(move || {
+        let app = handle.state::<App>();
+        let built = std::panic::catch_unwind(|| -> Result<genmetric_core::search::Index, String> {
+            let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+                .map_err(|e| e.to_string())?;
+            conn.busy_timeout(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
+            genmetric_core::search::Index::load(&conn)
+        });
+        match built {
+            Ok(Ok(index)) => {
+                // Замки — по одному, не вложенно: смена прихода берёт их в
+                // своём порядке.
+                let same = *app.db_path.lock().unwrap_or_else(|e| e.into_inner()) == path;
+                if same {
+                    *app.search.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, Arc::new(index)));
+                }
+            }
+            Ok(Err(e)) => write_log(&app.log_path, &format!("Память поиска для подсказки (умершие с «†»): {e}")),
+            Err(_) => write_log(&app.log_path, "Память поиска для подсказки: внутренняя ошибка"),
+        }
+        app.search_busy.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Полное ИОФ ребёнка под полем «Ребёнок» и «Умерший»: имя + отчество по
+/// имени отца + фамилия отца (спека 2026-10-15-semya-celikom, п. 1.5). Только
+/// показ — в запись идёт набранное (Роман 16.10.2026, ответ 2а).
+#[tauri::command]
+fn child_full_iof(app: State<App>, child: String, gender: Option<String>, father: String, father_name_surname: Option<bool>)
+    -> Result<Option<String>, String>
+{
+    with_conn(&app, &format!("Полное ИОФ «{child}»"), |conn| {
+        genmetric_core::search::child_full_iof(conn, &child, gender.as_deref(), &father, father_name_surname.unwrap_or(false))
     })
 }
 
@@ -1951,6 +2028,7 @@ fn main() {
                 warning: Mutex::new(warning),
                 import_file: Mutex::new(Vec::new()),
                 search: Mutex::new(None),
+                search_busy: std::sync::atomic::AtomicBool::new(false),
                 narrow_width: Mutex::new(None),
                 data_dir,
                 bundled,
@@ -2000,6 +2078,7 @@ fn main() {
             startup_state,
             search_persons,
             person_dossier,
+            child_full_iof,
             read_log,
             db_info,
             lookup_summary,

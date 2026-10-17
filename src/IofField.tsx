@@ -45,6 +45,9 @@ export type PersonHint = {
    *  родителя и дата рождения — чтобы различать тёзок (Роман 30.09.2026). */
   infant?: { kin: string | null; parent: string | null; place: string | null;
              rank: string | null; born: string | null };
+  /** Год смерти: в живых ролях такие — в конце списка с «†» (Роман 16.10.2026:
+   *  «это повод остановиться и разобраться»). */
+  died?: number | null;
 };
 
 type InfantHint = {
@@ -257,6 +260,8 @@ export default function IofField({
             // их поднимать незачем.
             preferInfant: (preferInfant ?? false) && !infantRows,
             keepWifeRank: keepWifeRank ?? false,
+            // Умерших — в конец списка, кроме поля «Умерший».
+            living: !(preferInfant ?? false),
           })
         : Promise.resolve([] as PersonHint[]),
       wantPersons && infantRows
@@ -334,7 +339,10 @@ export default function IofField({
         // частого из них (ревьюер 15.10.2026). Выбор — стрелкой или мышью.
         const first = value.trim().split(/\s+/)[0] ?? "";
         const masked = /\s/.test(value.trim()) && (first.includes("*") || noNameWord(first));
-        setActive((twins || masked) && !namesFirst ? -1 : 0);
+        // Умерший первой строкой (живых с таким ИОФ нет) — тоже не выбран
+        // заранее: Enter не подставит его молча (спека 2026-10-15-semya-celikom).
+        const deadFirst = !preferInfant && !!foundPersons[0] && !foundPersons[0].infant && !!foundPersons[0].died;
+        setActive((twins || masked || deadFirst) && !namesFirst ? -1 : 0);
         setOpen(foundPersons.length + shownWords.length > 0);
         setElsewhere(0);
         // НП умершего отсеял всех детей — узнать, есть ли они в приходе
@@ -676,6 +684,7 @@ export default function IofField({
                       {[p.rank, p.place].filter(Boolean).join(", ")}
                     </span>
                   )}
+                  {!p.infant && p.died ? <span className="died" data-died> † {p.died}</span> : null}
                 </span>
                 <span className="tier t1">{p.infant ? "младенец" : "персона"}</span>
               </li>

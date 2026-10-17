@@ -18,6 +18,7 @@ import { setDirty } from "./dirty";
 import { feminineSurname, maskFragment, rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
+import FullIof from "./FullIof";
 
 /**
  * Форма ввода записи о рождении.
@@ -1066,6 +1067,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
           незаконнорожд./прим.
         </label>
         </div>
+        <FullIof child={child} gender={childSex} father={father.iof} fatherNameSurname={nameSurnameNow(father)} />
         {entryNote && (
           <div className="field">
             <label>Прим.</label>

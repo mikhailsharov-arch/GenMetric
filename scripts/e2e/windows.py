@@ -574,6 +574,31 @@ def run(driver, wait, archive):
               f"{str(d)[:300]}")
         check("причта среди «рядом в записи» нет", not any(r.startswith("clergy") for r, _ in near), str(near))
 
+    # Семья целиком, часть 1 (17.10.2026): ребёнок — персона с полным ИОФ и
+    # годом рождения; полное ИОФ под полем; подсказка несёт год смерти.
+    # Через настоящий Rust: связи считает крейт, словарь отчеств — из базы.
+    fam = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "const call = window.__TAURI_INTERNALS__.invoke;"
+        "const f = {query: 'мария', place: null, own: true, part: false, clergy: false, year_from: null, year_to: null};"
+        "(async () => {"
+        "  const kids = await call('search_persons', {filter: f});"
+        "  const full = await call('child_full_iof', {child: 'Мария', gender: 'Ж', father: 'Николай Петров', fatherNameSurname: false});"
+        "  const none = await call('child_full_iof', {child: 'Мария', gender: 'Ж', father: '', fatherNameSurname: false});"
+        "  const hints = await call('suggest_person', {prefix: 'Пётр', limit: 6, gender: null, preferInfant: false,"
+        "                                             keepWifeRank: false, living: true});"
+        "  return {kids: kids.persons, full, none, hints};"
+        "})().then(done, (e) => done({error: String(e)}));")
+    check("семья целиком: команды отвечают без ошибки", "error" not in fam, str(fam)[:400])
+    if "error" not in fam:
+        check("ребёнок Мария из записи 1897 — персона поиска с годом рождения",
+              any(p.get("born") == 1897 and (p.get("iof") or "").startswith("Мария") for p in fam["kids"]), str(fam["kids"])[:300])
+        check("полное ИОФ под полем: «Мария Николаевна»; без отца — пусто",
+              fam["full"] == "Мария Николаевна" and fam["none"] is None, f"{fam['full']} / {fam['none']}")
+        check("подсказка персон несёт год смерти (живые — пусто)",
+              isinstance(fam["hints"], list) and len(fam["hints"]) > 0 and all("died" in h for h in fam["hints"]),
+              str(fam["hints"])[:300])
+
     # Подсказка детей в смертях (техдолг с 03.10.2026: в сквозной проверке её
     # не было): ребёнок из записи о рождении шага 5 — отдельной строкой с годом
     # рождения; запросы infant_suggest и birth_father идут через настоящий

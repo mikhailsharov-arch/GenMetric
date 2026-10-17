@@ -904,6 +904,17 @@ button.toggle { white-space: nowrap; }
 .dossierfamily p { margin: 0.15em 0; }
 .dossierfamily ul { margin: 0 0 0.3em; padding-left: 1.2em; list-style: none; }
 .dossierfamily li { margin: 0.1em 0; }
+/* Смерть ребёнка в «Семье» и умерший в подсказке персон (спека
+   2026-10-15-semya-celikom): «† год» — приглушённо, но видно. */
+.died { color: #8a3b3b; white-space: nowrap; }
+/* «Возможно, тот же человек» — под событиями, своей рамкой: это не факт, а
+   подсказка, где ещё посмотреть. */
+.dossierpossible {
+  margin: 0.8em 0 1.1em; padding: 0 0.7em 0.5em;
+  border: 0.125em dashed #9a8f7a; border-radius: 0.4em;
+}
+.dossierpossible h3 { margin: 0.4em 0 0.2em; font-size: 0.95rem; }
+.dossierpossible ul { margin: 0.2em 0; padding-left: 1.2em; }
 .dossier .who { font-size: inherit; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); }
 .dossier .who:hover { color: var(--accent); }
 table.events { width: 100%; border-collapse: collapse; }

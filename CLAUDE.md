@@ -36,10 +36,10 @@
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 44, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель)
     node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 75, ошибок 0» (месяц сам: по дню обряда, первая цифра дня, смена года)
-    node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 36, ошибок 0» (слова досье персоны и блок «Семья»)
+    node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 41, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 132, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 341, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 350, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -53,7 +53,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 30 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 31 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -353,8 +353,17 @@ SQL не писать: считать по шагам во временной т
 `src-tauri/core/src/search.rs`, слова досье — `src/dossier.ts`
 (`scripts/test_dossier.mjs`), экран — `src/SearchScreen.tsx`. Записи в базе
 между собой не связаны (`person_id` пуст): персона там — совпадение ИОФ в
-современном написании и НП, и досье собирается только из записей, где стоит
-её ИОФ. Ребёнок из записи о рождении персоной не считается — у него одно имя.
+современном написании и НП. С 17.10.2026 (спека 2026-10-15-semya-celikom)
+связи считаются при каждой перестройке памяти поиска в
+`src-tauri/core/src/search/family.rs`: ребёнок — персона с полным ИОФ
+(отчество по отцу из `name_dict`, фамилия отца), смерть младенца с
+родственником «отец/мать» прикрепляется к его рождению, взрослый получает
+своё рождение при взаимной однозначной паре (± 5 лет); иначе — «возможно»,
+без слияния. В базу ничего не пишется. Подсказка персон помечает умерших
+(`Index::died_of`) по закэшированной памяти и перестраивает её в фоне
+(`refresh_search_soon`) — синхронно не строит. На настоящей базе:
+`GENMETRIC_SEARCH_DB=/путь cargo test -p genmetric-core --release family_real
+-- --ignored --nocapture`.
 Слова сопоставляет Rust, а не SQL (кириллица). Слово запроса из трёх и более
 букв ищется и в середине слова персоны, из одной-двух — только с начала
 (`word_match`); роли отбираются и по отдельности (`Filter::skip`, `role_class`). Копия отбора для стенда — в

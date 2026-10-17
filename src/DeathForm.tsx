@@ -8,6 +8,7 @@ import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
+import FullIof from "./FullIof";
 import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
 import { pageOverflow, turnPage } from "./page";
 import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
@@ -903,6 +904,10 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq }: FormPr
                      // из другой деревни должна остаться в списке (ревьюер 03.10.2026).
                      infantPlace={placeTyped}
                      {...common} extra={deadExtra}
+                     // Полное ИОФ младенца по родственнику «отец» — только показ.
+                     afterIof={<FullIof child={dead.iof} gender={deadSex}
+                                        father={rel.kinship.trim().toLowerCase().startsWith("отец") ? rel.iof : ""}
+                                        fatherNameSurname={nameSurnameNow(rel)} />}
                      noIof={nameless} titleAfter={namelessBox} />
         {relFolded && (
           <FoldLine block="death_relative" title="Родственник" summary={foldSummary([rel])} onOpen={() => foldRel(false)} />

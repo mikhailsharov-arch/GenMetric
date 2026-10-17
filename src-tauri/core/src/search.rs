@@ -7,20 +7,24 @@
 //!
 //! Записи в базе между собой не связаны (`person_id` пуст): «персона» здесь —
 //! совпадение ИОФ в современном написании и НП, а не установленная личность.
-//! Поэтому в досье попадает только то, где стоит её ИОФ: она — жених, отец,
-//! умершая, восприемник, поручитель, родственник. Её собственное рождение
-//! (у ребёнка в записи одно имя) — следующий шаг, там нужна догадка.
+//! В досье попадает то, где стоит её ИОФ: она — жених, отец, умершая,
+//! восприемник, поручитель, родственник. С 17.10.2026 к этому прикрепляются
+//! её собственное рождение и смерть младенцем, когда они однозначны
+//! (`family.rs`, спека 2026-10-15-semya-celikom).
 //!
 //! Только чтение. Сопоставление слов — здесь, а не в SQL: сравнение без учёта
 //! регистра в SQLite кириллицу не понимает (грабля про COLLATE NOCASE).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::statement;
-use crate::text::{normalize, normalize_name};
+use crate::text::{normalize, normalize_name, normalize_words};
+
+mod family;
+use family::Person;
 
 /// Что набрано на экране «Поиск».
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -55,6 +59,13 @@ pub struct PersonHit {
     pub mentions: usize,
     pub year_from: Option<i64>,
     pub year_to: Option<i64>,
+    /// Роль первого упоминания: по ней экран включает нужную группу ролей,
+    /// когда переходит к этой персоне (ссылка «Возможно»).
+    pub role: String,
+    /// Год собственного рождения, если оно прикреплено.
+    pub born: Option<i64>,
+    /// Год смерти, если она есть и событий после неё нет.
+    pub died: Option<i64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -85,6 +96,10 @@ pub struct Mention {
     pub kinship: Option<String>,
     /// У поручителя — сторона («по жениху»), у прочих — примечание.
     pub note: Option<String>,
+    /// Год смерти этого человека (его досье), если он умер: «†» у детей в
+    /// «Семье» (Роман 16.10.2026: смерти детей-младенцев «абсолютно
+    /// необходимо сохранить»).
+    pub died: Option<i64>,
 }
 
 /// Событие досье: запись, в которой персона упомянута.
@@ -116,12 +131,19 @@ pub struct Dossier {
     pub ranks: Vec<String>,
     pub mentions: usize,
     pub events: Vec<Event>,
+    /// Год собственного рождения, если оно прикреплено, и год смерти.
+    pub born: Option<i64>,
+    pub died: Option<i64>,
+    /// «Возможно, тот же человек» — без слияния (спека, «Общее»).
+    pub possible: Vec<PersonHit>,
 }
 
 /// Больше персон список не показывает — «уточните запрос».
 pub const PERSON_LIMIT: usize = 200;
 
 struct Row {
+    /// Номер упоминания — ключ досье ребёнка и умершего младенца.
+    id: i64,
     entry_id: i64,
     role: String,
     first: String,
@@ -150,19 +172,64 @@ struct Row {
     key: String,
     words: Vec<String>,
     place_norm: String,
+    /// Возраст годами и «младенец» (месяцы, недели, дни без лет) — для связей.
+    age_years: Option<i64>,
+    age_small: bool,
+    /// Имя и отчество в современном написании, основа фамилии — нормализованные.
+    first_n: String,
+    patr_n: String,
+    sur_base: String,
+    /// Полное ИОФ ребёнка и умершего младенца (`family::derive`).
+    full: Option<String>,
+    /// ИО отца и матери в записи (у умершего — родственника) — `family.rs`.
+    father_io: String,
+    mother_io: String,
+    /// Персона (досье), к которой относится упоминание.
+    person: usize,
 }
 
 /// Упоминания прихода в памяти. До 10.10.2026 поиск и досье читали их из
 /// базы каждый раз — на ста тысячах упоминаний по 0,3 с на каждую букву.
 /// Кто держит `Index` между вызовами, сам следит, что база не изменилась
-/// (`changes`).
+/// (`changes`). Персоны и связи между записями (`family.rs`) считаются здесь
+/// же, при чтении.
 pub struct Index {
     rows: Vec<Row>,
+    persons: Vec<Person>,
+    /// (ключ, НП) → персона.
+    by_key: HashMap<(String, String), usize>,
+    /// (ИОФ как в книге, НП) → персоны: подсказка ищет по нему умерших.
+    by_book: HashMap<(String, String), Vec<usize>>,
 }
 
 impl Index {
     pub fn load(conn: &Connection) -> Result<Index, String> {
-        Ok(Index { rows: load(conn)? })
+        let mut rows = load(conn)?;
+        let mut dict = family::Patronymics::new();
+        {
+            let mut stmt = conn.prepare(&statement("search_patronymics")?).map_err(|e| e.to_string())?;
+            let found = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
+                .map_err(|e| e.to_string())?;
+            for row in found {
+                let (name, m, f) = row.map_err(|e| e.to_string())?;
+                dict.insert(normalize_name(&name), (m.unwrap_or_default(), f.unwrap_or_default()));
+            }
+        }
+        family::derive(&mut rows, &dict);
+        let persons = family::build(&mut rows);
+        let mut by_key = HashMap::new();
+        for (n, p) in persons.iter().enumerate() {
+            by_key.insert((p.key.clone(), p.place.clone()), n);
+        }
+        let mut by_book: HashMap<(String, String), Vec<usize>> = HashMap::new();
+        for row in rows.iter().filter(|r| !matches!(kind_of(&r.role), Kind::Child | Kind::Clergy)) {
+            let list = by_book.entry((normalize_words(&row.iof()), row.place_norm.clone())).or_default();
+            if !list.contains(&row.person) {
+                list.push(row.person);
+            }
+        }
+        Ok(Index { rows, persons, by_key, by_book })
     }
     pub fn len(&self) -> usize {
         self.rows.len()
@@ -243,6 +310,7 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
                 if parts.is_empty() { None } else { Some(parts.join(" ")) }
             });
             let mut row = Row {
+                id: r.get(0)?,
                 entry_id: r.get(1)?,
                 role: r.get(2)?,
                 first: text(r, 4)?,
@@ -269,11 +337,23 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
                 key: String::new(),
                 words: Vec::new(),
                 place_norm: String::new(),
+                age_years: years,
+                age_small: years.unwrap_or(0) == 0 && (months.is_some() || weeks.is_some() || days.is_some()),
+                first_n: String::new(),
+                patr_n: String::new(),
+                sur_base: String::new(),
+                full: None,
+                father_io: String::new(),
+                mother_io: String::new(),
+                person: usize::MAX,
             };
             row.key = row.modern().iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect::<Vec<_>>().join(" ");
             row.words = [&row.first, &row.patr, &row.surname, &row.first_modern, &row.patr_modern]
                 .iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect();
             row.place_norm = normalize(&row.place);
+            let [first, patr, _] = row.modern();
+            (row.first_n, row.patr_n) = (normalize_name(first), normalize_name(patr));
+            row.sur_base = if row.surname.is_empty() { String::new() } else { crate::records::surname_pair(&row.surname).0 };
             Ok(row)
         })
         .map_err(|e| e.to_string())?;
@@ -290,6 +370,9 @@ impl Row {
         [self.first.as_str(), &self.patr, &self.surname].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" ")
     }
     fn iof_modern(&self) -> String {
+        if let Some(full) = &self.full {
+            return full.clone();
+        }
         self.modern().iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" ")
     }
     /// Ключ персоны: ИОФ в современном написании, без регистра, «ё» и «ъ».
@@ -298,12 +381,16 @@ impl Row {
     fn key(&self) -> String {
         self.key.clone()
     }
-    fn mention(&self) -> Mention {
+    fn mention(&self, persons: &[Person]) -> Mention {
+        let person = persons.get(self.person);
         Mention {
-            key: self.key(), role_code: self.role.clone(), iof: self.iof(), iof_modern: self.iof_modern(), place: self.place.clone(),
+            key: person.map_or_else(|| self.key(), |p| p.key.clone()), role_code: self.role.clone(), iof: self.iof(), iof_modern: self.iof_modern(),
+            // Место — персоны: с ним досье и спрашивают (ревьюер 17.10.2026).
+            place: person.map_or_else(|| self.place.clone(), |p| p.place.clone()),
             rank: self.rank.clone(), gender: self.gender.clone(), age: self.age.clone(),
             death_cause: self.death_cause.clone(), marriage_order: self.marriage_order.clone(),
             kinship: self.kinship.clone(), note: self.note.clone(),
+            died: person.and_then(|p| p.died),
         }
     }
 }
@@ -314,7 +401,8 @@ fn passes(row: &Row, f: &Filter, place: &Option<String>) -> bool {
         Kind::Own => f.own,
         Kind::Part => f.part,
         Kind::Clergy => f.clergy,
-        Kind::Child => false,
+        // Своё рождение — «свои события» (спека 2026-10-15-semya-celikom, п. 1.1).
+        Kind::Child => f.own,
     };
     if !wanted || row.first.is_empty() || row.first == crate::records::NO_NAME {
         return false;
@@ -353,40 +441,127 @@ pub fn find_in(index: &Index, f: &Filter) -> Found {
         return Found { persons: Vec::new(), total: 0 };
     }
     let place = place_key(f);
-    struct Group { iof: String, place: String, mentions: usize, from: Option<i64>, to: Option<i64>, words: BTreeSet<String> }
-    let mut groups: BTreeMap<(String, String), Group> = BTreeMap::new();
-    for row in index.rows.iter().filter(|r| passes(r, f, &place)) {
-        let g = groups.entry((row.key(), row.place.clone())).or_insert_with(|| Group {
-            iof: row.iof_modern(), place: row.place.clone(), mentions: 0, from: None, to: None, words: BTreeSet::new(),
-        });
-        g.mentions += 1;
-        if let Some(y) = row.year {
-            g.from = Some(g.from.map_or(y, |v| v.min(y)));
-            g.to = Some(g.to.map_or(y, |v| v.max(y)));
-        }
-        g.words.extend(row.words.iter().cloned());
-    }
     // Каждое набранное слово должно подойти какому-то слову персоны. Персоны,
     // у которых все слова совпали с начала, идут выше тех, у кого хоть одно
     // нашлось в середине: точное попадание не должно тонуть среди обрывков.
-    let mut hits: Vec<(bool, PersonHit)> = groups
-        .into_iter()
-        .filter_map(|((key, _), g)| {
-            let mut exact = true;
-            for w in &words {
-                match g.words.iter().map(|have| word_match(have, w)).max().unwrap_or(0) {
-                    0 => return None,
-                    1 => exact = false,
-                    _ => {}
-                }
+    let mut hits: Vec<(bool, PersonHit)> = Vec::new();
+    for n in 0..index.persons.len() {
+        let mine: Vec<&Row> = index.mine(n, f, &place);
+        if mine.is_empty() {
+            continue;
+        }
+        let have: BTreeSet<&String> = mine.iter().flat_map(|r| r.words.iter()).collect();
+        let mut exact = true;
+        let mut fits = true;
+        for w in &words {
+            match have.iter().map(|h| word_match(h, w)).max().unwrap_or(0) {
+                0 => { fits = false; break; }
+                1 => exact = false,
+                _ => {}
             }
-            Some((exact, PersonHit { key, iof: g.iof, place: g.place, mentions: g.mentions, year_from: g.from, year_to: g.to }))
-        })
-        .collect();
+        }
+        if fits {
+            hits.push((exact, index.hit(n, &mine)));
+        }
+    }
     hits.sort_by(|(ea, a), (eb, b)| eb.cmp(ea).then(b.mentions.cmp(&a.mentions)).then(a.iof.cmp(&b.iof)).then(a.place.cmp(&b.place)));
     let total = hits.len();
     hits.truncate(PERSON_LIMIT);
     Found { persons: hits.into_iter().map(|(_, h)| h).collect(), total }
+}
+
+impl Index {
+    /// Упоминания персоны, прошедшие отборы экрана; влитая персона — пусто.
+    fn mine(&self, n: usize, f: &Filter, place: &Option<String>) -> Vec<&Row> {
+        let p = &self.persons[n];
+        if p.merged_into.is_some() {
+            return Vec::new();
+        }
+        p.rows.iter().map(|&i| &self.rows[i]).filter(|r| passes(r, f, place)).collect()
+    }
+
+    /// Строка списка персоны. ИОФ — как у взрослого, если он есть: у
+    /// рождения фамилия отца, а сам он мог записываться без неё.
+    fn hit(&self, n: usize, mine: &[&Row]) -> PersonHit {
+        let p = &self.persons[n];
+        let years: Vec<i64> = mine.iter().filter_map(|r| r.year).collect();
+        PersonHit {
+            key: p.key.clone(),
+            iof: Self::title(mine),
+            role: mine.first().map(|r| r.role.clone()).unwrap_or_default(),
+            place: p.place.clone(),
+            mentions: mine.len(),
+            year_from: years.iter().min().copied(),
+            year_to: years.iter().max().copied(),
+            born: p.birth.and_then(|i| self.rows[i].year),
+            died: p.died,
+        }
+    }
+
+    fn title(mine: &[&Row]) -> String {
+        mine.iter().find(|r| r.role != "child").or(mine.first()).map(|r| r.iof_modern()).unwrap_or_default()
+    }
+
+    /// Персона по ключу и НП; ключ влитой ведёт к той, в которую она влилась.
+    fn person(&self, key: &str, place: &str) -> Option<usize> {
+        let mut n = *self.by_key.get(&(key.to_string(), place.to_string()))?;
+        while let Some(m) = self.persons[n].merged_into {
+            n = m;
+        }
+        Some(n)
+    }
+
+    /// Год смерти персоны из подсказки (ИОФ как в книге и НП), если умерли
+    /// все персоны с этим ИОФ и НП: живого тёзку в конец не уводим (спека,
+    /// п. 1.6).
+    pub fn died_of(&self, iof: &str, place: Option<&str>) -> Option<i64> {
+        let list = self.by_book.get(&(normalize_words(iof), normalize(place.unwrap_or(""))))?;
+        let mut year = None;
+        for &n in list {
+            year = Some(year.unwrap_or(i64::MIN).max(self.persons[n].died?));
+        }
+        year
+    }
+}
+
+/// Полное ИОФ ребёнка для показа под полем (спека 2026-10-15-semya-celikom,
+/// п. 1.5): имя ребёнка (современное) + отчество по имени отца + фамилия отца
+/// в форме пола ребёнка — то же правило, что у памяти поиска (`family.rs`).
+/// Нечего дописать (нет отца, имя не прочитано) — None.
+pub fn child_full_iof(conn: &Connection, child: &str, gender: Option<&str>, father: &str, father_name_surname: bool)
+    -> Result<Option<String>, String>
+{
+    let child = child.trim();
+    if child.is_empty() || child.starts_with(crate::records::NO_NAME) || father.trim().is_empty() {
+        return Ok(None);
+    }
+    let kid = crate::records::parse_iof_with(conn, child, false)?;
+    let dad = crate::records::parse_iof_with(conn, father, father_name_surname)?;
+    let Some(dad_first) = dad.first_name_modern.or(dad.first_name).filter(|s| !s.is_empty() && !s.starts_with(crate::records::NO_NAME)) else {
+        return Ok(None);
+    };
+    let female = gender.or(kid.gender.as_deref()) == Some("Ж");
+    let first = kid.first_name_modern.or(kid.first_name).unwrap_or_else(|| child.to_string());
+    let mut dict = family::Patronymics::new();
+    {
+        let mut stmt = conn.prepare(&statement("search_patronymics")?).map_err(|e| e.to_string())?;
+        let want = normalize_name(&dad_first);
+        let found = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
+            .map_err(|e| e.to_string())?;
+        for row in found {
+            let (name, m, f) = row.map_err(|e| e.to_string())?;
+            if normalize_name(&name) == want {
+                dict.insert(want.clone(), (m.unwrap_or_default(), f.unwrap_or_default()));
+            }
+        }
+    }
+    let patr = family::patronymic(&dict, &dad_first, female);
+    let surname = dad.surname.filter(|s| !s.trim().is_empty()).map(|s| family::gendered(&s, female));
+    if patr.is_none() && surname.is_none() {
+        return Ok(None);
+    }
+    Ok(Some([Some(first), patr, surname].into_iter().flatten().collect::<Vec<_>>().join(" ")))
 }
 
 /// Досье персоны: все записи, где стоит её ИОФ (ключ) в этом НП, с теми, кто
@@ -400,9 +575,8 @@ pub fn dossier(conn: &Connection, key: &str, place: &str, f: &Filter) -> Result<
 pub fn dossier_in(index: &Index, key: &str, place: &str, f: &Filter) -> Dossier {
     let rows = &index.rows;
     let only = Filter { place: None, ..f.clone() };
-    let mine: Vec<&Row> = rows.iter()
-        .filter(|r| r.place == place && r.key == key && passes(r, &only, &None))
-        .collect();
+    let n = index.person(key, place);
+    let mine: Vec<&Row> = n.map(|n| index.mine(n, &only, &None)).unwrap_or_default();
     let mut by_entry: BTreeMap<i64, Vec<&Row>> = BTreeMap::new();
     let wanted: BTreeSet<i64> = mine.iter().map(|r| r.entry_id).collect();
     for row in rows.iter().filter(|r| wanted.contains(&r.entry_id)) {
@@ -418,24 +592,35 @@ pub fn dossier_in(index: &Index, key: &str, place: &str, f: &Filter) -> Dossier 
             all.iter()
                 .filter(|r| !std::ptr::eq(**r, *me) && kind_of(&r.role) != Kind::Clergy
                             && (!r.first.is_empty() || !r.surname.is_empty() || r.role == "deceased"))
-                .map(|r| r.mention())
+                .map(|r| r.mention(&index.persons))
                 .collect()
         }).unwrap_or_default();
         events.push(Event {
             entry_id: me.entry_id, section: me.section,
             year: me.year, day: me.day, month: me.month,
-            page: me.page.clone(), note: me.entry_note.clone(), scan_file: me.scan_file.clone(), book_year: me.book_year, me: me.mention(), others,
+            page: me.page.clone(), note: me.entry_note.clone(), scan_file: me.scan_file.clone(), book_year: me.book_year,
+            me: me.mention(&index.persons), others,
         });
     }
     events.sort_by_key(|e| (e.year.unwrap_or(i64::MAX), e.month.unwrap_or(13), e.day.unwrap_or(32), e.entry_id));
     let mut ranks: Vec<(String, usize)> = ranks.into_iter().collect();
     ranks.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let person = n.map(|n| &index.persons[n]);
+    // «Возможно» — без отборов экрана: это подсказка, где ещё посмотреть.
+    let everything = Filter { own: true, part: true, clergy: true, ..Filter::default() };
+    let possible = person.map(|p| p.possible.iter().filter_map(|&m| {
+        let theirs = index.mine(m, &everything, &None);
+        (!theirs.is_empty()).then(|| index.hit(m, &theirs))
+    }).collect()).unwrap_or_default();
     Dossier {
-        iof: mine.first().map(|r| r.iof_modern()).unwrap_or_default(),
+        iof: Index::title(&mine),
         place: place.to_string(),
         ranks: ranks.into_iter().map(|r| r.0).collect(),
         mentions: mine.len(),
         events,
+        born: person.and_then(|p| p.birth).and_then(|i| rows[i].year),
+        died: person.and_then(|p| p.died),
+        possible,
     }
 }
 
@@ -547,7 +732,9 @@ mod tests {
         assert_eq!(hits(q("иван капитонович")), both, "современное написание");
         assert_eq!(hits(q("иван сидор")), vec![], "каждое слово должно найтись у одной персоны");
         assert_eq!(hits(q("и")), vec![], "с одной буквы поиск не идёт");
-        assert_eq!(hits(q("фёдор")).len(), 1, "ребёнок «Фёдор» персоной не считается, жених — считается");
+        // С 17.10.2026 ребёнок — персона с полным ИОФ: отчество по отцу.
+        assert_eq!(hits(q("фёдор")).iter().map(|h| h.0.as_str()).collect::<Vec<_>>(), vec!["Фёдор Иванович", "Фёдор Семенович"],
+                   "жених и ребёнок «Фёдор» Семёна Иванова — разные персоны");
         assert_eq!(hits(q("федор"))[0].0, "Фёдор Иванович", "«ё» и «е» — одно");
 
         assert_eq!(hits(Filter { place: Some("фетинино".into()), ..q("иван кап") }),
@@ -590,7 +777,7 @@ mod tests {
         let birth = &d.events[0];
         assert_eq!((birth.day, birth.month, birth.page.as_deref()), (Some(12), Some(3), Some("14")));
         let near: Vec<(&str, &str, &str)> = birth.others.iter().map(|m| (m.role_code.as_str(), m.iof.as_str(), m.place.as_str())).collect();
-        assert_eq!(near, vec![("child", "Мария", ""), ("mother", "Анна Петрова", "Фетинино"), ("godparent1", "Пётр Сидоров Орлов", "Малово")]);
+        assert_eq!(near, vec![("child", "Мария", "Фетинино"), ("mother", "Анна Петрова", "Фетинино"), ("godparent1", "Пётр Сидоров Орлов", "Малово")]);
         assert_eq!(birth.me.iof, "Иоаннъ Капитоновъ", "ИОФ в строке — как в записи");
         assert_eq!(birth.others[2].iof_modern, "Пётр Сидорович Орлов", "по современному ИОФ ищут досье соседа");
         let neighbour = &birth.others[2];
@@ -651,7 +838,8 @@ mod tests {
         ]);
         late.rite_year = Some(1900);
         save_entry(&conn, &late).unwrap();
-        let savva = Filter { query: "позднев".into(), ..all() };
+        // Ребёнок «Тит Саввич Позднев» — тоже персона (17.10.2026); здесь — отец.
+        let savva = Filter { query: "позднев".into(), skip: vec!["child".into()], ..all() };
         assert_eq!(find(&conn, &Filter { year_to: Some(1899), ..savva.clone() }).unwrap().total, 1, "отбор «до 1899» видит событие 1899 года");
         assert_eq!(find(&conn, &Filter { year_from: Some(1900), ..savva.clone() }).unwrap().total, 0);
         let hit = find(&conn, &savva).unwrap().persons.remove(0);
@@ -706,6 +894,134 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// Семья целиком, часть 1 (спека 2026-10-15-semya-celikom): ребёнок —
+    /// персона с полным ИОФ, смерть младенца — в его досье, взрослый получает
+    /// своё рождение; неоднозначное — «возможно»; база не меняется.
+    #[test]
+    fn links_birth_death_and_adult() {
+        let Some((path, conn)) = fresh("family") else { return };
+        let ivan = |role: &str| person(role, 20, ("Иоаннъ", "Капитоновъ", ""), ("Иван", "Капитонович"), "Фетинино", "крестьянин", "М");
+        let anna = || person("mother", 30, ("Анна", "Петрова", ""), ("Анна", "Петровна"), "Фетинино", "законная жена его", "Ж");
+        let child = |name: &str, sex: &str| person("child", 10, (name, "", ""), (name, ""), "", "", sex);
+        let born = |year: i64, name: &str, sex: &str, father: PersonInput| {
+            save_entry(&conn, &entry(1, year, 1, 2, "1", vec![child(name, sex), father, anna()])).unwrap();
+        };
+        let infant_death = |year: i64, name: &str, sex: &str, months: Option<i64>| {
+            let mut dead = person("deceased", 10, (name, "", ""), (name, ""), "Фетинино", "", sex);
+            dead.age_months = months;
+            let mut rel = ivan("deceased_relative");
+            rel.sort_order = 40;
+            rel.kinship = Some("отец".into());
+            save_entry(&conn, &entry(3, year, 3, 4, "9", vec![dead, rel])).unwrap();
+        };
+        // Мария 1886 умерла в 1887-м пяти месяцев; вторая Мария 1888 — жива.
+        born(1886, "Мария", "Ж", ivan("father"));
+        infant_death(1887, "Мария", "Ж", Some(5));
+        born(1888, "Мария", "Ж", ivan("father"));
+        // Анна 1890 и Анна 1891, смерть «Анны» 1892 без возраста — неоднозначно.
+        born(1890, "Анна", "Ж", ivan("father"));
+        born(1891, "Анна", "Ж", ivan("father"));
+        infant_death(1892, "Анна", "Ж", None);
+        // Пётр Семёнович Кулаев родился в 1868-м; женихом в 1890-м (22 года),
+        // отцом в 1892-м, умер в 1896-м — без фамилии в записях.
+        let semyon = || person("father", 20, ("Семёнъ", "Иванов", "Кулаевъ"), ("Семён", "Иванович"), "Фетинино", "крестьянин", "М");
+        born(1868, "Пётр", "М", semyon());
+        let petr = |role: &str| person(role, 10, ("Петр", "Семенов", ""), ("Пётр", "Семенович"), "Фетинино", "крестьянин", "М");
+        let mut groom = petr("groom");
+        groom.age_years = Some(22);
+        save_entry(&conn, &entry(2, 1890, 5, 5, "3", vec![groom,
+            person("bride", 20, ("Дарья", "Петрова", ""), ("Дарья", "Петровна"), "Воспица", "", "Ж")])).unwrap();
+        born(1892, "Ирина", "Ж", petr("father"));
+        let mut dead = petr("deceased");
+        dead.age_years = Some(28);
+        save_entry(&conn, &entry(3, 1896, 1, 1, "50", vec![dead])).unwrap();
+        // Два Николая Семёновича родились в Фетинине — у взрослого «возможно».
+        born(1870, "Николай", "М", semyon());
+        born(1871, "Николай", "М", person("father", 20, ("Семёнъ", "Иванов", ""), ("Семён", "Иванович"), "Фетинино", "", "М"));
+        born(1895, "Ольга", "Ж", person("father", 20, ("Николай", "Семенов", ""), ("Николай", "Семенович"), "Фетинино", "", "М"));
+
+        // Отцы-тёзки по ИО с разными фамилиями: смерть Марфы Сидоровой к
+        // рождению Марфы Кулаевой не цепляется (ревьюер 17.10.2026).
+        born(1893, "Марфа", "Ж", person("father", 20, ("Иван", "Ильин", "Кулаев"), ("Иван", "Ильич"), "Малово", "", "М"));
+        let mut marfa = person("deceased", 10, ("Марфа", "", ""), ("Марфа", ""), "Малово", "", "Ж");
+        marfa.age_months = Some(2);
+        let mut sid = person("deceased_relative", 40, ("Иван", "Ильин", "Сидоров"), ("Иван", "Ильич"), "Малово", "", "М");
+        sid.kinship = Some("отец".into());
+        save_entry(&conn, &entry(3, 1893, 9, 9, "70", vec![marfa, sid])).unwrap();
+        // Неженатый сын 25 лет с отцом-родственником — рождение по возрасту ± 5.
+        born(1871, "Яков", "М", ivan("father"));
+        let mut yakov = person("deceased", 10, ("Яков", "", ""), ("Яков", ""), "Фетинино", "", "М");
+        yakov.age_years = Some(25);
+        let mut rel = ivan("deceased_relative");
+        rel.sort_order = 40;
+        rel.kinship = Some("отец".into());
+        save_entry(&conn, &entry(3, 1897, 2, 2, "71", vec![yakov, rel])).unwrap();
+
+        let before = changes(&conn).unwrap();
+        let index = Index::load(&conn).unwrap();
+        assert_eq!(changes(&conn).unwrap(), before, "связи считаются в памяти, база не меняется");
+        let marfas = find_in(&index, &Filter { query: "марфа ивановна".into(), ..all() }).persons;
+        assert_eq!(marfas.iter().map(|h| (h.born, h.died)).collect::<Vec<_>>(), vec![(Some(1893), None), (None, Some(1893))],
+                   "разные фамилии отцов — смерть отдельно");
+        let yakovs = find_in(&index, &Filter { query: "яков иванович".into(), ..all() }).persons;
+        assert_eq!(yakovs.iter().map(|h| (h.born, h.died)).collect::<Vec<_>>(), vec![(Some(1871), Some(1897))]);
+        let find = |text: &str| find_in(&index, &Filter { query: text.into(), ..all() }).persons;
+        let open = |h: &PersonHit| dossier_in(&index, &h.key, &h.place, &all());
+
+        let maria = find("мария ивановна");
+        assert_eq!(maria.iter().map(|h| (h.iof.as_str(), h.place.as_str(), h.born, h.died)).collect::<Vec<_>>(),
+                   vec![("Мария Ивановна", "Фетинино", Some(1886), Some(1887)), ("Мария Ивановна", "Фетинино", Some(1888), None)],
+                   "две Марии одной семьи — разные персоны, первая умерла");
+        let first = open(&maria[0]);
+        assert_eq!(first.events.iter().map(|e| (e.year.unwrap(), e.me.role_code.as_str())).collect::<Vec<_>>(),
+                   vec![(1886, "child"), (1887, "deceased")], "своё рождение и смерть младенцем");
+        assert!(first.events[0].others.iter().any(|m| m.role_code == "father" && m.iof == "Иоаннъ Капитоновъ"));
+
+        // У отца — дети с «†» и его родство в смерти дочери, как было.
+        let father = open(&find("иван капитонович")[0]);
+        let kids: Vec<(i64, Option<i64>)> = father.events.iter().filter(|e| e.me.role_code == "father")
+            .map(|e| (e.year.unwrap(), e.others.iter().find(|m| m.role_code == "child").unwrap().died)).collect();
+        assert_eq!(kids, vec![(1871, Some(1897)), (1886, Some(1887)), (1888, None), (1890, None), (1891, None)]);
+        assert!(father.events.iter().any(|e| e.year == Some(1887) && e.me.role_code == "deceased_relative"),
+                "смерть ребёнка в досье отца сохраняется (Роман 16.10.2026)");
+        let link = father.events[0].others.iter().find(|m| m.role_code == "child").unwrap();
+        assert_eq!(dossier_in(&index, &link.key, &link.place, &all()).events.len(), 2, "ссылка с ребёнка — его досье");
+
+        // Анна: две кандидатки — смерть отдельно, «возможно» у обеих сторон.
+        let annas = find("анна ивановна");
+        assert_eq!(annas.len(), 3, "две родившиеся и одна умершая");
+        let lone = annas.iter().find(|h| h.born.is_none()).unwrap();
+        assert_eq!((lone.died, open(lone).possible.len()), (Some(1892), 2));
+        assert!(annas.iter().filter(|h| h.born.is_some()).all(|h| h.died.is_none() && open(h).possible.len() == 1));
+
+        // Пётр: рождение влилось во взрослого; умер в 1896-м.
+        let petr_hits = find("петр семенович");
+        assert_eq!(petr_hits.iter().map(|h| (h.iof.as_str(), h.mentions, h.born, h.died)).collect::<Vec<_>>(),
+                   vec![("Пётр Семенович", 4, Some(1868), Some(1896))]);
+        let pd = open(&petr_hits[0]);
+        assert_eq!(pd.events[0].me.role_code, "child");
+        assert!(pd.events[0].others.iter().any(|m| m.role_code == "father" && m.iof == "Семёнъ Иванов Кулаевъ"));
+        assert_eq!(find("петр кулаев").len(), 1, "по фамилии отца находится тот же Пётр");
+        assert_eq!(index.died_of("Петр Семенов", Some("Фетинино")), Some(1896), "подсказка узнаёт умершего");
+        assert_eq!(index.died_of("Иоаннъ Капитоновъ", Some("Фетинино")), None, "живой — нет");
+        assert_eq!(index.died_of("Петр Семенов", Some("Воспица")), None, "в другом пункте — не он");
+
+        // Николай: два рождения — не сливаем.
+        let nik = find("николай семенович");
+        let adult = nik.iter().find(|h| h.born.is_none()).unwrap();
+        assert_eq!((nik.len(), open(adult).possible.len()), (3, 2), "взрослый и два рождения, связи «возможно»");
+        // Полное ИОФ под полем — то же правило (п. 1.5).
+        let full = |child: &str, sex: Option<&str>, father: &str| child_full_iof(&conn, child, sex, father, false).unwrap();
+        assert_eq!(full("Мария", Some("Ж"), "Семёнъ Иванов Кулаевъ").as_deref(), Some("Мария Семеновна Кулаева"));
+        assert_eq!(full("Пётр", Some("М"), "Иоаннъ Капитоновъ").as_deref(), Some("Петр Иванович"), "имя — современное, как в словаре");
+        assert_eq!((full("", None, "Иван"), full("Петр", None, ""), full("***", None, "Иван")), (None, None, None), "нечего показать");
+        // Своё рождение выключается ролью, как другие.
+        let no_birth = find_in(&index, &Filter { query: "петр семенович".into(), skip: vec!["child".into()], ..all() }).persons;
+        assert_eq!(no_birth[0].mentions, 3);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
     /// Поиск и досье на настоящей базе — только у разработчика:
     /// GENMETRIC_SEARCH_DB=/путь/база.sqlite GENMETRIC_SEARCH_QUERY="иван кап" \
     ///   cargo test -p genmetric-core --release search_real -- --ignored --nocapture
@@ -732,6 +1048,41 @@ mod tests {
             println!("  {:?}.{:?}.{:?} стр. {:?} — {} [{}] {:?} {:?} | {}", e.day, e.month, e.year, e.page, e.me.role_code,
                      e.me.iof, e.me.age, e.me.death_cause, near.join("; "));
         }
+    }
+
+    /// Связи «семьи целиком» на настоящей базе — только у разработчика:
+    /// GENMETRIC_SEARCH_DB=/путь/база.sqlite \
+    ///   cargo test -p genmetric-core --release family_real -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn family_real() {
+        let Ok(path) = std::env::var("GENMETRIC_SEARCH_DB") else { return };
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let started = std::time::Instant::now();
+        let plain = load(&conn).unwrap().len();
+        println!("только чтение упоминаний ({plain}): {:?}", started.elapsed());
+        let started = std::time::Instant::now();
+        let index = Index::load(&conn).unwrap();
+        println!("память поиска: {} упоминаний, {} персон, {:?}", index.rows.len(), index.persons.len(), started.elapsed());
+        let with_parent = index.rows.iter().filter(|r| r.role == "deceased" && r.full.is_some()).count();
+        let infant_linked = index.persons.iter().filter(|p| p.birth.is_some() && p.rows.iter().any(|&i| index.rows[i].role == "deceased" && index.rows[i].full.is_some())).count();
+        let infant_maybe = index.persons.iter().filter(|p| p.birth.is_none() && p.rows.len() == 1 && index.rows[p.rows[0]].full.is_some() && !p.possible.is_empty()).count();
+        let adults_born = index.persons.iter().filter(|p| p.birth.is_some() && p.rows.iter().any(|&i| index.rows[i].role != "child" && index.rows[i].full.is_none())).count();
+        let adults_maybe = index.persons.iter().filter(|p| p.birth.is_none() && p.merged_into.is_none() && !p.possible.is_empty()
+            && p.rows.iter().all(|&i| index.rows[i].role != "child" && index.rows[i].full.is_none())).count();
+        let dead = index.persons.iter().filter(|p| p.merged_into.is_none() && p.died.is_some()).count();
+        println!("смертей с родителем: {with_parent}; прикреплено к рождению: {infant_linked}; «возможно»: {infant_maybe}");
+        println!("взрослых со своим рождением: {adults_born}; взрослых с «возможно»: {adults_maybe}; умерших персон: {dead}");
+        for p in index.persons.iter().filter(|p| p.birth.is_some() && p.rows.len() > 2).take(8) {
+            let line: Vec<String> = p.rows.iter().map(|&i| format!("{}:{}:{:?}", index.rows[i].role, index.rows[i].iof(), index.rows[i].year)).collect();
+            println!("  {} | {} | {}", p.key, p.place, line.join("; "));
+        }
+        let started = std::time::Instant::now();
+        let mut n = 0;
+        for row in index.rows.iter().take(2000) {
+            if index.died_of(&row.iof(), Some(&row.place)).is_some() { n += 1; }
+        }
+        println!("died_of ×2000: {:?}, умерших среди них {n}", started.elapsed());
     }
 
     /// Поиск идёт при наборе: приход в сто тысяч упоминаний не должен

@@ -101,6 +101,9 @@ type Props = {
   titleAfter?: React.ReactNode;
   /** Поля роли перед ИОФ — родство у родственника в браке (как в Excel). */
   before?: React.ReactNode;
+  /** Строка сразу под полем ИОФ — полное ИОФ умершего младенца (спека
+   *  2026-10-15-semya-celikom, п. 1.5). */
+  afterIof?: React.ReactNode;
   /** Поля роли после вероисповедания — «каким браком» и «лет» у жениха
    *  и невесты (лист «2» Excel, 25.09.2026). Стоят в одной строке с
    *  вероисповеданием, когда ширины хватает. */
@@ -241,7 +244,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, extra, titleExtra, noPlace, titleAfter,
+  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, afterIof, extra, titleExtra, noPlace, titleAfter,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
   defaultRank, enterToEmpty, onIofLeave, keepWifeRank, hidden,
 }: Props) {
@@ -465,6 +468,7 @@ export default function PersonBlock({
       )}
       {before}
       {!compact && !noIof && iofField}
+      {!compact && !noIof && afterIof}
       {/* НП и звание — парой в одну строку, когда блок шире 28em (styles.css,
           @container person). У причта (compact) пара — ИОФ | Звание: раскрытый
           причт был высоким (проверяющий 27.09.2026). */}

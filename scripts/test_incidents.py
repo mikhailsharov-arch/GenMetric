@@ -1574,7 +1574,8 @@ def incident_20261015_pamyat_if_i_dovodka():
           and '"guarantor"' in read("scripts/test_names.mjs"))
     check("«воздух» между событиями досье", "padding: 0.5em 0.5em 0.5em 0;" in read("src/styles.css"))
     check("по маске заранее не выбрана ни одна строка: Enter не подставляет чужого (ревьюер 15.10.2026)",
-          "setActive((twins || masked) && !namesFirst ? -1 : 0);" in read("src/IofField.tsx"))
+          # С 17.10.2026 к маске добавился умерший первой строкой.
+          "setActive((twins || masked || deadFirst) && !namesFirst ? -1 : 0);" in read("src/IofField.tsx"))
     check("«ИФ» несут и жена по мужу, и отец умершего младенца",
           'statement("person_name_surname")' in main and "AS name_surname" in block("birth_father")
           and "nameSurname: m.iof ? m.nameSurname : !!wife.name_surname," in read("src/BirthForm.tsx")
@@ -1624,7 +1625,40 @@ def incident_20261016_oshibki_i_dovodka():
           "iof || '|' || coalesce(place, '') IN (" in read("db/migrate.sql"))
 
 
+def incident_20261017_semya_celikom_1():
+    """
+    17.10.2026, «семья целиком», часть 1 (спека 2026-10-15-semya-celikom, ответы
+    Романа на опросник 16.10). В досье не было собственного рождения
+    человека, умерший предлагался в подсказках наравне с живыми. Поведение
+    держат тест крейта (links_birth_death_and_adult, builds_dossier),
+    test_dossier.mjs и стенд s60. Здесь — то, что легко сломать правкой рядом.
+    """
+    main = read("src-tauri/src/main.rs")
+    family = read("src-tauri/core/src/search/family.rs")
+    check("связи считаются только при чтении: family.rs ничего не пишет в базу",
+          "execute" not in family and "conn" not in family)
+    check("связь берётся только взаимная и однозначная, иначе «возможно»",
+          "if for_group.contains(&n) && for_birth.contains(&n) {" in family and "maybe.push((g, b));" in family)
+    check("допуск по возрасту — ± 5 лет (его ответ 3)", "const AGE_SLACK: i64 = 5;" in family)
+    check("смерть младенца не прикрепляется к рождению в семье с другой фамилией (ревьюер 17.10.2026)",
+          "if !a.sur_base.is_empty() && !b.sur_base.is_empty() && a.sur_base != b.sur_base {" in family)
+    check("подсказка не строит память поиска сама: устаревшая — как есть, свежая — в фоне",
+          "refresh_search_soon(&handle, now);" in main and "std::thread::spawn(move ||" in main
+          and "SQLITE_OPEN_READ_ONLY" in main.split("fn refresh_search_soon", 1)[1].split("fn child_full_iof", 1)[0]
+          and "Index::load" not in main.split("fn suggest_person", 1)[1].split("fn refresh_search_soon", 1)[0])
+    check("умершие — в конце только в живых ролях; в поле «Умерший» порядок прежний",
+          "if living.unwrap_or(false) {" in main and "living: !(preferInfant ?? false)," in read("src/IofField.tsx"))
+    check("умерший первой строкой заранее не выбран",
+          "const deadFirst = !preferInfant && !!foundPersons[0] && !foundPersons[0].infant && !!foundPersons[0].died;" in read("src/IofField.tsx"))
+    full = read("src/FullIof.tsx")
+    check("полное ИОФ ребёнка — только показ (его ответ 2а): в запись идёт набранное",
+          'invoke<string | null>("child_full_iof"' in full and "setChild(" not in full and "onChange" not in full)
+    check("смерти детей в досье отца сохраняются (его ответ 7): родственник умершего остаётся в группе отца",
+          '"deceased" if rows[i].patr_n.is_empty()' in family and 'r.role.starts_with("deceased_")' in family)
+
+
 ИНЦИДЕНТЫ = [
+    incident_20261017_semya_celikom_1,
     incident_20261016_oshibki_i_dovodka,
     incident_20261015_pamyat_if_i_dovodka,
     incident_20261014_stranica_i_dovodka,

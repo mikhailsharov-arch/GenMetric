@@ -3,7 +3,7 @@
  * Проверка слов досье — src/dossier.ts (Роман 09.10.2026: «хронологическое
  * „досье“ человека»). Запуск: node --experimental-strip-types scripts/test_dossier.mjs
  */
-import { ageWords, dateOf, describe, family, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
+import { ageWords, dateOf, describe, diedMark, family, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -102,6 +102,18 @@ console.log("\nБрак в блоке «Семья»\n");
   const bare = marriageLine(ev(2, m("groom", "Иван Капитонов"), []));
   check("ничего не записано — пусто, и сказано, кого нет", bare.mine === "" && bare.spouseNote === "" && bare.missing === "невеста не записана"
     && marriageLine(ev(2, m("bride", "Анна"), [])).missing === "жених не записан");
+}
+
+console.log("\nСвоё рождение (спека 2026-10-15-semya-celikom)\n");
+{
+  const me = m("child", "Мария", { gender: "Ж", iof_modern: "Мария Ивановна", died: 1890 });
+  const own = ev(1, me, [father, mother, god], { year: 1886 });
+  check("своё рождение: отец, мать, восприемники", text(own) === "рождение. отец — «Иван Капитонов»; мать — «Анна Петрова»; восприемники: «Пётр Сидоров Орлов»", text(own));
+  check("ребёнок — своя группа ролей", roleKind("child") === "child");
+  const f = family([own, ev(3, m("deceased", "Мария", { gender: "Ж" }), [m("deceased_relative", "Иван Капитонов", { kinship: "отец" })], { year: 1890 })]);
+  check("«Семья»: родители из собственного рождения", !!f.parents && f.parents.father?.iof === "Иван Капитонов" && f.parents.mother?.iof === "Анна Петрова");
+  check("без своего рождения родителей нет", family([ev(1, father, [girl, mother])]).parents === null);
+  check("«†» — у умершего, у живого пусто", diedMark(1890) === "† 1890" && diedMark(null) === "" && diedMark(undefined) === "");
 }
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${bad}`);

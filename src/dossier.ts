@@ -12,6 +12,9 @@
  * Капитоновъ» программа не умеет, а «восприемник у Петра» с ошибкой в падеже
  * хуже, чем «ребёнок — Пётр».
  *
+ * С 17.10.2026 в досье есть и собственное рождение человека (роль «child»)
+ * и смерть младенцем, когда search.rs (family.rs) связал их однозначно.
+ *
  * Функции без зависимостей — их проверяет scripts/test_dossier.mjs. Данные
  * собирает search.rs; здесь только слова.
  */
@@ -31,6 +34,8 @@ export type Mention = {
   marriage_order: string | null;
   kinship: string | null;
   note: string | null;
+  /** Год смерти этого человека, если он умер (search.rs, Mention). */
+  died?: number | null;
 };
 
 export type DossierEvent = {
@@ -132,6 +137,15 @@ export function describe(e: DossierEvent): { what: string; who: Part[] } {
   const child = one(e, "child");
   const childWord = !child ? "ребёнка" : child.gender === "Ж" ? "дочери" : child.gender === "М" ? "сына" : "ребёнка";
 
+  if (role === "child") {
+    // Своё рождение (спека 2026-10-15-semya-celikom, п. 1.4).
+    return {
+      what: "рождение",
+      who: join(named("отец", one(e, "father")), named("мать", one(e, "mother")),
+                of(e, "godparent*").length ? ["восприемники: ", ...people(of(e, "godparent*"))] : []),
+    };
+  }
+
   if (role === "father" || role === "mother") {
     const other = one(e, role === "father" ? "mother" : "father");
     return {
@@ -214,8 +228,10 @@ export function marriageLine(e: DossierEvent): { mine: string; spouseNote: strin
   };
 }
 
-/** Блок «Семья»: браки персоны и её дети — по супругам. */
+/** Блок «Семья»: родители (из собственного рождения), браки персоны и её
+ *  дети — по супругам. */
 export type Family = {
+  parents: { event: DossierEvent; father: Mention | undefined; mother: Mention | undefined } | null;
   marriages: { event: DossierEvent; spouse: Mention | undefined }[];
   spouses: { spouse: Mention | undefined; children: { event: DossierEvent; child: Mention | undefined; godparents: Mention[] }[] }[];
 };
@@ -233,5 +249,10 @@ export function family(events: DossierEvent[]): Family {
     if (!group) spouses.push(group = { spouse, children: [] });
     group.children.push({ event: e, child: one(e, "child"), godparents: of(e, "godparent*") });
   }
-  return { marriages, spouses };
+  const birth = events.find((e) => e.me.role_code === "child");
+  const parents = birth ? { event: birth, father: one(birth, "father"), mother: one(birth, "mother") } : null;
+  return { parents, marriages, spouses };
 }
+
+/** «† 1887» — у умершего; пусто — у живого или неизвестного. */
+export const diedMark = (died: number | null | undefined) => (died ? `† ${died}` : "");

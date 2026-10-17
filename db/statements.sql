@@ -1758,3 +1758,10 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order,
   JOIN entry e ON e.id = m.entry_id
   LEFT JOIN place p ON p.id = m.place_id
  ORDER BY m.entry_id, m.sort_order, m.id;
+
+-- @search_patronymics
+-- Отчество ребёнка по имени отца — для полного ИОФ ребёнка в памяти поиска
+-- (спека 2026-10-15-semya-celikom, п. 1.1). Тот же выбор, что у выгрузки
+-- (x_patr): основные имена словаря, у каждого — одно мужское и одно женское.
+SELECT name, min(patr_m) AS patr_m, min(patr_f) AS patr_f
+  FROM name_dict WHERE coalesce(base_name, '') = '' GROUP BY name;
