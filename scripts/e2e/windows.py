@@ -592,7 +592,8 @@ def run(driver, wait, archive):
     check("семья целиком: команды отвечают без ошибки", "error" not in fam, str(fam)[:400])
     if "error" not in fam:
         check("ребёнок Мария из записи 1897 — персона поиска с годом рождения",
-              any(p.get("born") == 1897 and (p.get("iof") or "").startswith("Мария") for p in fam["kids"]), str(fam["kids"])[:300])
+              any(p.get("born") == 1897 and (p.get("iof") or "").startswith("Мария") for p in fam["kids"])
+              and all("also" in p for p in fam["kids"]), str(fam["kids"])[:300])
         check("полное ИОФ под полем: «Мария Николаевна»; без отца — пусто",
               fam["full"] == "Мария Николаевна" and fam["none"] is None, f"{fam['full']} / {fam['none']}")
         check("подсказка персон несёт год смерти (живые — пусто)",

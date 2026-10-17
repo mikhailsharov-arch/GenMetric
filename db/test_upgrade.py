@@ -242,6 +242,18 @@ def build_old_database(path: Path) -> None:
                     # Тёзка «Иван Петров» с фамилией — в другом пункте: строке
                     # памяти без пункта отметка не переходит (долг п. 65).
                     ("clergy1", 200, "Иван", None, "Петров", "Кнышевка")])
+    # Родственники жениха и невесты без НП (Роман 16.10.2026, ответ 8):
+    # обновление даёт им НП жениха и невесты; родственник с НП и безымянный —
+    # как были.
+    db.executemany("INSERT OR IGNORE INTO role (code, title, section, sort_order) VALUES (?,?,2,?)",
+                   [("groom", "жених", 10), ("bride", "невеста", 20), ("groom_relative", "родственник жениха", 15),
+                    ("bride_relative", "родственник невесты", 25)])
+    db.execute("INSERT INTO entry (id, case_id, section, page) VALUES (900, 1, 2, '77')")
+    db.executemany("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, kinship, place_id) "
+                   "VALUES (900, ?, ?, ?, ?, (SELECT id FROM place WHERE name = ?))",
+                   [("groom", 10, "Фёдор", None, "Кнышевка"), ("groom_relative", 15, "Иван", "отец", None),
+                    ("bride", 20, "Дарья", None, None), ("bride_relative", 25, "Анна", "мать", None),
+                    ("groom_relative", 16, "", "брат", None)])
     db.commit()
     db.close()
 
@@ -306,7 +318,9 @@ def snapshot(db, columns: dict | None = None) -> tuple:
         # женскую), а сам номер — нет. До 10.10.2026 счёт был исключён из
         # снимка целиком, и порчу номера будущей миграцией снимок бы не увидел.
         "       coalesce(e.no_male, e.no_female), (e.no_male IS NOT NULL) + (e.no_female IS NOT NULL) "
-        "  FROM entry e LEFT JOIN person_mention m ON m.entry_id = e.id ORDER BY e.id, m.id").fetchall()
+        # Запись 900 — родственники без НП: обновление законно даёт им НП
+        # жениха и невесты (17.10.2026); её проверяет отдельная строка.
+        "  FROM entry e LEFT JOIN person_mention m ON m.entry_id = e.id WHERE e.id <> 900 ORDER BY e.id, m.id").fetchall()
     return columns, rows
 
 
@@ -337,7 +351,7 @@ def main() -> int:
                          "(kind='rank_m' AND value='крестьянская вдова после 1-го брака')"
                          ).fetchone()[0] == 2)
         check("у человека есть набранная запись",
-              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 6)
+              db.execute("SELECT count(*) FROM entry").fetchone()[0] == 7)
         snap_columns, before = snapshot(db)
         check("снимок «до» берёт все колонки записей и упоминаний",
               len(snap_columns["entry"]) >= 10 and len(snap_columns["person_mention"]) >= 15,
@@ -378,6 +392,10 @@ def main() -> int:
         check("«ИФ»: память персон получила отметку по сохранённым упоминаниям",
               one("SELECT group_concat(iof || '=' || name_surname, ', ') FROM "
                   "(SELECT iof, name_surname FROM person_index ORDER BY iof)") == "Иван Петров=0, Пётр Сидоров=1")
+        check("родственник жениха без НП получил НП жениха; у невесты без НП — пусто; безымянный — как был",
+              one("SELECT group_concat(role_code || '=' || coalesce((SELECT name FROM place WHERE id = place_id), '-'), ', ') FROM "
+                  "(SELECT role_code, place_id FROM person_mention WHERE entry_id = 900 ORDER BY sort_order)")
+              == "groom=Кнышевка, groom_relative=Кнышевка, groom_relative=-, bride=-, bride_relative=-")
         check("«ИФ»: причт, сохранённый фамилией, — с отметкой",
               one("SELECT group_concat(name_surname) FROM clergy_index WHERE iof='Иоанн Скворцов'") == "1")
         check("дубли причта без звания слиты, частоты сложены",
@@ -502,7 +520,7 @@ def main() -> int:
               one("SELECT count FROM usage_stat WHERE value='крестьянин'") == 42)
         check("заведённое дело на месте (и дело второго года — рядом)", one("SELECT count(*) FROM mk_case") == 2
               and one("SELECT church FROM mk_case WHERE id = 1") == "Христорождественская")
-        check("набранные записи на месте", one("SELECT count(*) FROM entry") == 6)
+        check("набранные записи на месте", one("SELECT count(*) FROM entry") == 7)
         check("персона записи на месте",
               one("SELECT first_name FROM person_mention WHERE entry_id=1") == "Евграф")
         check("настройка пользователя не перезаписана",

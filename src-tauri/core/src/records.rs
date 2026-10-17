@@ -534,7 +534,7 @@ pub fn extend_lookup(conn: &Connection, kind: &str, value: Option<&str>) -> Resu
     }).map(|_| ()).map_err(|e| e.to_string())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct PersonInput {
     pub role_code: String,
     pub sort_order: i64,
@@ -733,7 +733,24 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                      rusqlite::named_params! { ":entry_id": entry_id })
             .map_err(|e| e.to_string())?;
 
+        // НП родственникам жениха и невесты — фоном, по жениху и невесте (Роман
+        // 16.10.2026, ответ 8: «чтобы в выгрузки Familio и Excel эти люди
+        // попадали с заполненным НП»). Только пустой НП; на форме ничего.
+        let place_of = |role: &str| entry.persons.iter().find(|p| p.role_code == role)
+            .and_then(|p| p.place.as_deref()).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+        let (groom_place, bride_place) = (place_of("groom"), place_of("bride"));
         for person in &entry.persons {
+            let side = if person.role_code.starts_with("groom_relative") || person.role_code.starts_with("groom_parent") { &groom_place }
+                       else if person.role_code.starts_with("bride_relative") || person.role_code.starts_with("bride_parent") { &bride_place }
+                       else { &None };
+            let named = [&person.first_name, &person.surname].iter().any(|v| v.as_deref().is_some_and(|v| !v.trim().is_empty()));
+            let filled;
+            let person = if named && side.is_some() && person.place.as_deref().map_or(true, |p| p.trim().is_empty()) {
+                filled = PersonInput { place: side.clone(), ..person.clone() };
+                &filled
+            } else {
+                person
+            };
             let place_id = match person.place.as_deref().map(str::trim) {
                 Some(name) if !name.is_empty() => Some(place_id_for(conn, name)?),
                 _ => None,

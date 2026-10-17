@@ -539,6 +539,22 @@ SELECT 'cleanup_lookups',
             + (SELECT count(*) FROM temp.m_unused) AS TEXT);
 DROP TABLE IF EXISTS temp.m_unused;
 
+-- НП родственникам жениха и невесты (Роман 16.10.2026, ответ 8: «в фоновом
+-- режиме автоматически присваивать им НП жениха и невесты соответственно…
+-- чтобы в выгрузки Familio и Excel эти люди попадали с заполненным НП»).
+-- Новые записи заполняет сохранение (records::save_entry_in_tx); здесь —
+-- набранные раньше. Только пустой НП и только человек с именем или фамилией.
+UPDATE person_mention
+   SET place_id = (SELECT g.place_id FROM person_mention g
+                    WHERE g.entry_id = person_mention.entry_id
+                      AND g.role_code = CASE WHEN person_mention.role_code LIKE 'groom%' THEN 'groom' ELSE 'bride' END
+                      AND g.place_id IS NOT NULL
+                    ORDER BY g.sort_order, g.id LIMIT 1)
+ WHERE place_id IS NULL
+   AND (role_code LIKE 'groom_relative%' OR role_code LIKE 'groom_parent%'
+        OR role_code LIKE 'bride_relative%' OR role_code LIKE 'bride_parent%')
+   AND (nullif(trim(first_name), '') IS NOT NULL OR nullif(trim(surname), '') IS NOT NULL);
+
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.
 UPDATE setting

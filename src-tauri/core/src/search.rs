@@ -59,6 +59,9 @@ pub struct PersonHit {
     pub mentions: usize,
     pub year_from: Option<i64>,
     pub year_to: Option<i64>,
+    /// Как ещё человек записан (женщина — с девичьей фамилией и фамилией
+    /// мужа): до двух написаний, кроме заглавного.
+    pub also: Vec<String>,
     /// Роль первого упоминания: по ней экран включает нужную группу ролей,
     /// когда переходит к этой персоне (ссылка «Возможно»).
     pub role: String,
@@ -177,6 +180,8 @@ struct Row {
     age_small: bool,
     /// Имя и отчество в современном написании, основа фамилии — нормализованные.
     first_n: String,
+    /// Имя, сведённое к общему корню вариантов словаря (`search_name_links`).
+    first_c: String,
     patr_n: String,
     sur_base: String,
     /// Полное ИОФ ребёнка и умершего младенца (`family::derive`).
@@ -215,6 +220,40 @@ impl Index {
                 let (name, m, f) = row.map_err(|e| e.to_string())?;
                 dict.insert(normalize_name(&name), (m.unwrap_or_default(), f.unwrap_or_default()));
             }
+        }
+        // Варианты имён — одним корнем (union-find по связям словаря).
+        let mut roots: HashMap<String, String> = HashMap::new();
+        {
+            fn find(roots: &mut HashMap<String, String>, x: &str) -> String {
+                let mut cur = x.to_string();
+                while let Some(next) = roots.get(&cur).filter(|n| **n != cur).cloned() {
+                    cur = next;
+                }
+                cur
+            }
+            let mut stmt = conn.prepare(&statement("search_name_links")?).map_err(|e| e.to_string())?;
+            let links = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
+                .map_err(|e| e.to_string())?;
+            for link in links {
+                let (name, base, variant) = link.map_err(|e| e.to_string())?;
+                let a = find(&mut roots, &normalize_name(&name));
+                for other in [base, variant].into_iter().flatten().filter(|v| !v.trim().is_empty()) {
+                    let b = find(&mut roots, &normalize_name(&other));
+                    if a != b {
+                        let (lo, hi) = if a < b { (a.clone(), b) } else { (b, a.clone()) };
+                        roots.insert(hi, lo);
+                    }
+                }
+            }
+            let names: Vec<String> = roots.keys().cloned().collect();
+            for n in names {
+                let r = find(&mut roots, &n);
+                roots.insert(n, r);
+            }
+        }
+        for row in rows.iter_mut() {
+            row.first_c = roots.get(&row.first_n).cloned().unwrap_or_else(|| row.first_n.clone());
         }
         family::derive(&mut rows, &dict);
         let persons = family::build(&mut rows);
@@ -340,6 +379,7 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
                 age_years: years,
                 age_small: years.unwrap_or(0) == 0 && (months.is_some() || weeks.is_some() || days.is_some()),
                 first_n: String::new(),
+                first_c: String::new(),
                 patr_n: String::new(),
                 sur_base: String::new(),
                 full: None,
@@ -350,7 +390,17 @@ fn load(conn: &Connection) -> Result<Vec<Row>, String> {
             row.key = row.modern().iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect::<Vec<_>>().join(" ");
             row.words = [&row.first, &row.patr, &row.surname, &row.first_modern, &row.patr_modern]
                 .iter().filter(|s| !s.is_empty()).map(|s| normalize_name(s)).collect();
+            // Причт — с селом церкви из «Дела», только при чтении: в запись и
+            // выгрузки его НП не идёт (Роман 16.10.2026, ответ 8).
+            if row.place.is_empty() && row.role.starts_with("clergy") {
+                row.place = text(r, 30)?;
+            }
             row.place_norm = normalize(&row.place);
+            // Девичья фамилия — ещё одно слово, по которому женщину находят.
+            let maiden = text(r, 29)?;
+            if !maiden.is_empty() {
+                row.words.push(normalize_name(&maiden));
+            }
             let [first, patr, _] = row.modern();
             (row.first_n, row.patr_n) = (normalize_name(first), normalize_name(patr));
             row.sur_base = if row.surname.is_empty() { String::new() } else { crate::records::surname_pair(&row.surname).0 };
@@ -488,6 +538,17 @@ impl Index {
         PersonHit {
             key: p.key.clone(),
             iof: Self::title(mine),
+            also: {
+                let title = Self::title(mine);
+                let mut seen: Vec<String> = Vec::new();
+                for r in mine.iter().filter(|r| r.role != "child") {
+                    let v = r.iof_modern();
+                    if v != title && !seen.contains(&v) && seen.len() < 2 {
+                        seen.push(v);
+                    }
+                }
+                seen
+            },
             role: mine.first().map(|r| r.role.clone()).unwrap_or_default(),
             place: p.place.clone(),
             mentions: mine.len(),
@@ -745,7 +806,7 @@ mod tests {
         assert_eq!(hits(Filter { year_from: Some(1890), year_to: Some(1893), ..q("иван кап") })[0].2, 3, "годы от и до");
         assert_eq!(hits(q("рождеств")), vec![], "причт без переключателя не ищется");
         assert_eq!(hits(Filter { clergy: true, ..q("рождеств") }),
-                   vec![("Александр Рождественский".to_string(), String::new(), 5)], "с переключателем — ищется");
+                   vec![("Александр Рождественский".to_string(), "Тестово".to_string(), 5)], "с переключателем — ищется, с селом «Дела» (п. 2.5)");
         // Слово в середине (12.10.2026): обрывок из трёх и более букв.
         assert_eq!(hits(q("питон ив")), both, "обрывок «питон» находит «Капитонович»");
         assert_eq!(hits(q("ит ив")), vec![], "две буквы в середине слова не ищутся");
@@ -931,7 +992,9 @@ mod tests {
         groom.age_years = Some(22);
         save_entry(&conn, &entry(2, 1890, 5, 5, "3", vec![groom,
             person("bride", 20, ("Дарья", "Петрова", ""), ("Дарья", "Петровна"), "Воспица", "", "Ж")])).unwrap();
-        born(1892, "Ирина", "Ж", petr("father"));
+        // Мать Ирины — та же Дарья, что невеста (с 17.10.2026 жёны сверяются, п. 2.1).
+        save_entry(&conn, &entry(1, 1892, 1, 2, "1", vec![child("Ирина", "Ж"), petr("father"),
+            person("mother", 30, ("Дарья", "Петрова", ""), ("Дарья", "Петровна"), "Фетинино", "", "Ж")])).unwrap();
         let mut dead = petr("deceased");
         dead.age_years = Some(28);
         save_entry(&conn, &entry(3, 1896, 1, 1, "50", vec![dead])).unwrap();
@@ -1022,6 +1085,145 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    fn open_any(index: &Index, h: &PersonHit) -> Dossier {
+        dossier_in(index, &h.key, &h.place, &all())
+    }
+
+    /// Семья целиком, часть 2 (спека 2026-10-15-semya-celikom, п. 2.1–2.3):
+    /// тёзки с разными жёнами, вдовый второй брак, с фамилией и без,
+    /// женщина после замужества, долг п. 69.
+    #[test]
+    fn links_spouses_and_married_women() {
+        let Some((path, conn)) = fresh("family2") else { return };
+        let man = |role: &str, first: &str, patr: (&str, &str), sur: &str, place: &str| {
+            let order = if role == "father" || role == "groom" { 20 } else { 40 };
+            person(role, order, (first, patr.0, sur), (first, patr.1), place, "крестьянин", "М")
+        };
+        let woman = |role: &str, first: &str, patr: (&str, &str), sur: &str, place: &str| {
+            person(role, if role == "bride" { 30 } else { 30 }, (first, patr.0, sur), (first, patr.1), place, "", "Ж")
+        };
+        let kid = |name: &str, sex: &str| person("child", 10, (name, "", ""), (name, ""), "", "", sex);
+        let birth = |year: i64, p: Vec<PersonInput>| { save_entry(&conn, &entry(1, year, 1, 3, "1", p)).unwrap(); };
+        let wedding = |year: i64, groom: PersonInput, bride: PersonInput| { save_entry(&conn, &entry(2, year, 1, 2, "2", vec![groom, bride])).unwrap(); };
+        let ilin = ("Ильин", "Ильич");
+        // 1. Иван Петрович из Ушакова: две жены одновременно — два человека;
+        //    восприемником — отдельно, «возможно» к обоим.
+        birth(1885, vec![kid("Петр", "М"), man("father", "Иван", ("Петров", "Петрович"), "", "Ушаково"), woman("mother", "Мария", ("Иванова", "Ивановна"), "", "Ушаково")]);
+        birth(1886, vec![kid("Павел", "М"), man("father", "Иван", ("Петров", "Петрович"), "", "Ушаково"), woman("mother", "Ольга", ("Семенова", "Семеновна"), "", "Ушаково")]);
+        birth(1887, vec![kid("Нил", "М"), man("godparent1", "Иван", ("Петров", "Петрович"), "", "Ушаково")]);
+        // 2. Семён Ильич: жена Анна умерла в 1882-м, в 1883-м — Ксения: один человек.
+        birth(1880, vec![kid("Лука", "М"), man("father", "Семен", ilin, "", "Ушаково"), woman("mother", "Анна", ("Петрова", "Петровна"), "", "Ушаково")]);
+        let mut anna = woman("deceased", "Анна", ("Петрова", "Петровна"), "", "Ушаково");
+        anna.age_years = Some(30);
+        save_entry(&conn, &entry(3, 1882, 5, 5, "3", vec![anna])).unwrap();
+        wedding(1883, man("groom", "Семен", ilin, "", "Ушаково"), woman("bride", "Ксения", ("Федорова", "Федоровна"), "", "Ушаково"));
+        birth(1884, vec![kid("Фока", "М"), man("father", "Семен", ilin, "", "Ушаково"), woman("mother", "Ксения", ("Федорова", "Федоровна"), "", "Ушаково")]);
+        //    Пётр Ильич: «вторым браком» — тоже один.
+        birth(1880, vec![kid("Агния", "Ж"), man("father", "Петр", ilin, "", "Ушаково"), woman("mother", "Анна", ("Иванова", "Ивановна"), "", "Ушаково")]);
+        let mut second = man("groom", "Петр", ilin, "", "Ушаково");
+        second.marriage_order = Some("Вторым браком".into());
+        wedding(1884, second, woman("bride", "Евдокия", ("Карпова", "Карповна"), "", "Ушаково"));
+        birth(1885, vec![kid("Зоя", "Ж"), man("father", "Петр", ilin, "", "Ушаково"), woman("mother", "Евдокия", ("Карпова", "Карповна"), "", "Ушаково")]);
+        // 3. Николай Ильич с фамилией и без, жена та же — одно досье;
+        //    Андрей Ильич без жены — «возможно».
+        birth(1890, vec![kid("Анна", "Ж"), man("father", "Николай", ilin, "Кулаев", "Ушаково"), woman("mother", "Дарья", ("Иванова", "Ивановна"), "Кулаева", "Ушаково")]);
+        birth(1892, vec![kid("Илья", "М"), man("father", "Николай", ilin, "", "Ушаково"), woman("mother", "Дарья", ("Иванова", "Ивановна"), "", "Ушаково")]);
+        birth(1890, vec![kid("Ия", "Ж"), man("godparent1", "Андрей", ilin, "Кулаев", "Ушаково")]);
+        birth(1891, vec![kid("Ия", "Ж"), man("godparent1", "Андрей", ilin, "", "Ушаково")]);
+        // 4. Марья Семёновна Сидорова из Воспицы: родилась в 1866-м, в 1886-м
+        //    вышла за Фому Ильича в Ушаково, в 1888-м — мать.
+        birth(1866, vec![kid("Марья", "Ж"), man("father", "Семен", ("Иванов", "Иванович"), "Сидоров", "Воспица")]);
+        let mut bride = woman("bride", "Марья", ("Семенова", "Семеновна"), "Сидорова", "Воспица");
+        bride.age_years = Some(20);
+        wedding(1886, man("groom", "Фома", ilin, "", "Ушаково"), bride);
+        let mut mother = woman("mother", "Марья", ("Семенова", "Семеновна"), "", "Ушаково");
+        mother.maiden_surname = Some("Сидорова".into());
+        birth(1888, vec![kid("Петр", "М"), man("father", "Фома", ilin, "", "Ушаково"), mother]);
+        // 5. Долг п. 69: Ольга Петровна известна только матерью — своё рождение
+        //    в Ушакове ей не прикрепляется.
+        birth(1860, vec![kid("Ольга", "Ж"), man("father", "Петр", ("Иванов", "Иванович"), "", "Ушаково")]);
+        birth(1889, vec![kid("Яков", "М"), man("father", "Лука", ilin, "", "Ушаково"), woman("mother", "Ольга", ("Петрова", "Петровна"), "", "Ушаково")]);
+
+        // Ревьюер 17.10.2026: жена — «Васса» и «Василиса» (варианты одного
+        // имени в словаре) — один муж, не два.
+        birth(1881, vec![kid("Агафья", "Ж"), man("father", "Кузьма", ("Власов", "Власович"), "", "Ушаково"), woman("mother", "Васса", ("Петрова", "Петровна"), "", "Ушаково")]);
+        birth(1883, vec![kid("Агапит", "М"), man("father", "Кузьма", ("Власов", "Власович"), "", "Ушаково"), woman("mother", "Василиса", ("Иванова", "Ивановна"), "", "Ушаково")]);
+        // Безфамильный «Захар Ильич» с женой Марией Ивановной подходит и
+        // Кулаеву, и Сидорову с такими же жёнами — не сливаем ни с кем.
+        for sur in ["Кулаев", "Сидоров", ""] {
+            birth(1893, vec![kid("Ия", "Ж"), man("father", "Захар", ilin, sur, "Ушаково"), woman("mother", "Мария", ("Иванова", "Ивановна"), "", "Ушаково")]);
+        }
+
+        let index = Index::load(&conn).unwrap();
+        let find = |text: &str| find_in(&index, &Filter { query: text.into(), place: Some("Ушаково".into()), ..all() }).persons;
+        assert_eq!(find("кузьма власович").iter().map(|h| h.mentions).collect::<Vec<_>>(), vec![2], "варианты имени жены — один человек");
+        let zakhar = find("захар ильич");
+        assert_eq!(zakhar.len(), 3, "безфамильный подходит двоим — не сливаем");
+        assert!(zakhar.iter().any(|h| h.iof == "Захар Ильич" && open_any(&index, h).possible.len() == 2));
+        let open = |h: &PersonHit| dossier_in(&index, &h.key, &h.place, &all());
+
+        let ivans = find("иван петрович");
+        assert_eq!(ivans.iter().map(|h| h.mentions).collect::<Vec<_>>(), vec![1, 1, 1], "две жены одновременно и восприемник — три досье");
+        assert!(ivans.iter().all(|h| open(h).possible.len() == 2), "у каждого «возможно» к двум другим: {:?}", ivans.iter().map(|h| (h.iof.clone(), open(h).possible.len())).collect::<Vec<_>>());
+
+        let semyon = find("семен ильич");
+        assert_eq!((semyon.len(), semyon[0].mentions), (1, 3), "жена умерла до второго брака — один человек");
+        assert_eq!(find("петр ильич").iter().map(|h| h.mentions).collect::<Vec<_>>(), vec![3], "«вторым браком» — один человек");
+
+        let nik = find("николай ильич");
+        assert_eq!(nik.iter().map(|h| (h.iof.as_str(), h.mentions)).collect::<Vec<_>>(), vec![("Николай Ильич Кулаев", 2)],
+                   "с фамилией и без, жена та же — одно досье");
+        let andrei = find("андрей ильич");
+        assert_eq!(andrei.len(), 2);
+        assert!(andrei.iter().all(|h| open(h).possible.len() == 1), "без жены — «возможно»");
+
+        let maria = find_in(&index, &Filter { query: "марья семеновна".into(), ..all() }).persons;
+        assert_eq!(maria.iter().filter(|h| h.born.is_none() || h.mentions > 1).map(|h| (h.iof.as_str(), h.mentions, h.born)).collect::<Vec<_>>(),
+                   vec![("Марья Семеновна Сидорова", 3, Some(1866))], "невеста и мать — одна женщина, рождение — по невесте");
+        let by_maiden = find_in(&index, &Filter { query: "сидорова фома".into(), ..all() }).persons;
+        assert!(by_maiden.is_empty(), "слова одной персоны, не соседей");
+        let found = find_in(&index, &Filter { query: "сидорова марья".into(), ..all() }).persons;
+        assert_eq!(found.len(), 1, "по девичьей фамилии");
+        assert!(found[0].also.iter().any(|a| a == "Марья Семеновна"), "строка показывает и запись в деревне мужа: {:?}", found[0].also);
+        let her = open(&found[0]);
+        assert_eq!(her.events.iter().map(|e| e.me.role_code.as_str()).collect::<Vec<_>>(), vec!["child", "bride", "mother"]);
+
+        let olga = find("ольга петровна");
+        let mum = olga.iter().find(|h| h.mentions == 1 && h.born.is_none()).unwrap();
+        assert_eq!(open(mum).possible.len(), 1, "долг п. 69: только «возможно»");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// НП родственникам жениха и невесты — при сохранении (п. 2.4): только
+    /// пустой НП и только у названного человека.
+    #[test]
+    fn relatives_get_place_of_groom_and_bride() {
+        let Some((path, conn)) = fresh("relplace") else { return };
+        let rel = |role: &str, order: i64, name: &str, place: &str| {
+            let mut p = person(role, order, (name, "", ""), (name, ""), place, "", "М");
+            p.kinship = Some("отец".into());
+            p
+        };
+        let saved = save_entry(&conn, &entry(2, 1890, 1, 2, "5", vec![
+            person("groom", 10, ("Фёдор", "Иванов", ""), ("Фёдор", "Иванович"), "Малово", "", "М"),
+            rel("groom_relative", 15, "Иван", ""),
+            person("bride", 20, ("Дарья", "Петрова", ""), ("Дарья", "Петровна"), "Воспица", "", "Ж"),
+            rel("bride_relative", 25, "Пётр", "Фетинино"),
+            rel("bride_parent", 26, "Анна", ""),
+            rel("groom_relative", 16, "", ""),
+        ])).unwrap();
+        let places: Vec<(String, Option<String>)> = conn.prepare(
+            "SELECT m.role_code, p.name FROM person_mention m LEFT JOIN place p ON p.id = m.place_id WHERE m.entry_id = ?1 ORDER BY m.sort_order")
+            .unwrap().query_map([saved.id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+        let want = |v: &str| Some(v.to_string());
+        assert_eq!(places, vec![("groom".into(), want("Малово")), ("groom_relative".into(), want("Малово")), ("groom_relative".into(), None),
+                                ("bride".into(), want("Воспица")), ("bride_relative".into(), want("Фетинино")), ("bride_parent".into(), want("Воспица"))],
+                   "пустой НП — от жениха и невесты, набранный — как есть, безымянный — пусто");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
     /// Поиск и досье на настоящей базе — только у разработчика:
     /// GENMETRIC_SEARCH_DB=/путь/база.sqlite GENMETRIC_SEARCH_QUERY="иван кап" \
     ///   cargo test -p genmetric-core --release search_real -- --ignored --nocapture
@@ -1073,6 +1275,29 @@ mod tests {
         let dead = index.persons.iter().filter(|p| p.merged_into.is_none() && p.died.is_some()).count();
         println!("смертей с родителем: {with_parent}; прикреплено к рождению: {infant_linked}; «возможно»: {infant_maybe}");
         println!("взрослых со своим рождением: {adults_born}; взрослых с «возможно»: {adults_maybe}; умерших персон: {dead}");
+        let split = index.persons.iter().filter(|p| p.key.contains('~')).count();
+        let absorbed = index.persons.iter().filter(|p| p.merged_into.is_some() && p.birth.is_none()).count();
+        let women = index.persons.iter().filter(|p| p.merged_into.is_none() && p.rows.iter().any(|&i| index.rows[i].role == "bride")
+            && p.rows.iter().any(|&i| index.rows[i].role == "mother")).count();
+        println!("частей после разделения по супругам: {split}; влито (фамилия, жена): {absorbed}; женщин «невеста + мать»: {women}");
+        for p in index.persons.iter().filter(|p| p.merged_into.is_none() && p.rows.iter().any(|&i| index.rows[i].role == "bride")
+            && p.rows.iter().any(|&i| index.rows[i].role == "mother")).take(4) {
+            let line: Vec<String> = p.rows.iter().map(|&i| format!("{}:{}:{}:{:?}", index.rows[i].role, index.rows[i].iof(), index.rows[i].place, index.rows[i].year)).collect();
+            println!("  ж {} | {}", p.key, line.join("; "));
+        }
+        for p in index.persons.iter().filter(|p| p.merged_into.is_none() && !p.possible.is_empty() && p.birth.is_none()
+            && p.rows.iter().all(|&i| index.rows[i].full.is_none())).skip(40).take(6) {
+            let other: Vec<String> = p.possible.iter().map(|&q| index.persons[q].key.clone()).collect();
+            println!("  возм {} | {} | {} упом. | {:?}", p.key, p.place, p.rows.len(), other);
+        }
+        for p in index.persons.iter().filter(|p| p.key.contains('~')) {
+            let line: Vec<String> = p.rows.iter().map(|&i| {
+                let r = &index.rows[i];
+                let wife = index.rows.iter().find(|w| w.entry_id == r.entry_id && matches!((r.role.as_str(), w.role.as_str()), ("father", "mother") | ("mother", "father") | ("groom", "bride") | ("bride", "groom")));
+                format!("{}:{:?}+{}", r.role, r.year, wife.map(|w| w.iof()).unwrap_or_default())
+            }).collect();
+            println!("  раздел {} | {} | {}", p.key, p.place, line.join("; "));
+        }
         for p in index.persons.iter().filter(|p| p.birth.is_some() && p.rows.len() > 2).take(8) {
             let line: Vec<String> = p.rows.iter().map(|&i| format!("{}:{}:{:?}", index.rows[i].role, index.rows[i].iof(), index.rows[i].year)).collect();
             println!("  {} | {} | {}", p.key, p.place, line.join("; "));

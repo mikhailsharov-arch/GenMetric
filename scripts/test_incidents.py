@@ -1625,6 +1625,38 @@ def incident_20261016_oshibki_i_dovodka():
           "iof || '|' || coalesce(place, '') IN (" in read("db/migrate.sql"))
 
 
+def incident_20261017_semya_celikom_2():
+    """
+    17.10.2026, «семья целиком», часть 2 (спека 2026-10-15-semya-celikom,
+    п. 2.1–2.5). Тёзки с разными супругами сливались в одно досье, женщина до
+    и после замужества — два досье, родственники жениха и невесты уходили в
+    выгрузки без НП. Поведение держат тесты крейта
+    (links_spouses_and_married_women, relatives_get_place_of_groom_and_bride),
+    db/test_upgrade.py и стенд s61.
+    """
+    family = read("src-tauri/core/src/search/family.rs")
+    check("тёзок делят только разные имена супругов: разное отчество жены — описка, не вторая жена",
+          "fn same_spouse(" in family and "parts.iter_mut().find(|part| same_spouse(" in family)
+    check("варианты имени супруга («Васса» — «Василиса») и то же отчество — один супруг; безфамильный сливается только с единственным (ревьюер 17.10.2026)",
+          "a.first_c == b.first_c) || (!a.patr_n.is_empty() && a.patr_n == b.patr_n)" in family
+          and "[b] => join(&mut parent, a, b)," in family and 'statement("search_name_links")' in read("src-tauri/core/src/search.rs"))
+    check("НП родственника, поставленный сохранением, на правке не застывает (ревьюер и проверяющий 17.10.2026)",
+          'rel?.place && side?.place && rel.place === side.place ? { ...r, place: "" } : r' in read("src/MarriageForm.tsx"))
+    check("вдовый второй брак или смерть прежнего супруга — один человек (его ответ 5)",
+          '["втор", "трет", "четв", "вдов"]' in family and "if marker || gone {" in family)
+    check("женщина без записи о браке своё рождение не получает — только «возможно» (долг п. 69)",
+          'if female(&persons[g], rows) && origin.role != "bride" {' in family and "!only_maybe.contains(&g)" in family)
+    records = read("src-tauri/core/src/records.rs")
+    check("НП родственникам жениха и невесты — при сохранении, только пустой и только у названного",
+          "let (groom_place, bride_place) = (place_of(\"groom\"), place_of(\"bride\"));" in records)
+    check("НП родственникам в старых записях — при обновлении, только пустой",
+          "SET place_id = (SELECT g.place_id FROM person_mention g" in read("db/migrate.sql"))
+    search = read("src-tauri/core/src/search.rs")
+    check("НП причта — только при чтении, в запись и выгрузки не идёт",
+          'if row.place.is_empty() && row.role.starts_with("clergy") {' in search
+          and "clergy" not in read("db/migrate.sql").split("НП родственникам жениха и невесты", 1)[1].split("Отпечаток поставки", 1)[0])
+
+
 def incident_20261017_semya_celikom_1():
     """
     17.10.2026, «семья целиком», часть 1 (спека 2026-10-15-semya-celikom, ответы
@@ -1638,7 +1670,7 @@ def incident_20261017_semya_celikom_1():
     check("связи считаются только при чтении: family.rs ничего не пишет в базу",
           "execute" not in family and "conn" not in family)
     check("связь берётся только взаимная и однозначная, иначе «возможно»",
-          "if for_group.contains(&n) && for_birth.contains(&n) {" in family and "maybe.push((g, b));" in family)
+          "if for_group.contains(&n) && for_birth.contains(&n) && !only_maybe.contains(&g) {" in family and "maybe.push((g, b));" in family)
     check("допуск по возрасту — ± 5 лет (его ответ 3)", "const AGE_SLACK: i64 = 5;" in family)
     check("смерть младенца не прикрепляется к рождению в семье с другой фамилией (ревьюер 17.10.2026)",
           "if !a.sur_base.is_empty() && !b.sur_base.is_empty() && a.sur_base != b.sur_base {" in family)
@@ -1658,6 +1690,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261017_semya_celikom_2,
     incident_20261017_semya_celikom_1,
     incident_20261016_oshibki_i_dovodka,
     incident_20261015_pamyat_if_i_dovodka,

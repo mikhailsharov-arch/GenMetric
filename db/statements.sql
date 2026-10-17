@@ -1753,9 +1753,13 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order,
        e.section, coalesce(e.event_year, e.rite_year) AS year,
        e.event_day, e.event_month, e.page, e.note AS entry_note, e.scan_file,
        -- Год книги (дело записи): по нему ищут папку её скана.
-       coalesce(e.rite_year, e.event_year) AS book_year
+       coalesce(e.rite_year, e.event_year) AS book_year,
+       -- Девичья фамилия — поиск женщины и по ней; село «Дела» — НП причта
+       -- при чтении (спека 2026-10-15-semya-celikom, п. 2.3 и 2.5).
+       m.maiden_surname, c.village AS case_village
   FROM person_mention m
   JOIN entry e ON e.id = m.entry_id
+  LEFT JOIN mk_case c ON c.id = e.case_id
   LEFT JOIN place p ON p.id = m.place_id
  ORDER BY m.entry_id, m.sort_order, m.id;
 
@@ -1765,3 +1769,10 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order,
 -- (x_patr): основные имена словаря, у каждого — одно мужское и одно женское.
 SELECT name, min(patr_m) AS patr_m, min(patr_f) AS patr_f
   FROM name_dict WHERE coalesce(base_name, '') = '' GROUP BY name;
+
+-- @search_name_links
+-- Варианты одного имени («Васса» — «Васена» — «Василиса», «Андреян» —
+-- «Андриан» — «Адриан»): память поиска сводит имя супруга к общему корню,
+-- чтобы одна жена, записанная разными вариантами, не делила мужа на два
+-- досье (ревьюер 17.10.2026, спека 2026-10-15-semya-celikom, п. 2.1).
+SELECT name, base_name, variant FROM name_dict;

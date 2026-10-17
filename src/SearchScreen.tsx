@@ -25,7 +25,7 @@ import { dateOf, describe, diedMark, family, marriageLine, nameless, personTail,
  */
 
 type PersonHit = { key: string; iof: string; place: string; mentions: number; year_from: number | null; year_to: number | null;
-                  role?: string; born?: number | null; died?: number | null };
+                  role?: string; born?: number | null; died?: number | null; also?: string[] };
 type Found = { persons: PersonHit[]; total: number };
 type Dossier = { iof: string; place: string; ranks: string[]; mentions: number; events: DossierEvent[];
                  born?: number | null; died?: number | null; possible?: PersonHit[] };
@@ -281,7 +281,8 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
   // показывается, только если оно отличается от этого, самого частого.
   const usual = (() => {
     const count = new Map<string, number>();
-    for (const e of dossier?.events ?? []) count.set(e.me.iof, (count.get(e.me.iof) ?? 0) + 1);
+    // Своё рождение не в счёт: у ребёнка в записи одно имя.
+    for (const e of dossier?.events ?? []) if (e.me.role_code !== "child") count.set(e.me.iof, (count.get(e.me.iof) ?? 0) + 1);
     return [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
   })();
   const fam = dossier ? family(dossier.events) : null;
@@ -384,7 +385,9 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                   return (
                     <li key={`${p.key}|${p.place}`} className={on ? "on" : ""} data-hit={p.iof}
                         onMouseDown={(e) => { e.preventDefault(); setPicked({ key: p.key, place: p.place }); }}>
-                      <span className="val">{p.iof}<span className="sub">{[p.place || "без НП", p.born ? `р. ${p.born}` : "", diedMark(p.died)].filter(Boolean).join(" · ")}</span></span>
+                      <span className="val">{p.iof}<span className="sub">{[p.place || "без НП", p.born ? `р. ${p.born}` : "", diedMark(p.died),
+                        // Женщина — и с девичьей фамилией, и с фамилией мужа (спека, п. 2.3).
+                        (p.also ?? []).length ? `также: ${(p.also ?? []).join("; ")}` : ""].filter(Boolean).join(" · ")}</span></span>
                       <span className="tier">{years(p.year_from, p.year_to)} · {p.mentions}</span>
                     </li>
                   );
@@ -411,7 +414,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
               {dossier.born ? `Своё рождение (${dossier.born}) прикреплено: имя, отчество по отцу и пункт сходятся, возраст не противоречит. `
                 : (dossier.possible ?? []).length > 0 ? "Своё рождение не прикреплено: подходящих несколько — см. «Возможно» ниже. " : ""}
               {dossier.died ? `Смерть — ${dossier.died}. ` : ""}
-              Тёзки с тем же ИОФ в одном пункте пока собираются вместе.
+              Тёзки с разными супругами — разные досье; женщина до и после замужества — одно досье, если муж тот же.
             </p>
 
             {hasFamily && fam && (

@@ -405,8 +405,17 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       if (e.event_year !== null) setYear(e.event_year);
       setGroom(spouse(by("groom")));
       setBride(spouse(by("bride")));
-      setGroomRel(relative(by("groom_relative")));
-      setBrideRel(relative(by("bride_relative")));
+      // НП родственника, равный НП жениха (невесты), — тот, что сохранение
+      // поставило само (спека 2026-10-15-semya-celikom, п. 2.4): поля у
+      // родственника нет, и такой НП застыл бы, поправь человек НП жениха.
+      // Пустым он придёт к сохранению снова и возьмёт текущий (ревьюер
+      // 17.10.2026). Свой НП из импорта Excel остаётся.
+      const own = (rel: MentionOut | undefined, side: MentionOut | undefined): Relative => {
+        const r = relative(rel);
+        return rel?.place && side?.place && rel.place === side.place ? { ...r, place: "" } : r;
+      };
+      setGroomRel(own(by("groom_relative"), by("groom")));
+      setBrideRel(own(by("bride_relative"), by("bride")));
       witnessSetters.forEach((set, i) => {
         const m = by(`witness${i + 1}`);
         const p = person(m, EMPTY_PERSON);
