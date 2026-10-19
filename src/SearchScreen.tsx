@@ -4,7 +4,7 @@ import Suggest from "./Suggest";
 import { report } from "./errors";
 import { ScanLink } from "./scan";
 import { focusNextField } from "./focus";
-import { dateOf, describe, diedMark, family, marriageLine, nameless, personTail, roleKind, type DossierEvent, type Mention, type Part } from "./dossier";
+import { dateOf, describe, diedMark, eventKind, family, marriageLine, nameless, personTail, type DossierEvent, type Mention, type Part } from "./dossier";
 
 /**
  * Экран «Поиск»: персона по приходу и её досье (спека
@@ -25,7 +25,7 @@ import { dateOf, describe, diedMark, family, marriageLine, nameless, personTail,
  */
 
 type PersonHit = { key: string; iof: string; place: string; mentions: number; year_from: number | null; year_to: number | null;
-                  role?: string; born?: number | null; died?: number | null; also?: string[] };
+                  role?: string; born?: number | null; died?: number | null; also?: string[]; spouse?: string | null };
 type Found = { persons: PersonHit[]; total: number };
 type Dossier = { iof: string; place: string; ranks: string[]; mentions: number; events: DossierEvent[];
                  born?: number | null; died?: number | null; possible?: PersonHit[] };
@@ -417,6 +417,28 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
               Тёзки с разными супругами — разные досье; женщина до и после замужества — одно досье, если муж тот же.
             </p>
 
+            {/* Над «Семьёй»: потенциальные связи «бросаются в глаза сразу» (Роман 19.10.2026). */}
+            {(dossier.possible ?? []).length > 0 && (
+              <div className="dossierpossible" data-possible>
+                <h3>Возможно, тот же человек</h3>
+                <p className="hint">Совпадают имя, отчество и пункт, но однозначно связать нельзя. Программа их не сливает — проверьте сами.</p>
+                <ul>
+                  {(dossier.possible ?? []).map((p) => (
+                    <li key={`${p.key}|${p.place}`}>
+                      <button type="button" className="linkish who" data-possible-person={p.iof}
+                              onClick={() => go({ key: p.key, role_code: p.role || "child", iof: p.iof, iof_modern: p.iof, place: p.place,
+                                                  rank: null, gender: null, age: null, death_cause: null, marriage_order: null, kinship: null, note: null })}>
+                        {p.iof}
+                      </button>
+                      <span className="sub"> · {[p.place || "без НП", p.spouse ? `${["mother", "bride"].includes((p.role ?? "").replace(/\d+$/, "")) ? "муж" : ["father", "groom"].includes((p.role ?? "").replace(/\d+$/, "")) ? "жена" : "супруг(а)"}: ${p.spouse}` : "", p.born ? `р. ${p.born}` : "",
+                                                  // Годы — если они не тот же год рождения или смерти.
+                                                  [p.born, p.died].includes(p.year_from) && p.year_from === p.year_to ? "" : years(p.year_from, p.year_to), diedMark(p.died),
+                                                  `упоминаний ${p.mentions}`].filter(Boolean).join(" · ")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {hasFamily && fam && (
               <div className="dossierfamily" data-family>
                 <h3>Семья</h3>
@@ -468,7 +490,7 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
               <tbody>
                 {dossier.events.map((e, i) => {
                   const d = describe(e);
-                  const kind = roleKind(e.me.role_code);
+                  const kind = eventKind(e.me);
                   return (
                     <tr key={`${e.entry_id}-${i}`} className={kind} data-event={e.me.role_code}>
                       <td className="when">{when(e)}</td>
@@ -495,27 +517,6 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
             </table>
             </div>
 
-            {(dossier.possible ?? []).length > 0 && (
-              <div className="dossierpossible" data-possible>
-                <h3>Возможно, тот же человек</h3>
-                <p className="hint">Совпадают имя, отчество и пункт, но однозначно связать нельзя — кандидатов несколько. Программа их не сливает.</p>
-                <ul>
-                  {(dossier.possible ?? []).map((p) => (
-                    <li key={`${p.key}|${p.place}`}>
-                      <button type="button" className="linkish who" data-possible-person={p.iof}
-                              onClick={() => go({ key: p.key, role_code: p.role || "child", iof: p.iof, iof_modern: p.iof, place: p.place,
-                                                  rank: null, gender: null, age: null, death_cause: null, marriage_order: null, kinship: null, note: null })}>
-                        {p.iof}
-                      </button>
-                      <span className="sub"> · {[p.place || "без НП", p.born ? `р. ${p.born}` : "",
-                                                  // Годы — если они не тот же год рождения или смерти.
-                                                  [p.born, p.died].includes(p.year_from) && p.year_from === p.year_to ? "" : years(p.year_from, p.year_to), diedMark(p.died),
-                                                  `упоминаний ${p.mentions}`].filter(Boolean).join(" · ")}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </section>
         )}
       </div>

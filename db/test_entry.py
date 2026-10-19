@@ -556,6 +556,14 @@ def main() -> int:
         cur = db.execute(sql["case_current"], {"year": None}).fetchone()
         check("текущее дело — дело последней записи", cur[0] == one("SELECT case_id FROM entry ORDER BY id DESC LIMIT 1")[0])
         check("дело по году", db.execute(sql["case_current"], {"year": 1899}).fetchone()[0] == new_id)
+        # Долг п. 67 (19.10.2026): новый год без записей, заведённый позже
+        # последней записи, — текущее дело и после перезапуска.
+        db.execute("UPDATE mk_case SET created_at = '2999-01-01 00:00:00' WHERE id = ?", (new_id,))
+        check("пустой год, заведённый после последней записи, — текущее дело",
+              db.execute(sql["case_current"], {"year": None}).fetchone()[0] == new_id)
+        db.execute("UPDATE mk_case SET created_at = '2000-01-01 00:00:00' WHERE id = ?", (new_id,))
+        check("пустой год, заведённый до последней записи, — нет: текущее — дело последней записи",
+              db.execute(sql["case_current"], {"year": None}).fetchone()[0] == one("SELECT case_id FROM entry ORDER BY id DESC LIMIT 1")[0])
         # Экран «Дело», открытый до первой записи, шлёт прежний пустой год:
         # год дела им не затирается — иначе следующий год забрал бы это дело
         # вместе с записями прошлого (ревьюер 02.10.2026).

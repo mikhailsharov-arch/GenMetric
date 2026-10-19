@@ -3,26 +3,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { report } from "./errors";
 
 /**
- * Полное ИОФ ребёнка под полем «Ребёнок» и «Умерший»: имя + отчество по
- * имени отца + фамилия отца (спека 2026-10-15-semya-celikom, п. 1.5).
+ * Полное ИОФ ребёнка для строки разбора под полем «Ребёнок» и «Умерший»: имя +
+ * отчество по имени отца + фамилия отца (спека 2026-10-15-semya-celikom, п.
+ * 1.5). Роман 16.10.2026, ответ 2а: только показывать — в базе и выгрузках у
+ * ребёнка имя, как в книге. С 19.10.2026 — не отдельной строкой, а вместо
+ * современного написания в строке разбора («Федор Андреевич Голяков М»):
+ * вторая строка «перегружает интерфейс».
  *
- * Роман 16.10.2026, ответ 2а: только показывать — в базе и выгрузках у
- * ребёнка имя, как в книге. Считает программа (`child_full_iof`) по тому же
- * правилу, что связи в поиске; нечего дописать — строки нет.
+ * Считает программа (`child_full_iof`) по тому же правилу, что связи в
+ * поиске; нечего дописать или пол не известен — null.
  */
-export default function FullIof({ child, gender, father, fatherNameSurname }: {
-  child: string;
-  gender: string | null;
-  father: string;
-  fatherNameSurname?: boolean;
-}) {
+export function useFullIof(child: string, gender: string | null, father: string, fatherNameSurname?: boolean): string | null {
   const [full, setFull] = useState<string | null>(null);
   // Об ошибке — один раз, а не на каждую паузу набора (ревьюер 17.10.2026).
   const told = useRef(false);
   useEffect(() => {
     const kid = child.trim(), dad = father.trim();
-    // Пол не известен (имени нет в словаре, «мальчик/девочка» не нажато) —
-    // не показываем: отчество и фамилия зависят от пола (проверяющий 17.10.2026).
+    // Пол не известен — не показываем: отчество и фамилия зависят от пола.
     if (!kid || !dad || /\s/.test(kid) || !gender) {
       setFull(null);
       return;
@@ -40,10 +37,5 @@ export default function FullIof({ child, gender, father, fatherNameSurname }: {
     }, 250);
     return () => { live = false; window.clearTimeout(timer); };
   }, [child, gender, father, fatherNameSurname]);
-  if (!full) return null;
-  return (
-    <p className="hint fulliof" data-full-iof>
-      Полное ИОФ: <b>{full}</b> <span className="sub">— только для показа, в запись идёт «{child.trim()}»</span>
-    </p>
-  );
+  return full;
 }

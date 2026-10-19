@@ -66,7 +66,41 @@ export default function App() {
     setScreen(section === 1 ? "births" : section === 2 ? "marriages" : "deaths");
     setOpenReq((prev) => ({ section, id, n: (prev?.n ?? 0) + 1 }));
   }
+  /** Новый год, заведённый сменой года на форме и ещё без записей: вернулись
+   *  с него на год с записями (опечатка) — его пустое дело убирается. */
+  const openedEmpty = useRef<number | null>(null);
+  const [showYear, setShowYear] = useState<{ year: number; n: number } | null>(null);
+  /** Год сменили на форме (спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7):
+   *  новый год — его дело, все формы и окно встают на него с чистого листа;
+   *  возврат с только что заведённого года на год с записями — окно и формы
+   *  возвращаются, пустое дело убирается. Ответ — новый ли это год. */
+  async function newYear(year: number): Promise<boolean> {
+    if (mkCase?.year === year) return false;
+    try {
+      const r = await invoke<{ case: Case | null; fresh: boolean; created: boolean }>("case_open_year", { year });
+      if (!r.case) return false;
+      const left = openedEmpty.current;
+      if (!r.fresh && left === null) return false;
+      if (!r.fresh && left === year) return false;
+      setMkCase(r.case);
+      setShowYear((prev) => ({ year, n: (prev?.n ?? 0) + 1 }));
+      setWorkYear((prev) => ({ year, fresh: r.fresh, n: (prev?.n ?? 0) + 1 }));
+      // Убрать при возврате можно только дело, которое завела сама смена года:
+      // заведённое человеком на экране «Дело» (с реквизитами) — нет.
+      openedEmpty.current = r.created ? year : null;
+      if (left !== null && left !== year) {
+        await invoke<boolean>("case_delete", { year: left })
+          .catch((e) => { report(`Пустое дело ${left} года не убрано`, e); return false; });
+      }
+      return r.fresh;
+    } catch (e) {
+      report(`Не удалось открыть дело ${year} года`, e);
+      return false;
+    }
+  }
   function entrySaved(caseId: number) {
+    // Первая запись нового года — его дело больше не «пустое заведённое».
+    openedEmpty.current = null;
     // Дело без года с первой записью получает её год — экран «Дело» должен
     // это узнать, иначе сохранит прежний пустой год (ревьюер 02.10.2026).
     if (mkCase && (caseId !== mkCase.id || mkCase.year === null)) setCaseReload((n) => n + 1);
@@ -275,7 +309,7 @@ export default function App() {
           „Рождения“ становятся пустыми». Это была потеря работы, а не
           неудобство. */}
       <div hidden={screen !== "case"}>
-        <CaseHeader onSaved={setMkCase} reload={caseReload} parishName={startup?.parish_name ?? ""}
+        <CaseHeader onSaved={setMkCase} reload={caseReload} showYear={showYear} parishName={startup?.parish_name ?? ""}
                     onWorkYear={(year, fresh) => setWorkYear((prev) => ({ year, fresh, n: (prev?.n ?? 0) + 1 }))}
                     onOpenEntry={openEntry}
                     viewBlock={<>
@@ -316,13 +350,13 @@ export default function App() {
       {mkCase && mkCase.id > 0 && (
         <ClergyProvider>
           <div hidden={screen !== "births"}>
-            <BirthForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} />
+            <BirthForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} onNewYear={newYear} />
           </div>
           <div hidden={screen !== "marriages"}>
-            <MarriageForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} />
+            <MarriageForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} onNewYear={newYear} />
           </div>
           <div hidden={screen !== "deaths"}>
-            <DeathForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} />
+            <DeathForm mkCase={mkCase} onSaved={entrySaved} workYear={workYear} openReq={openReq} onNewYear={newYear} />
           </div>
         </ClergyProvider>
       )}

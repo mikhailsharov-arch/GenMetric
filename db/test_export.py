@@ -490,6 +490,17 @@ def main() -> int:
                   db.execute(sql["export_parish"]).fetchone()[0] == "Заборье")
         db.execute("UPDATE mk_case SET village = ?", (was,))
         db.executescript(sql["export_prepare"])
+        # Приставка типа, набранная в название пункта («с.Керша», «д. Горелое»):
+        # в выгрузке и на листе location — чистое название (Роман 19.10.2026).
+        kersha = db.execute(sql["place_insert"], {"name": "с.Керша", "name_norm": norm("с.Керша")}).lastrowid
+        db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent3'", (kersha,))
+        db.executescript(sql["export_prepare"])
+        r = rows(db, sql, "familio_birth")[0]
+        names = [x[0] for x in rows(db, sql, "familio_location")]
+        check("приставка типа в названии пункта отсекается: «с.Керша» → «Керша» в записи и на листе location",
+              v("AO") == "Керша" and "Керша" in names and not any(str(n).startswith("с.") for n in names), str([v("AO"), names]))
+        db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent3'", (twin,))
+        db.executescript(sql["export_prepare"])
         excel = [str(c) for x in rows(db, sql, "excel_births") for c in x]
         check("выгрузка в Excel: комментария пункта нет ни в одной ячейке",
               any(c == "Заборье" for c in excel) and not any("Столпино" in c for c in excel),

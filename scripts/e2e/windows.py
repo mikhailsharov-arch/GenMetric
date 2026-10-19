@@ -587,7 +587,8 @@ def run(driver, wait, archive):
         "  const none = await call('child_full_iof', {child: 'Мария', gender: 'Ж', father: '', fatherNameSurname: false});"
         "  const hints = await call('suggest_person', {prefix: 'Пётр', limit: 6, gender: null, preferInfant: false,"
         "                                             keepWifeRank: false, living: true});"
-        "  return {kids: kids.persons, full, none, hints};"
+        "  const oldYear = await call('case_open_year', {year: 1897});"
+        "  return {kids: kids.persons, full, none, hints, oldYear};"
         "})().then(done, (e) => done({error: String(e)}));")
     check("семья целиком: команды отвечают без ошибки", "error" not in fam, str(fam)[:400])
     if "error" not in fam:
@@ -596,6 +597,8 @@ def run(driver, wait, archive):
               and all("also" in p for p in fam["kids"]), str(fam["kids"])[:300])
         check("полное ИОФ под полем: «Мария Николаевна»; без отца — пусто",
               fam["full"] == "Мария Николаевна" and fam["none"] is None, f"{fam['full']} / {fam['none']}")
+        # 19.10.2026: год с записями — не «новый год» (команда через настоящий Rust).
+        check("год с записями (1897) командой case_open_year не заводится заново", fam.get("oldYear") is None, str(fam.get("oldYear")))
         check("подсказка персон несёт год смерти (живые — пусто)",
               isinstance(fam["hints"], list) and len(fam["hints"]) > 0 and all("died" in h for h in fam["hints"]),
               str(fam["hints"])[:300])

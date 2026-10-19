@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ScanLink, useEntryScan } from "./scan";
+import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf, appendNote } from "./PersonBlock";
@@ -14,6 +14,7 @@ import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
 import { setDirty } from "./dirty";
 import { maskFragment, rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
+import { useFillDown } from "./fill";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
 /**
@@ -97,7 +98,13 @@ function kinGender(k: string): "М" | "Ж" | undefined {
   return undefined;
 }
 
-export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: FormProps) {
+export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNewYear }: FormProps) {
+  // Год на форме сменили на год без записей — все формы встают на него с
+  // чистого листа, а если у года нет папки сканов — окно выбора папки
+  // (Роман 19.10.2026, спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7).
+  const scanCtx = useScan();
+  const yearLeft = useRef<number | null>(null);
+  const savedList = useRef<HTMLTableElement>(null);
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
   const [count, setCount] = useState<number | null>(null);
@@ -123,9 +130,12 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
   /** Год, сохранённый на «Деле», пока запись была открыта на правку: после
    *  правки форма встаёт на него, а не на год до правки. */
   const yearWhileEditing = useRef<number | null>(null);
+  /** Год, на который встали во время правки, — новый: после правки форма с чистого листа. */
+  const freshWhileEditing = useRef(false);
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
                                month: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
+  useFillDown(savedList, [saved.length]);
   const [busy, setBusy] = useState(false);
   // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
   const root = useRef<HTMLDivElement>(null);
@@ -344,19 +354,22 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
 
   // Экран «Дело» сохранён с годом — форма встаёт на него; запись, открытую
   // на правку, это не трогает. «Открыть запись» из списка на сверку — сюда же.
+  /** Новый год без записей — форма с чистого листа (Роман 16.10.2026): и
+   *  сразу, и после правки, прерванной сменой года (проверяющий 19.10.2026). */
+  function startFresh(_y: number) {
+    setPage(null);
+    setCount(1);
+    setDay(null);
+    setMonth(1);
+  }
   useEffect(() => {
     if (!workYear) return;
     // Запись открыта на правку — год у неё свой; новый год дела форма
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
-    else yearWhileEditing.current = workYear.year;
+    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh; }
     // Год без записей — форма с чистого листа (Роман 16.10.2026).
-    if (workYear.fresh && editingId === null) {
-      setPage(null);
-      setCount(1);
-      setDay(null);
-      setMonth(1);
-    }
+    if (workYear.fresh && editingId === null) startFresh(workYear.year);
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 2) void openEntry(openReq.id);
@@ -447,6 +460,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
     if (b) {
       setPage(b.page); setCount(b.count); setYear(yearWhileEditing.current ?? b.year); setMonth(b.month);
     }
+    if (b && freshWhileEditing.current && yearWhileEditing.current !== null) startFresh(yearWhileEditing.current);
+    freshWhileEditing.current = false;
     yearWhileEditing.current = null;
     clergyState.close();
   }
@@ -533,7 +548,12 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
       )}
       <section>
         <div className="row tight">
-          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
+          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930}
+                       onLeave={() => {
+                         if (editingId !== null || year === null || year < 1700 || !onNewYear || yearLeft.current === year) return;
+                         yearLeft.current = year;
+                         void onNewYear(year).then((fresh) => { if (fresh) scanCtx.askDir(year); });
+                       }} />
           <PageField label="Стр." value={page} onChange={setPage} />
           {/* Вне обхода клавишами: «нумерация идет строго по порядку» (Роман
               06.10.2026). Мышью и кнопками «+/−» поправить можно. */}
@@ -665,7 +685,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq }: For
         <section>
           <h2>Набрано браков: {saved.length}{year !== null && <span className="ofyear"> — за {year} год</span>}</h2>
           <p className="hint">Нажмите «Открыть», чтобы поправить запись. Форма при этом должна быть пустой.</p>
-          <table className="facts saved">
+          <table className="facts saved" ref={savedList}>
             <tbody>
               {saved.map((e) => (
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>

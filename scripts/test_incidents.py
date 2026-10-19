@@ -1128,7 +1128,8 @@ def incident_20261008_chistaya_postavka():
               for b in ("place_save", "place_update")))
     check("в выгрузку идёт чистое название пункта",
           "substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3)" in blocks["export_prepare"]
-          and "substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3)" in blocks["familio_location"]
+          # С 19.10.2026 чистое название (и без приставки типа) считает x_place.clean.
+          and "(SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)" in blocks["familio_location"]
           and "p.name AS place," not in blocks["export_prepare"])
     main_rs = read("src-tauri/src/main.rs")
     check("название пункта с комментарием собирает одна функция — и при заведении, и при правке",
@@ -1492,7 +1493,7 @@ def incident_20261014_stranica_i_dovodka():
     check("страница за сканом: только листание на один файл с разворота набора, не переход по номеру",
           "if (to !== at && !wasAway) turnListeners.current.forEach((fn) => fn(by));" in scan
           and "turnListeners" not in scan.split("goTo: (i) => {", 1)[1].split("},", 1)[0]
-          and "if (busy || !file || !fn) return;" in scan
+          and "if (busy || !file || !fn || frozen.current) return;" in scan
           and "root.current.offsetParent === null" in scan)
     forms = [read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")]
     check("три формы сдвигают страницу правилом turnPage",
@@ -1608,7 +1609,7 @@ def incident_20261016_oshibki_i_dovodka():
           "autofocus={!existing && !twin && similar.length === 0}" in read("src/PlaceCard.tsx")
           and 'querySelector<HTMLElement>("[data-autofocus]")' in read("src/Modal.tsx"))
     check("новый год — форма с чистого листа во всех трёх формах",
-          all("if (workYear.fresh && editingId === null) {" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
+          all("if (workYear.fresh && editingId === null) startFresh(workYear.year);" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
           and "onWorkYear(next.year, fresh);" in case and "if (!last) return 1;" in read("src/count.ts"))
     check("у нового пункта есть поле названия (кроме тёзки)", "const titleEditable = !!existing || !twin;" in read("src/PlaceCard.tsx"))
     sql = read("db/statements.sql").split("-- @usage_bump\n", 1)[1].split("\n-- @", 1)[0]
@@ -1625,6 +1626,51 @@ def incident_20261016_oshibki_i_dovodka():
           "iof || '|' || coalesce(place, '') IN (" in read("db/migrate.sql"))
 
 
+def incident_20261019_oshibki_svyazej():
+    """
+    19.10.2026, ответ Романа на сборку 17.10 (intent/2026-10-19-…, спека
+    2026-10-19-oshibki-svyazej-i-dovodka). Двое мужчин слились в одно досье
+    из-за «Третьим браком» при одновременных жёнах (Иван Семенович, Костино);
+    Соломония/Соломонида не слились; умершая 2,5 лет и восприемница-тёзка
+    оказались одним человеком (база второго тестировщика, Горелое).
+    Поведение держат тесты крейта (links_spouses_and_married_women,
+    strips_place_type), db/test_entry.py, db/test_export.py и стенды s61, s62.
+    """
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
+    family = read("src-tauri/core/src/search/family.rs")
+    check("диапазоны возраста по ролям — как у индексатора А.К. (родители 17–55, восприемники 6–60, поручители 17–60)",
+          '"father" | "mother" => ages(17, 55),' in family and '"godparent" => ages(6, 60),' in family
+          and '"witness" => ages(17, 60),' in family)
+    check("несовместимые диапазоны делят персону и не дают слить", "split_by_age(&mut persons, &mut owner, rows, first_adult, &mut maybe);" in family
+          and "let Ok(both) = meet(ranges[a], ranges[b]) else { return false };" in family)
+    check("женщина у того же мужа — одна при похожих именах с тем же отчеством (Соломония/Соломонида), но не две жены вдовца (Наталья и Анна Ивановны)",
+          "|| (!pa.is_empty() && pa == pb && alike(na, nb));" in family and "!died_before(rows, &persons[*a].rows, &persons[*b].rows)" in family)
+    check("смерть своего ребёнка — к семье, где он родился, и в «своих событиях»",
+          "let anchor = |persons: &Vec<Person>, owner: &[usize], i: usize|" in family
+          and "fn row_kind(row: &Row) -> Kind {" in read("src-tauri/core/src/search.rs"))
+    check("ключ досье не зависит от номера упоминания (долг п. 74)", 'format!("{}.{}", r.entry_id, r.sort_order)' in family
+          and "r.id" not in family)
+    scan = read("src/scan.tsx")
+    check("страница не идёт за сканом после перехода на вкладку, пока не начат набор (Alt+PageDown набором не считается)",
+          'if (visible && !shown) freeze(true);' in scan and "if (e.altKey || e.ctrlKey || e.metaKey) return;" in scan)
+    check("блок скана изначально включён, выключенный руками — нет", 'if (v !== "0") setOnState(true);' in scan)
+    check("новый год на любой форме — дело года, все формы с чистого листа, окно папки; дальний пустой год (опечатка) — нет",
+          'invoke<{ case: Case | null; fresh: boolean; created: boolean }>("case_open_year", { year })' in read("src/App.tsx")
+          and "fresh && !has_case && last.is_some_and(|l| year != l + 1)" in read("src-tauri/src/main.rs") and "scanCtx.askDir(year)" in read("src/MarriageForm.tsx")
+          and "fn case_open_year(" in read("src-tauri/src/main.rs"))
+    check("при возврате убирается только дело, заведённое сменой года, а не заведённое человеком на «Деле» (ревьюер 19.10.2026)",
+          "openedEmpty.current = r.created ? year : null;" in read("src/App.tsx")
+          and "let created = fresh && genmetric_core::records::case_for_year(conn, year)?.1;" in read("src-tauri/src/main.rs"))
+    check("после перезапуска — пустой новый год, заведённый позже последней записи (долг п. 67)",
+          "AND c.created_at > coalesce((SELECT max(e.created_at) FROM entry e), '')" in blocks["case_current"])
+    check("приставка типа пункта отсекается в выгрузке и в поиске Familio",
+          "pub fn strip_place_type(" in read("src-tauri/core/src/text.rs")
+          and "crate::text::strip_place_type(name)" in read("src-tauri/core/src/lib.rs")
+          and "WHEN substr(n, 1, 2) IN ('д.', 'с.'" in blocks["export_prepare"])
+    check("полное ИОФ — в строке разбора, без второй строки", "modernOverride={fullChild}" in read("src/BirthForm.tsx")
+          and "data-full-iof" not in read("src/FullIof.tsx"))
+
+
 def incident_20261017_semya_celikom_2():
     """
     17.10.2026, «семья целиком», часть 2 (спека 2026-10-15-semya-celikom,
@@ -1639,11 +1685,12 @@ def incident_20261017_semya_celikom_2():
           "fn same_spouse(" in family and "parts.iter_mut().find(|part| same_spouse(" in family)
     check("варианты имени супруга («Васса» — «Василиса») и то же отчество — один супруг; безфамильный сливается только с единственным (ревьюер 17.10.2026)",
           "a.first_c == b.first_c) || (!a.patr_n.is_empty() && a.patr_n == b.patr_n)" in family
-          and "[b] => join(&mut parent, a, b)," in family and 'statement("search_name_links")' in read("src-tauri/core/src/search.rs"))
+          and "[b] => { join(&mut parent, &mut ranges, a, b); }" in family and 'statement("search_name_links")' in read("src-tauri/core/src/search.rs"))
     check("НП родственника, поставленный сохранением, на правке не застывает (ревьюер и проверяющий 17.10.2026)",
           'rel?.place && side?.place && rel.place === side.place ? { ...r, place: "" } : r' in read("src/MarriageForm.tsx"))
     check("вдовый второй брак или смерть прежнего супруга — один человек (его ответ 5)",
-          '["втор", "трет", "четв", "вдов"]' in family and "if marker || gone {" in family)
+          # С 19.10.2026 — только если прежняя семья кончилась до новой (Иван Семенович, Костино).
+          '["втор", "трет", "четв", "вдов"]' in family and "if (marker || gone) && seg_to <= cur.from {" in family)
     check("женщина без записи о браке своё рождение не получает — только «возможно» (долг п. 69)",
           'if female(&persons[g], rows) && origin.role != "bride" {' in family and "!only_maybe.contains(&g)" in family)
     records = read("src-tauri/core/src/records.rs")
@@ -1690,6 +1737,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261019_oshibki_svyazej,
     incident_20261017_semya_celikom_2,
     incident_20261017_semya_celikom_1,
     incident_20261016_oshibki_i_dovodka,

@@ -75,6 +75,15 @@ export function roleKind(role: string): "own" | "part" | "clergy" | "child" {
   return role.startsWith("clergy") ? "clergy" : "part";
 }
 
+/** Группа строки досье: как у роли, но смерть своего ребёнка (родственник
+ *  умершего «отец», «мать») — «свои события» (Роман 19.10.2026; то же
+ *  `row_kind` в search.rs). */
+export function eventKind(m: Mention): "own" | "part" | "clergy" | "child" {
+  const kin = (m.kinship ?? "").trim().toLowerCase();
+  if (m.role_code.startsWith("deceased_") && (kin.startsWith("отец") || kin.startsWith("мать"))) return "own";
+  return roleKind(m.role_code);
+}
+
 const of = (e: DossierEvent, ...roles: string[]) => e.others.filter((m) => roles.some((r) => m.role_code === r || (r.endsWith("*") && m.role_code.startsWith(r.slice(0, -1)))));
 const one = (e: DossierEvent, ...roles: string[]) => of(e, ...roles)[0] as Mention | undefined;
 const female = (m: Mention | undefined) => m?.gender === "Ж";

@@ -3,7 +3,7 @@
  * Проверка слов досье — src/dossier.ts (Роман 09.10.2026: «хронологическое
  * „досье“ человека»). Запуск: node --experimental-strip-types scripts/test_dossier.mjs
  */
-import { ageWords, dateOf, describe, diedMark, family, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
+import { ageWords, dateOf, describe, diedMark, eventKind, family, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -114,6 +114,11 @@ console.log("\nСвоё рождение (спека 2026-10-15-semya-celikom)\n
   check("«Семья»: родители из собственного рождения", !!f.parents && f.parents.father?.iof === "Иван Капитонов" && f.parents.mother?.iof === "Анна Петрова");
   check("без своего рождения родителей нет", family([ev(1, father, [girl, mother])]).parents === null);
   check("«†» — у умершего, у живого пусто", diedMark(1890) === "† 1890" && diedMark(null) === "" && diedMark(undefined) === "");
+  // Смерть своего ребёнка — «свои события» (Роман 19.10.2026).
+  check("смерть ребёнка у отца — «свои события», у брата — «участие»",
+        eventKind(m("deceased_relative", "Иван Капитонов", { kinship: "отец" })) === "own"
+        && eventKind(m("deceased_relative", "Пётр Иванов", { kinship: "брат" })) === "part"
+        && eventKind(m("father", "Иван Капитонов")) === "own");
 }
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${bad}`);

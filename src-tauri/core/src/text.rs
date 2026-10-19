@@ -42,6 +42,27 @@ pub fn place_label(name: &str, comment: &str) -> String {
     if comment.is_empty() { name.to_string() } else { format!("{name} ({comment})") }
 }
 
+/// Название без приставки типа, набранной в само название: «д. Горелое»,
+/// «с.Керша», «с-цо Керша» → «Горелое», «Керша». Роман 19.10.2026: в выгрузке
+/// (лист location) и в поиске на Familio такие приставки мешают — Familio не
+/// находит «с.Солдатчино». В базе название не меняется. Копия для выгрузки —
+/// выражение `clean` в `x_place` (`statements.sql`, `export_prepare`):
+/// правишь одно — правь другое.
+pub fn strip_place_type(name: &str) -> &str {
+    let n = name.trim();
+    const PREFIXES: [&str; 20] = ["с-цо ", "С-цо ", "дер.", "пос.", "сел.", "Дер.", "Пос.", "Сел.", "с-цо", "С-цо",
+                                  "сл.", "Сл.", "д.", "с.", "г.", "п.", "Д.", "С.", "Г.", "П."];
+    for p in PREFIXES.iter() {
+        if let Some(rest) = n.strip_prefix(p) {
+            let rest = rest.trim_start();
+            if !rest.is_empty() {
+                return rest;
+            }
+        }
+    }
+    n
+}
+
 /// Чистое название: метка без комментария. Комментарий берётся из колонки, а
 /// не угадывается по скобкам: «Никольское (Старое)» может быть и названием.
 pub fn place_clean<'a>(label: &'a str, comment: &str) -> &'a str {
@@ -55,6 +76,15 @@ pub fn place_clean<'a>(label: &'a str, comment: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_place_type() {
+        for (raw, clean) in [("д. Горелое", "Горелое"), ("с.Керша", "Керша"), ("с-цо Керша", "Керша"), ("дер. Малово", "Малово"),
+                             ("г.Моршанск", "Моршанск"), ("Сл. Красная", "Красная"), ("Горелое", "Горелое"),
+                             ("Сосновка", "Сосновка"), ("д.", "д."), (" с. Солдатчино ", "Солдатчино")] {
+            assert_eq!(strip_place_type(raw), clean, "{raw}");
+        }
+    }
 
     #[test]
     fn place_comment() {

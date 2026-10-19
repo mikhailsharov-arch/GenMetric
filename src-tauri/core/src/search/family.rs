@@ -44,8 +44,6 @@ pub(super) struct Person {
     pub merged_into: Option<usize>,
 }
 
-/// Отцом, матерью, восприемником, поручителем человек не моложе этого.
-const ADULT_AGE: i64 = 12;
 /// Допуск по возрасту — его ответ 3 от 16.10.2026: «± 5 лет подходит».
 const AGE_SLACK: i64 = 5;
 /// Смерть младенца — не позже чем через столько лет после рождения (замер на
@@ -161,20 +159,129 @@ fn same_parent(a: &Row, b: &Row) -> bool {
     }
 }
 
-/// Возраст взрослого не противоречит рождению в году `born` (п. 1.3).
-fn fits_age(rows: &[Row], mine: &[usize], born: i64) -> bool {
-    mine.iter().all(|&i| {
-        let r = &rows[i];
-        let Some(year) = r.year else { return true };
-        let dead = r.role == "deceased";
-        if year < born + if dead { 0 } else { ADULT_AGE } {
-            return false;
+/// Диапазон возможных годов рождения по упоминанию (спека
+/// 2026-10-19-oshibki-svyazej-i-dovodka, Ж1.2). Роман 19.10.2026: «Если
+/// диапазоны возможных годов рождения из разных записей пересекаются — это
+/// может быть один человек. Если не пересекаются — это однозначно разные
+/// люди». Возрасты ролей — индексатора А.К.: родители 17–55, восприемники
+/// 6–60, поручители 17–60. None — упоминание ничего не говорит (год не
+/// записан, причт, умерший без возраста).
+pub(super) fn born_range(r: &Row) -> Option<(i64, i64)> {
+    let y = r.year?;
+    let ages = |lo: i64, hi: i64| Some((y - hi, y - lo));
+    match r.role.trim_end_matches(|c: char| c.is_ascii_digit()) {
+        "child" => Some((y, y)),
+        "father" | "mother" => ages(17, 55),
+        "godparent" => ages(6, 60),
+        "witness" => ages(17, 60),
+        "groom" | "bride" => match r.age_years {
+            Some(a) if a > 0 => ages(a - AGE_SLACK, a + AGE_SLACK),
+            _ => ages(15, 70),
+        },
+        "deceased" => match r.age_years {
+            Some(a) if a > 0 && a <= 10 => ages(a - 1, a + 1),
+            Some(a) if a > 10 => ages(a - AGE_SLACK, a + AGE_SLACK),
+            _ if r.age_small => ages(0, 1),
+            _ => None,
+        },
+        role if role.starts_with("clergy") => None,
+        _ => ages(6, 100),
+    }
+}
+
+/// Пересечение двух диапазонов; None у одного — берётся другой.
+fn meet(a: Option<(i64, i64)>, b: Option<(i64, i64)>) -> Result<Option<(i64, i64)>, ()> {
+    match (a, b) {
+        (Some((a0, a1)), Some((b0, b1))) => {
+            let (lo, hi) = (a0.max(b0), a1.min(b1));
+            if lo <= hi { Ok(Some((lo, hi))) } else { Err(()) }
         }
-        match r.age_years {
-            Some(age) if matches!(r.role.as_str(), "groom" | "bride" | "deceased") => (year - age - born).abs() <= AGE_SLACK,
-            _ => true,
+        (x, None) | (None, x) => Ok(x),
+    }
+}
+
+/// Общий диапазон упоминаний; Err — не сходятся.
+fn range_of(rows: &[Row], mine: &[usize]) -> Result<Option<(i64, i64)>, ()> {
+    mine.iter().try_fold(None, |acc, &i| meet(acc, born_range(&rows[i])))
+}
+
+/// Ключ досье, который не меняется при пересохранении записи: номер
+/// упоминания меняется (запись переписывает людей заново), а номер записи и
+/// место человека в ней — нет (долг п. 74).
+fn stable(r: &Row) -> String {
+    format!("{}.{}", r.entry_id, r.sort_order)
+}
+
+/// Персона с диапазонами, которые не сходятся, — несколько людей (Ж1.2):
+/// умершая 2,5 лет и восприемница-тёзка того же пункта. Части — по порядку
+/// лет; «возможно» между ними не ставится: это однозначно разные люди.
+fn split_by_age(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], first_adult: usize, maybe: &mut Vec<(usize, usize)>) {
+    for p in first_adult..persons.len() {
+        if persons[p].rows.is_empty() || kind_of(&rows[persons[p].rows[0]].role) == Kind::Clergy || range_of(rows, &persons[p].rows).is_ok() {
+            continue;
         }
-    })
+        let mut mine = persons[p].rows.clone();
+        mine.sort_by_key(|&i| (rows[i].year.unwrap_or(i64::MAX), i));
+        // Главная часть — год, который покрывает больше всего диапазонов: одна
+        // ошибка в возрасте не должна отрезать у человека половину жизни
+        // (ревьюер 19.10.2026: жених «50» вместо «20»).
+        let ranges: Vec<(i64, i64)> = mine.iter().filter_map(|&i| born_range(&rows[i])).collect();
+        // Конец диапазона (−1) раньше начала (+1) в том же году.
+        let mut ends: Vec<(i64, i32)> = ranges.iter().flat_map(|&(lo, hi)| [(lo, 1), (hi + 1, -1)]).collect();
+        ends.sort();
+        let (mut depth, mut best, mut point) = (0, 0, i64::MIN);
+        for (at, step) in ends {
+            depth += step;
+            if depth > best {
+                best = depth;
+                point = at;
+            }
+        }
+        let mut main: (Option<(i64, i64)>, Vec<usize>) = (None, Vec::new());
+        let mut rest: Vec<usize> = Vec::new();
+        for &i in &mine {
+            match born_range(&rows[i]) {
+                Some((lo, hi)) if lo > point || hi < point => rest.push(i),
+                r => {
+                    main.0 = meet(main.0, r).unwrap_or(main.0);
+                    main.1.push(i);
+                }
+            }
+        }
+        let mut parts: Vec<(Option<(i64, i64)>, Vec<usize>)> = vec![main];
+        for &i in &rest {
+            let r = born_range(&rows[i]);
+            match parts.iter_mut().find(|(range, _)| meet(*range, r).is_ok()) {
+                Some((range, list)) => {
+                    *range = meet(*range, r).unwrap_or(*range);
+                    list.push(i);
+                }
+                None => parts.push((r, vec![i])),
+            }
+        }
+        let key = persons[p].key.clone();
+        let place = persons[p].place.clone();
+        persons[p].rows = parts[0].1.clone();
+        persons[p].rows.sort_by_key(|&i| (rows[i].entry_id, i));
+        for (_, mut list) in parts.into_iter().skip(1) {
+            list.sort_by_key(|&i| (rows[i].entry_id, i));
+            let tag = stable(&rows[list[0]]);
+            persons.push(Person { key: format!("{key}~{tag}"), place: place.clone(), rows: list.clone(), birth: None, died: None,
+                                  possible: BTreeSet::new(), merged_into: None });
+            let n = persons.len() - 1;
+            for &i in &list {
+                owner[i] = n;
+            }
+            // Отрезана одна запись со взрослым возрастом — может быть и ошибкой
+            // в возрасте («50» вместо «20»): «возможно». Ребёнок и умерший
+            // младенец (до 10 лет) — однозначно другой человек (Роман 19.10.2026).
+            let r = &rows[list[0]];
+            let infant = r.role == "child" || (r.role == "deceased" && (r.age_small || r.age_years.is_some_and(|a| a <= 10)));
+            if list.len() == 1 && !infant {
+                maybe.push((p, n));
+            }
+        }
+    }
 }
 
 /// Фамилии сходятся: 2 — одна и та же, 1 — её нет хотя бы у одной стороны,
@@ -258,6 +365,33 @@ fn same_spouse(a: &Row, b: &Row) -> bool {
     name && (woman(a) || woman(b) || fits(&a.sur_base, &b.sur_base))
 }
 
+/// Похожие имена — варианты написания одного: общее начало из четырёх и
+/// более букв или не больше двух правок («соломония» — «соломонида»,
+/// «евфросиния» — «ефросиния»).
+fn alike(a: &str, b: &str) -> bool {
+    let (x, y): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if x.iter().zip(&y).take_while(|(p, q)| p == q).count() >= 4 {
+        return true;
+    }
+    let mut prev: Vec<usize> = (0..=y.len()).collect();
+    for (i, cx) in x.iter().enumerate() {
+        let mut cur = vec![i + 1; y.len() + 1];
+        for (j, cy) in y.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(cx != cy)).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    // Короткие частые имена (Мария/Дарья, Анна/Инна) — не больше одной правки.
+    prev[y.len()] <= if x.len().min(y.len()) < 6 { 1 } else { 2 }
+}
+
+/// Своя смерть одной раньше событий другой — это разные люди.
+fn died_before(rows: &[Row], a: &[usize], b: &[usize]) -> bool {
+    let death = |m: &[usize]| m.iter().filter(|&&i| rows[i].role == "deceased").filter_map(|&i| rows[i].year).min();
+    let last = |m: &[usize]| m.iter().filter(|&&i| rows[i].role != "deceased").filter_map(|&i| rows[i].year).max();
+    death(a).zip(last(b)).is_some_and(|(d, l)| d < l) || death(b).zip(last(a)).is_some_and(|(d, l)| d < l)
+}
+
 /// Второй брак — вдовый: «вторым браком», «третьим…», «вдовец», «вдова».
 fn remarried(r: &Row) -> bool {
     let text = normalize(&format!("{} {}", r.marriage_order.as_deref().unwrap_or(""), r.rank.as_deref().unwrap_or("")));
@@ -269,11 +403,28 @@ fn remarried(r: &Row) -> bool {
 fn split_by_spouse(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &[Option<usize>],
                    first_adult: usize, maybe: &mut Vec<(usize, usize)>) {
     let mut deaths: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_entry: HashMap<i64, Vec<usize>> = HashMap::new();
     for (i, r) in rows.iter().enumerate() {
         if r.role == "deceased" && named(r) {
             deaths.entry(r.first_n.as_str()).or_default().push(i);
         }
+        by_entry.entry(r.entry_id).or_default().push(i);
     }
+    // Смерть своего ребёнка — к той семье, где он родился: родственник
+    // умершего «отец» («мать») → умерший → его рождение (п. 1.2) → отец
+    // (мать) в записи о рождении. Иначе смерть осталась бы в досье «без
+    // супруга», отдельно от семьи (Иван Семенович, Костино, 19.10.2026).
+    let anchor = |persons: &Vec<Person>, owner: &[usize], i: usize| -> Option<usize> {
+        let r = &rows[i];
+        let kin = normalize(r.kinship.as_deref().unwrap_or(""));
+        let want = if kin.starts_with("отец") { "father" } else if kin.starts_with("мать") { "mother" } else { return None };
+        if !r.role.starts_with("deceased_") {
+            return None;
+        }
+        let dead = *by_entry.get(&r.entry_id)?.iter().find(|&&d| rows[d].role == "deceased")?;
+        let born = persons.get(owner[dead])?.birth?;
+        by_entry.get(&rows[born].entry_id)?.iter().copied().find(|&f| rows[f].role == want)
+    };
     for p in first_adult..persons.len() {
         let first = &rows[persons[p].rows[0]];
         if kind_of(&first.role) == Kind::Clergy {
@@ -287,17 +438,20 @@ fn split_by_spouse(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row],
         mine.sort_by_key(|&i| (rows[i].year.unwrap_or(i64::MAX), i));
         for &i in &mine {
             let Some(s) = spouse[i] else { lone.push(i); continue };
-            let y = rows[i].year.unwrap_or(i64::MAX);
+            // Упоминание без года склейке не мешает (ревьюер 19.10.2026).
+            let y = rows[i].year;
             match parts.iter_mut().find(|part| same_spouse(&rows[part.rep], &rows[s])) {
                 Some(part) => {
                     part.rows.push(i);
-                    part.from = part.from.min(y);
-                    part.to = part.to.max(y);
+                    if let Some(y) = y {
+                        part.from = part.from.min(y);
+                        part.to = part.to.max(y);
+                    }
                     if rows[part.rep].patr_n.is_empty() && !rows[s].patr_n.is_empty() {
                         part.rep = s;
                     }
                 }
-                None => parts.push(Part { rep: s, rows: vec![i], from: y, to: y }),
+                None => parts.push(Part { rep: s, rows: vec![i], from: y.unwrap_or(i64::MAX), to: y.unwrap_or(i64::MIN) }),
             }
         }
         if parts.len() < 2 {
@@ -305,6 +459,7 @@ fn split_by_spouse(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row],
         }
         // Склеить подряд идущие части, если брак вдовый.
         let mut segments: Vec<Vec<usize>> = vec![parts[0].rows.clone()];
+        let mut seg_to = parts[0].to;
         for k in 1..parts.len() {
             let (prev, cur) = (&parts[k - 1], &parts[k]);
             let marker = cur.rows.iter().any(|&i| matches!(rows[i].role.as_str(), "groom" | "bride") && remarried(&rows[i]));
@@ -314,15 +469,31 @@ fn split_by_spouse(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row],
                     && (rows[prev.rep].place_norm.is_empty() || dr.place_norm == rows[prev.rep].place_norm)
                     && dr.year.is_some_and(|y| y >= prev.to.min(cur.from) && y <= cur.from)
             });
-            if marker || gone {
+            // Вдовий брак склеивает, только если прежняя семья кончилась до
+            // новой: у Ивана Семеновича из Костино брак 1888 года «Третьим
+            // браком», а дети от прежней жены рождались и после — это двое
+            // мужчин (Роман 19.10.2026: «Православный крестьянин не мог быть
+            // женат одновременно на двух женщинах»).
+            if (marker || gone) && seg_to <= cur.from {
                 segments.last_mut().unwrap().extend(cur.rows.iter().copied());
+                seg_to = seg_to.max(cur.to);
             } else {
                 segments.push(cur.rows.clone());
+                seg_to = cur.to;
             }
         }
         if segments.len() < 2 {
             continue;
         }
+        // Смерти своих детей — к семье, где ребёнок родился.
+        let mut segments = segments;
+        lone.retain(|&i| {
+            let Some(parent) = anchor(persons, owner, i) else { return true };
+            match segments.iter_mut().find(|seg| seg.contains(&parent)) {
+                Some(seg) => { seg.push(i); false }
+                None => true,
+            }
+        });
         // Упоминания без супруга остаются у прежней персоны; части — новыми.
         // Без них прежней персоной становится первая часть.
         let key = persons[p].key.clone();
@@ -334,8 +505,8 @@ fn split_by_spouse(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row],
         for seg in &segments[start..] {
             let mut seg = seg.clone();
             seg.sort_by_key(|&i| (rows[i].entry_id, i));
-            let id = rows[seg[0]].id;
-            persons.push(Person { key: format!("{key}~{id}"), place: place.clone(), rows: seg.clone(), birth: None, died: None,
+            let tag = stable(&rows[seg[0]]);
+            persons.push(Person { key: format!("{key}~{tag}"), place: place.clone(), rows: seg.clone(), birth: None, died: None,
                                   possible: BTreeSet::new(), merged_into: None });
             let n = persons.len() - 1;
             for &i in &seg {
@@ -364,12 +535,19 @@ fn unite(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &
         }
         x
     }
-    let join = |parent: &mut [usize], a: usize, b: usize| {
+    // Диапазон года рождения у каждого корня: несовместимых не сливаем
+    // (Ж1.2), и цепочка слияний это помнит.
+    let mut ranges: Vec<Option<(i64, i64)>> = persons.iter().map(|p| range_of(rows, &p.rows).ok().flatten()).collect();
+    let join = |parent: &mut [usize], ranges: &mut [Option<(i64, i64)>], a: usize, b: usize| -> bool {
         let (a, b) = (root(parent, a), root(parent, b));
-        if a != b {
-            let (lo, hi) = (a.min(b), a.max(b));
-            parent[hi] = lo;
+        if a == b {
+            return true;
         }
+        let Ok(both) = meet(ranges[a], ranges[b]) else { return false };
+        let (lo, hi) = (a.min(b), a.max(b));
+        parent[hi] = lo;
+        ranges[lo] = both;
+        true
     };
     let live: Vec<usize> = (first_adult..persons.len())
         .filter(|&p| !persons[p].rows.is_empty() && kind_of(&rows[persons[p].rows[0]].role) != Kind::Clergy && named(&rows[persons[p].rows[0]]))
@@ -404,20 +582,26 @@ fn unite(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &
                 }
                 let wb = wives(b);
                 if wa.is_empty() || wb.is_empty() {
-                    maybe.push((a, b));
-                } else if wa.iter().any(|&x| wb.iter().any(|&y| same_spouse(&rows[x], &rows[y]) && same_human(&rows[x], &rows[y]))) {
+                    if meet(ranges[root(&mut parent, a)], ranges[root(&mut parent, b)]).is_ok() {
+                        maybe.push((a, b));
+                    }
+                } else if wa.iter().any(|&x| wb.iter().any(|&y| same_spouse(&rows[x], &rows[y]) && same_human(&rows[x], &rows[y])))
+                    && meet(ranges[root(&mut parent, a)], ranges[root(&mut parent, b)]).is_ok() {
                     fit.push(b);
                 }
             }
             match fit[..] {
-                [b] => join(&mut parent, a, b),
+                [b] => { join(&mut parent, &mut ranges, a, b); }
                 _ => maybe.extend(fit.into_iter().map(|b| (a, b))),
             }
         }
     }
 
-    // 2.3: женщина — по мужу. Муж — его персона после 2.1 и 2.2.
-    let mut by_husband: HashMap<(usize, String), Vec<(usize, String)>> = HashMap::new();
+    // 2.3: женщина — по мужу. Муж — его персона после 2.1 и 2.2. Имя — по
+    // корню вариантов, а то же отчество у того же мужа при разных именах —
+    // тоже одна женщина («Соломония» и «Соломонида Яковлевна» у Семена
+    // Алексеева, Роман 19.10.2026; в словаре они не связаны).
+    let mut by_husband: HashMap<usize, Vec<(usize, String, String)>> = HashMap::new();
     for &p in &live {
         if !female(&persons[p], rows) {
             continue;
@@ -428,9 +612,9 @@ fn unite(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &
                 continue;
             }
             let husband = root(&mut parent, owner[h]);
-            let list = by_husband.entry((husband, rows[i].first_n.clone())).or_default();
-            if !list.iter().any(|(q, _)| *q == p) {
-                list.push((p, rows[i].patr_n.clone()));
+            let list = by_husband.entry(husband).or_default();
+            if !list.iter().any(|(q, _, _)| *q == p) {
+                list.push((p, rows[i].first_c.clone(), rows[i].patr_n.clone()));
             }
         }
     }
@@ -438,10 +622,14 @@ fn unite(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &
     keys.sort();
     for k in keys {
         let list = by_husband[&k].clone();
-        for (x, (a, pa)) in list.iter().enumerate() {
-            for (b, pb) in &list[x + 1..] {
-                if !split.contains(&(*a, *b)) && (pa == pb || pa.is_empty() || pb.is_empty()) {
-                    join(&mut parent, *a, *b);
+        for (x, (a, na, pa)) in list.iter().enumerate() {
+            for (b, nb, pb) in &list[x + 1..] {
+                // То же отчество — только при похожих именах (Соломония и
+                // Соломонида, Евфросиния и Ефросиния): у вдовца Степана
+                // Тимофеева Наталья и Анна Ивановны — две жены (ревьюер 19.10.2026).
+                let same = (na == nb && (pa == pb || pa.is_empty() || pb.is_empty())) || (!pa.is_empty() && pa == pb && alike(na, nb));
+                if same && !split.contains(&(*a, *b)) && !died_before(rows, &persons[*a].rows, &persons[*b].rows) {
+                    join(&mut parent, &mut ranges, *a, *b);
                 }
             }
         }
@@ -468,7 +656,7 @@ fn unite(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &
 
 /// Персоны прихода: взрослые — по ИОФ и НП, как до 17.10.2026; дети и умершие
 /// младенцы — каждый своим досье; затем связи п. 1.2 и 1.3.
-pub(super) fn build(rows: &mut [Row]) -> Vec<Person> {
+pub(super) fn build(rows: &mut [Row]) -> (Vec<Person>, Vec<Option<usize>>) {
     let mut persons: Vec<Person> = Vec::new();
     let new_person = |persons: &mut Vec<Person>, key: String, place: String, rows: Vec<usize>, birth: Option<usize>| {
         persons.push(Person { key, place, rows, birth, died: None, possible: BTreeSet::new(), merged_into: None });
@@ -483,7 +671,7 @@ pub(super) fn build(rows: &mut [Row]) -> Vec<Person> {
             continue;
         }
         let r = &rows[i];
-        let p = new_person(&mut persons, format!("{}#{}", r.key, r.id), r.place.clone(), vec![i], Some(i));
+        let p = new_person(&mut persons, format!("{}#{}", r.key, stable(r)), r.place.clone(), vec![i], Some(i));
         owner[i] = p;
         if named(r) && r.year.is_some() {
             births.entry((r.first_n.clone(), r.place_norm.clone())).or_default().push(p);
@@ -530,7 +718,7 @@ pub(super) fn build(rows: &mut [Row]) -> Vec<Person> {
             owner[d] = b;
             taken.insert(b);
         } else {
-            let p = new_person(&mut persons, format!("{}#{}", dr.key, dr.id), dr.place.clone(), vec![d], None);
+            let p = new_person(&mut persons, format!("{}#{}", dr.key, stable(dr)), dr.place.clone(), vec![d], None);
             owner[d] = p;
             maybe.extend(cands.into_iter().map(|b| (p, b)));
         }
@@ -558,6 +746,7 @@ pub(super) fn build(rows: &mut [Row]) -> Vec<Person> {
 
     // Часть 2: тёзки с разными супругами (п. 2.1), с фамилией и без (2.2),
     // женщина после замужества (2.3).
+    split_by_age(&mut persons, &mut owner, rows, first_adult, &mut maybe);
     let spouse = spouses(rows);
     split_by_spouse(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);
     unite(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);
@@ -596,7 +785,9 @@ pub(super) fn build(rows: &mut [Row]) -> Vec<Person> {
         for &b in list {
             let br = &rows[persons[b].rows[0]];
             let score = surname_score(sur, &br.sur_base);
-            if score > 0 && br.year.is_some_and(|by| fits_age(rows, mine, by)) {
+            // Год рождения — в общем диапазоне взрослого (Ж1.2).
+            let fits = |by: i64| range_of(rows, mine).is_ok_and(|r| r.is_none_or(|(lo, hi)| lo <= by && by <= hi));
+            if score > 0 && br.year.is_some_and(fits) {
                 pairs.push((g, b, score));
             }
         }
@@ -646,5 +837,5 @@ pub(super) fn build(rows: &mut [Row]) -> Vec<Person> {
     for (i, row) in rows.iter_mut().enumerate() {
         row.person = owner[i];
     }
-    persons
+    (persons, spouse)
 }

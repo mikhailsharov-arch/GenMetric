@@ -682,6 +682,51 @@ fn case_load(app: State<App>, year: Option<i64>) -> Result<Option<Case>, String>
 }
 
 #[derive(Serialize)]
+struct OpenedYear {
+    /// Дело года; None — год не трогаем (дальний год без записей — похоже на
+    /// опечатку: форма просто стоит на нём, как раньше).
+    case: Option<Case>,
+    /// Год без записей: формы начинают его с чистого листа.
+    fresh: bool,
+    /// Дело завела эта команда (а не человек на экране «Дело»): только такое
+    /// пустое дело можно убрать при возврате (ревьюер 19.10.2026).
+    created: bool,
+}
+
+/// Год на форме сменили (спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7;
+/// Роман 19.10.2026: «программа должна автоматически переключить на этот
+/// год и две другие вкладки»). Новый год — следующий за последним набранным,
+/// или у которого дело уже заведено, или первый в приходе: дело заводится
+/// (копией реквизитов), `fresh`. Год с записями — его дело, без чистого
+/// листа (возврат после опечатки). Дальний год без записей (1889 → 1898) —
+/// None: опечатка не должна заводить дело и стирать формы (ревьюер 19.10.2026).
+#[tauri::command]
+fn case_open_year(app: State<App>, year: i64) -> Result<OpenedYear, String> {
+    with_conn(&app, &format!("Дело {year} года"), |conn| {
+        let count = |sql: &str| -> Result<i64, String> { conn.query_row(sql, [year], |r| r.get(0)).map_err(|e| e.to_string()) };
+        let entries = count("SELECT count(*) FROM entry e JOIN mk_case c ON c.id = e.case_id WHERE c.year = ?1")?;
+        let has_case = count("SELECT count(*) FROM mk_case WHERE year = ?1")? > 0;
+        let last: Option<i64> = conn
+            .query_row("SELECT max(c.year) FROM entry e JOIN mk_case c ON c.id = e.case_id", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let fresh = entries == 0;
+        if fresh && !has_case && last.is_some_and(|l| year != l + 1) {
+            return Ok(OpenedYear { case: None, fresh, created: false });
+        }
+        let created = fresh && genmetric_core::records::case_for_year(conn, year)?.1;
+        let case = conn.query_row(&statement("case_current")?, rusqlite::named_params! { ":year": year },
+            |r| Ok(Case {
+                id: r.get(0)?, archive: r.get(1)?, fond: r.get(2)?, opis: r.get(3)?,
+                delo: r.get(4)?, church: r.get(5)?, village: r.get(6)?, uyezd: r.get(7)?,
+                guberniya: r.get(8)?, year: r.get(9)?, indexer: r.get(10)?,
+            }))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(OpenedYear { case, fresh, created })
+    })
+}
+
+#[derive(Serialize)]
 struct CaseYear {
     year: i64,
     entries: i64,
@@ -2084,6 +2129,7 @@ fn main() {
             lookup_summary,
             case_load,
             case_years,
+            case_open_year,
             case_save,
             case_delete,
             review_list,

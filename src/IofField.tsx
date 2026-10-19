@@ -78,6 +78,9 @@ type Props = {
   /** Умерший: в подсказке первыми младенцы из записей о рождении
    *  (Роман 28.09.2026). */
   preferInfant?: boolean;
+  /** Полное ИОФ ребёнка или умершего младенца — в строке разбора вместо
+   *  современного написания (Роман 19.10.2026: «Федор Андреевич Голяков М»). */
+  modernOverride?: string | null;
   /** Умершему предлагать детей из записей о рождении прихода отдельными
    *  строками, каждого со своим родителем (Роман 30.09.2026). По всему
    *  приходу, а не по делу года: умерший в январе родился в прошлом году. */
@@ -126,7 +129,7 @@ type Props = {
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant, modernOverride,
   infantRows,
   infantYear,
   infantPlace,
@@ -632,7 +635,7 @@ export default function IofField({
   // поломкой). Строка под полем у разобранного имени есть и так — с полом.
   const shown = !!parsed && parsed.known_name && value.trim() !== "";
   // У «***» (имени в книге нет) звёздочки в современное написание не идут.
-  const modern = shown
+  const modern = modernOverride && value.trim() ? modernOverride : shown
     ? [parsed.name_missing ? null : parsed.first_name_modern ?? parsed.first_name,
        parsed.patronymic_modern ?? parsed.patronymic,
        parsed.surname].filter(Boolean).join(" ")

@@ -57,8 +57,11 @@ type CaseYear = { year: number; entries: number };
 
 type CaseSaved = { id: number; status: "saved" | "created" | "exists"; existing: string | null };
 
-export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, onOpenEntry, viewBlock }: {
+export default function CaseHeader({ onSaved, reload, showYear, parishName, onWorkYear, onOpenEntry, viewBlock }: {
   onSaved: (c: Case) => void; reload: number; parishName: string;
+  /** Год сменили на форме — экран показывает дело этого года, а не
+   *  «текущее» по последней записи (ревьюер 19.10.2026). */
+  showYear?: { year: number; n: number } | null;
   /** Дело сохранено с этим годом — формы встают на него (спека 2026-10-03, п. 1.2).
    *  `fresh` — в году ещё нет записей: формы начинают с чистого листа (Роман 16.10.2026). */
   onWorkYear: (year: number, fresh?: boolean) => void;
@@ -92,10 +95,15 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
   const [busy, setBusy] = useState(false);
   const [ok, setOk] = useState(false);
 
+  /** Первое чтение дела после запуска (или смены прихода). */
+  const startup = useRef(true);
   /** year = null — дело, с которым сейчас работают (год последней записи). */
   function load(year: number | null) {
+    // Годы читаются один раз; ошибка — одним сообщением.
+    const yearsRead = invoke<CaseYear[]>("case_years")
+      .catch((e) => { report("Не удалось прочитать годы дел", e); return null; });
     invoke<Case | null>("case_load", { year })
-      .then((loaded) => {
+      .then(async (loaded) => {
         if (!loaded) return;
         setC(loaded);
         setLoadedYear(loaded.year);
@@ -103,12 +111,21 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
         setOk(false);
         // Формам — только текущее дело: открытое ради правки реквизитов
         // прошлого года место работы не меняет.
-        if (year === null) onSaved(loaded);
+        if (year === null) {
+          onSaved(loaded);
+          // Текущее дело — год без записей (новый год, заведённый до
+          // перезапуска, `case_current`): формы встают на него с чистого
+          // листа, а не на год последней записи (долг п. 67).
+          const all = await yearsRead;
+          if (startup.current && loaded.year !== null && all?.find((y) => y.year === loaded.year)?.entries === 0
+              && all.some((y) => y.entries > 0)) {
+            onWorkYear(loaded.year, true);
+          }
+          startup.current = false;
+        }
       })
       .catch((e) => report("Не удалось прочитать дело", e));
-    invoke<CaseYear[]>("case_years")
-      .then(setYears)
-      .catch((e) => report("Не удалось прочитать годы дел", e));
+    void yearsRead.then((v) => { if (v) setYears(v); });
     invoke<number>("review_count")
       .then(setToReview)
       .catch((e) => report("Не удалось прочитать список на сверку", e));
@@ -116,6 +133,7 @@ export default function CaseHeader({ onSaved, reload, parishName, onWorkYear, on
   // Запись другого года увела работу в другое дело — перечитать; но не поверх
   // несохранённой правки реквизитов.
   useEffect(() => { if (!editedRef.current) load(null); }, [reload]);
+  useEffect(() => { if (showYear && !editedRef.current) load(showYear.year); }, [showYear?.n]);
 
   const emptyYear = loadedYear !== null && years.length > 1
     && years.find((y) => y.year === loadedYear)?.entries === 0;

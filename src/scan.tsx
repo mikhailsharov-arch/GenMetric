@@ -49,6 +49,8 @@ type Scan = {
   show: (name: string, year: number | null) => "ok" | "нет файла" | "другое дело";
   /** Системное окно выбора папки. */
   pickDir: () => void;
+  /** Новый год: открыть выбор папки, если у этого года её нет. */
+  askDir: (year: number) => void;
   /** Файл для новой записи года `year`: открытый разворот, если блок включён и папка — этого дела. */
   current: (year: number | null) => string | null;
   /** Запись открыта на правку: показать её разворот, запомнив место набора. */
@@ -107,7 +109,10 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   useEffect(() => {
     if (!ready) return;
     invoke<string | null>("get_setting", { key: "ui_scan_on" })
-      .then((v) => { if (v === "1") setOnState(true); })
+      // Изначально включён (Роман 19.10.2026: «основной режим работы для
+      // большинства пользователей с одним монитором»); выключенный руками —
+      // «0» — остаётся выключенным.
+      .then((v) => { if (v !== "0") setOnState(true); })
       .catch((e) => report("Не удалось прочитать, показан ли блок скана", e));
     invoke<string | null>("get_setting", { key: "ui_scan_keep_place" })
       .then((v) => { if (v === "1") setKeepPlaceState(true); })
@@ -119,11 +124,27 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
 
   // Папка — у дела: сменился год дела — читаем его папку.
   const loadSeq = useRef(0);
+  /** Год, для которого спросить папку, если её нет (`askDir`), и год, чья
+   *  папка уже прочитана. */
+  const askFor = useRef<number | null>(null);
+  const loadedYear = useRef<number | null | undefined>(undefined);
+  const pickRef = useRef<() => void>(() => {});
   useEffect(() => {
     if (!ready) return;
     const mine = ++loadSeq.current;
     invoke<ScanFiles>("scan_state", { year })
-      .then((s) => { if (mine === loadSeq.current) apply(s); })
+      .then((s) => {
+        if (mine !== loadSeq.current) return;
+        apply(s);
+        loadedYear.current = year;
+        // Просьба выбрать папку — только для своего года; прочитана папка
+        // другого года — просьба устарела и позже окно не выскочит
+        // (ревьюер 19.10.2026).
+        if (askFor.current !== null) {
+          if (askFor.current === year && !s.dir) pickRef.current();
+          askFor.current = null;
+        }
+      })
       .catch((e) => report("Не удалось прочитать папку сканов", e));
   }, [year, ready, apply]);
 
@@ -162,6 +183,18 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       .then((s) => { if (s && mine === loadSeq.current) chosen(s); })
       .catch((e) => report("Не удалось открыть папку сканов", e));
   }, [chosen]);
+
+  pickRef.current = pickDir;
+  /** Новый год на форме (Роман 19.10.2026): «программа должна автоматически
+   *  вызывать окно выбора папки со сканами» — если у года папки нет. Папка
+   *  года читается после смены дела; спрашиваем, когда она прочитана. */
+  const askDir = useCallback((forYear: number) => {
+    if (loadedYear.current === forYear) {
+      if (!dirRef.current) pickDir();
+      return;
+    }
+    askFor.current = forYear;
+  }, [pickDir]);
 
   // Перетаскивание папки или файла-скана на окно программы. Событие даёт
   // само окно программы; в браузере стенда его нет — там и не подписываемся.
@@ -251,7 +284,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
         if (i !== at) leave(away ?? "link", i);
         return "ok";
       },
-      pickDir,
+      pickDir, askDir,
       // У дела ещё нет года (новое дело) — папка его же: первая запись года получает файл.
       current: (formYear) => (on && (year === null || formYear === year) ? file : null),
       peek: (name, entryYear) => {
@@ -276,7 +309,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
           .catch((e) => report("Ширина колонки формы не сохранена", e));
       },
     };
-  }, [on, setOn, year, state, at, file, count, pickDir, formWidth, away, keepPlace]);
+  }, [on, setOn, year, state, at, file, count, pickDir, askDir, formWidth, away, keepPlace]);
 
   return <ScanContext.Provider value={scan}>{children}</ScanContext.Provider>;
 }
@@ -302,9 +335,41 @@ export function useEntryScan(editing: boolean, year: number | null,
   const now = useRef({ editing, open, turn });
   now.current = { editing, open, turn };
   const subscribe = scan.onTurn;
+  // Перешли на эту вкладку — страница не идёт за сканом, пока в форме не
+  // начат набор (Роман 19.10.2026: «понадобилось пролистать несколько листов
+  // сканов… номера страниц в форме тоже начали автоматически
+  // пролистываться»). Первое нажатие клавиши в форме снимает заморозку.
+  const frozen = useRef(false);
+  useEffect(() => {
+    const el = root?.current;
+    if (!el) return;
+    let shown = el.offsetParent !== null;
+    // Состояние — и в атрибуте формы: по нему его видят стенд и разбор.
+    const freeze = (v: boolean) => { frozen.current = v; el.setAttribute("data-scan-frozen", v ? "1" : "0"); };
+    const watch = new IntersectionObserver(() => {
+      const visible = el.offsetParent !== null;
+      if (visible && !shown) freeze(true);
+      shown = visible;
+    });
+    watch.observe(el);
+    // Набор — буква, цифра, удаление; листание (Alt+PageDown) и переходы
+    // (Tab, стрелки) заморозку не снимают.
+    const typed = (e: KeyboardEvent) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete") freeze(false);
+    };
+    // Ввод без нажатия клавиши (вставка, системные методы ввода) и выбор из
+    // подсказки мышью — тоже набор.
+    const input = () => freeze(false);
+    const picked = (e: MouseEvent) => { if ((e.target as HTMLElement | null)?.closest?.(".suggest")) freeze(false); };
+    el.addEventListener("mousedown", picked, true);
+    el.addEventListener("keydown", typed, true);
+    el.addEventListener("input", input, true);
+    return () => { watch.disconnect(); el.removeEventListener("keydown", typed, true); el.removeEventListener("input", input, true); el.removeEventListener("mousedown", picked, true); };
+  }, [root]);
   useEffect(() => subscribe((by) => {
     const { editing: busy, open: file, turn: fn } = now.current;
-    if (busy || !file || !fn) return;
+    if (busy || !file || !fn || frozen.current) return;
     if (root?.current && root.current.offsetParent === null) return;
     fn(by);
   }), [subscribe]);

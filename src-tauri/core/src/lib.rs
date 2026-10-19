@@ -102,7 +102,8 @@ pub fn familio_search_url(name: &str, guberniya: &str, uyezd: &str, volost: &str
         out
     }
     let where_to: Vec<&str> = [guberniya, uyezd, volost].into_iter().map(str::trim).filter(|v| !v.is_empty()).collect();
-    let mut url = format!("https://familio.org/places?title={}", encode(name));
+    // Приставка типа в названии («с.Солдатчино») мешает поиску Familio (Роман 19.10.2026).
+    let mut url = format!("https://familio.org/places?title={}", encode(crate::text::strip_place_type(name)));
     if !where_to.is_empty() {
         url.push_str(&format!("&georequisites={}", encode(&where_to.join(" "))));
     }
@@ -205,6 +206,7 @@ mod tests {
                    "https://familio.org/places?title=%D0%9C%D0%B0%D0%BB%D0%BE%D0%B2%D0%BE&georequisites=%D0%97%D0%B0%D0%B2%D1%80%D0%B0%D0%B6%D0%BD%D0%B0%D1%8F");
         assert_eq!(familio_search_url(" Ново Село ", " ", "", ""), "https://familio.org/places?title=%D0%9D%D0%BE%D0%B2%D0%BE%20%D0%A1%D0%B5%D0%BB%D0%BE");
         // Знаки, которыми можно было бы подменить адрес, уходят в значение.
+        assert_eq!(familio_search_url("с.Малово", "", "", ""), familio_search_url("Малово", "", "", ""), "приставка типа отсекается");
         let odd = familio_search_url("a&b=c#d/e?f", "Костромская", "Макарьевский", "");
         assert_eq!(odd, "https://familio.org/places?title=a%26b%3Dc%23d%2Fe%3Ff&georequisites=%D0%9A%D0%BE%D1%81%D1%82%D1%80%D0%BE%D0%BC%D1%81%D0%BA%D0%B0%D1%8F%20%D0%9C%D0%B0%D0%BA%D0%B0%D1%80%D1%8C%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B9");
     }

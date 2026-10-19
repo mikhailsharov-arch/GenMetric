@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ScanLink, useEntryScan } from "./scan";
+import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, appendNote, markDocNotes, staleDocNotes, type DocFor, type Person, nameSurnameNow, nameSurnameOf } from "./PersonBlock";
@@ -17,8 +17,9 @@ import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
 import { feminineSurname, maskFragment, rankForRole, titleCase } from "./names";
 import type { FormProps } from "./formprops";
+import { useFillDown } from "./fill";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
-import FullIof from "./FullIof";
+import { useFullIof } from "./FullIof";
 
 /**
  * Форма ввода записи о рождении.
@@ -95,7 +96,13 @@ type PersonPayload = {
   uncertain: string | null;
 };
 
-export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormProps) {
+export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYear }: FormProps) {
+  // Год на форме сменили на год без записей — все формы встают на него с
+  // чистого листа, а если у года нет папки сканов — окно выбора папки
+  // (Роман 19.10.2026, спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7).
+  const scanCtx = useScan();
+  const yearLeft = useRef<number | null>(null);
+  const savedList = useRef<HTMLTableElement>(null);
   // Страница — текст: «938об-939» (заказчик 21.09.2026), в базе колонка TEXT.
   const [page, setPage] = useState<string | null>(null);
   // Год — на форме, а не только в деле: «он меняется в процессе индексации»
@@ -252,9 +259,12 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   /** Год, сохранённый на «Деле», пока запись была открыта на правку: после
    *  правки форма встаёт на него, а не на год до правки. */
   const yearWhileEditing = useRef<number | null>(null);
+  /** Год, на который встали во время правки, — новый: после правки форма с чистого листа. */
+  const freshWhileEditing = useRef(false);
   const beforeEdit = useRef<{ page: string | null; count: number | null; year: number | null;
                                birthMonth: number | null; riteMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
+  useFillDown(savedList, [saved.length]);
   const savedRef = useRef(saved);
   savedRef.current = saved;
   // Год на форме изменён, месяц руками не набирали: когда пришёл список
@@ -506,6 +516,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   // набрали «Мария» — в примечании должно стать «незаконнорожденная»
   // (проверяющий 06.10.2026). Запись на правке не трогаем.
   const childSex = (childParsed?.gender as Sex | null | undefined) ?? childSexManual;
+  // Полное ИОФ ребёнка — в строке разбора под полем (только показ).
+  const fullChild = useFullIof(child, childSex, fatherRaw.iof, nameSurnameNow(fatherRaw));
   useEffect(() => {
     if (editingId === null && illegitimate && childSex) setIllegitimate(true);
   }, [childSex]);
@@ -787,29 +799,32 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
   /** В форме уже что-то набрано — открывать поверх нельзя, потеряется. */
   // Экран «Дело» сохранён с годом — форма встаёт на него; запись, открытую
   // на правку, это не трогает. «Открыть запись» из списка на сверку — сюда же.
+  /** Новый год без записей — форма с чистого листа (Роман 16.10.2026): и
+   *  сразу, и после правки, прерванной сменой года (проверяющий 19.10.2026). */
+  function startFresh(y: number) {
+    setPage(null);
+    countManual.current = false;
+    setCount(1);
+    setBirthDay(null);
+    setRiteDay(null);
+    monthManual.current = false;
+    riteMonthManual.current = false;
+    monthPending.current = NO_WAIT;
+    riteFilled.current = false;
+    monthYear.current = y;
+    setBirthMonth(1);
+    setRiteMonth(1);
+    setRiteNextYear(false);
+  }
   useEffect(() => {
     if (!workYear) return;
     // Запись открыта на правку — год у неё свой; новый год дела форма
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
-    else yearWhileEditing.current = workYear.year;
+    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh; }
     // Год без записей — форма с чистого листа (Роман 16.10.2026): страница
     // пуста, счёт 1, дни пусты, месяцы — январь.
-    if (workYear.fresh && editingId === null) {
-      setPage(null);
-      countManual.current = false;
-      setCount(1);
-      setBirthDay(null);
-      setRiteDay(null);
-      monthManual.current = false;
-      riteMonthManual.current = false;
-      monthPending.current = NO_WAIT;
-      riteFilled.current = false;
-      monthYear.current = workYear.year;
-      setBirthMonth(1);
-      setRiteMonth(1);
-      setRiteNextYear(false);
-    }
+    if (workYear.fresh && editingId === null) startFresh(workYear.year);
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 1) void openEntry(openReq.id);
@@ -925,6 +940,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       setBirthMonth(b.birthMonth);
       setRiteMonth(b.riteMonth);
     }
+    if (b && freshWhileEditing.current && yearWhileEditing.current !== null) startFresh(yearWhileEditing.current);
+    freshWhileEditing.current = false;
     yearWhileEditing.current = null;
     clergyState.close();
   }
@@ -1008,7 +1025,12 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
       )}
       <section>
         <div className="row tight">
-          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930} />
+          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930}
+                       onLeave={() => {
+                         if (editingId !== null || year === null || year < 1700 || !onNewYear || yearLeft.current === year) return;
+                         yearLeft.current = year;
+                         void onNewYear(year).then((fresh) => { if (fresh) scanCtx.askDir(year); });
+                       }} />
           <PageField label="Стр." value={page} onChange={setPage} />
           {/* Вне обхода клавишами: счёт ставится сам, по полу ребёнка (Роман
               08.10.2026). Мышью и кнопками «+/−» поправить можно. */}
@@ -1040,6 +1062,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         <IofField
           label="Ребёнок"
           singleWord
+          modernOverride={fullChild}
           value={child}
           onChange={(text, parsed) => {
             setChild(text);
@@ -1067,7 +1090,6 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
           незаконнорожд./прим.
         </label>
         </div>
-        <FullIof child={child} gender={childSex} father={father.iof} fatherNameSurname={nameSurnameNow(father)} />
         {entryNote && (
           <div className="field">
             <label>Прим.</label>
@@ -1239,7 +1261,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq }: FormPr
         <section>
           <h2>Набрано: {saved.length}{year !== null && <span className="ofyear"> — за {year} год</span>}</h2>
           <p className="hint">Нажмите «Открыть», чтобы поправить запись. Форма при этом должна быть пустой.</p>
-          <table className="facts saved">
+          <table className="facts saved" ref={savedList}>
             <tbody>
               {saved.map((e) => (
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>

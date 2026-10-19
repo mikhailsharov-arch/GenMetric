@@ -38,6 +38,15 @@ ON CONFLICT(id) DO UPDATE SET
 SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya, year, indexer
   FROM mk_case
  WHERE id = coalesce((SELECT c.id FROM mk_case c WHERE c.year = :year ORDER BY c.id LIMIT 1),
+                     -- Год без записей, заведённый позже последней записи, — новый
+                     -- год, на который человек встал («Сохранить дело» или смена
+                     -- года на форме): после перезапуска окно на нём, а не на
+                     -- прежнем годе (долг п. 67, ревьюер 16.10.2026).
+                     (SELECT c.id FROM mk_case c
+                       WHERE c.year IS NOT NULL
+                         AND NOT EXISTS (SELECT 1 FROM entry e WHERE e.case_id = c.id)
+                         AND c.created_at > coalesce((SELECT max(e.created_at) FROM entry e), '')
+                       ORDER BY c.created_at DESC, c.id DESC LIMIT 1),
                      (SELECT e.case_id FROM entry e ORDER BY e.id DESC LIMIT 1),
                      (SELECT c.id FROM mk_case c ORDER BY c.updated_at DESC, c.id DESC LIMIT 1));
 
@@ -1045,12 +1054,25 @@ DROP TABLE IF EXISTS temp.x_village;
 -- подробностей, хотя рядом могла лежать полная («двойник»: набран руками
 -- или пришёл архивом, а пункт поставки встал рядом). Выгрузка берёт
 -- подробности у лучшей строки и показывает пункт на листе location один раз.
+-- clean — название для выгрузки: без комментария деревни-тёзки (Роман
+-- 06.10.2026) и без приставки типа, набранной в название («д. Горелое»,
+-- «с.Керша», «с-цо Керша» → «Горелое», «Керша»; Роман 19.10.2026). Копия
+-- правила — text::strip_place_type: правишь одно — правь другое.
 CREATE TEMP TABLE x_place AS
-SELECT p.id,
-       (SELECT b.id FROM place b WHERE b.name_norm = p.name_norm
-         ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
-                  (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id LIMIT 1) AS best_id
-  FROM place p;
+SELECT id, best_id,
+       CASE WHEN substr(n, 1, 5) IN ('с-цо ', 'С-цо ') AND trim(substr(n, 6)) <> '' THEN trim(substr(n, 6))
+            WHEN substr(n, 1, 4) IN ('дер.', 'пос.', 'сел.', 'Дер.', 'Пос.', 'Сел.', 'с-цо', 'С-цо') AND trim(substr(n, 5)) <> '' THEN trim(substr(n, 5))
+            WHEN substr(n, 1, 3) IN ('сл.', 'Сл.') AND trim(substr(n, 4)) <> '' THEN trim(substr(n, 4))
+            WHEN substr(n, 1, 2) IN ('д.', 'с.', 'г.', 'п.', 'Д.', 'С.', 'Г.', 'П.') AND trim(substr(n, 3)) <> '' THEN trim(substr(n, 3))
+            ELSE n END AS clean
+  FROM (SELECT p.id,
+               (SELECT b.id FROM place b WHERE b.name_norm = p.name_norm
+                 ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
+                          (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id LIMIT 1) AS best_id,
+               trim(CASE WHEN trim(coalesce(p.comment, '')) <> ''
+                              AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
+                         THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END) AS n
+          FROM place p);
 CREATE INDEX ix_x_place ON x_place (id);
 
 -- Примечания по частям («Имя в документе: Пискарь; того же дому»). У ребёнка
@@ -1105,13 +1127,9 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order, m.gender,
        -- 01.10.2026: person_location заполнялся «лишь частично»).
        -- Название — чистое: комментарий деревни-тёзки («Хмельничное (Столпино)»)
        -- в выгрузки не идёт (Роман 06.10.2026).
-       CASE WHEN trim(coalesce(p.comment, '')) <> ''
-                 AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
-            THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END AS place,
+       (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id) AS place,
        coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), ''),
-                CASE WHEN trim(coalesce(p.comment, '')) <> ''
-                 AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
-            THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END) AS place_full,
+                (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)) AS place_full,
        -- Причт — по званию, а не по номеру: у Романа во втором причте 733
        -- псаломщика, и по номеру они легли бы в колонки дьякона (разбор эталона).
        -- Сравнение без первой буквы — LIKE не знает регистра кириллицы.
@@ -1153,7 +1171,11 @@ CREATE INDEX ix_x_person ON x_person (entry_id, role_code);
 DROP TABLE IF EXISTS temp.x_village;
 CREATE TEMP TABLE x_village AS
 SELECT raw, clean, best_id
-  FROM (SELECT v.raw AS raw, coalesce(pc.clean, v.raw) AS clean, xp.best_id AS best_id,
+  FROM (SELECT v.raw AS raw, CASE WHEN substr(coalesce(pc.clean, v.raw), 1, 5) IN ('с-цо ', 'С-цо ') AND trim(substr(coalesce(pc.clean, v.raw), 6)) <> '' THEN trim(substr(coalesce(pc.clean, v.raw), 6))
+            WHEN substr(coalesce(pc.clean, v.raw), 1, 4) IN ('дер.', 'пос.', 'сел.', 'Дер.', 'Пос.', 'Сел.', 'с-цо', 'С-цо') AND trim(substr(coalesce(pc.clean, v.raw), 5)) <> '' THEN trim(substr(coalesce(pc.clean, v.raw), 5))
+            WHEN substr(coalesce(pc.clean, v.raw), 1, 3) IN ('сл.', 'Сл.') AND trim(substr(coalesce(pc.clean, v.raw), 4)) <> '' THEN trim(substr(coalesce(pc.clean, v.raw), 4))
+            WHEN substr(coalesce(pc.clean, v.raw), 1, 2) IN ('д.', 'с.', 'г.', 'п.', 'Д.', 'С.', 'Г.', 'П.') AND trim(substr(coalesce(pc.clean, v.raw), 3)) <> '' THEN trim(substr(coalesce(pc.clean, v.raw), 3))
+            ELSE coalesce(pc.clean, v.raw) END AS clean, xp.best_id AS best_id,
                row_number() OVER (PARTITION BY v.raw
                                   ORDER BY (pc.id IS NULL), (pc.name IS NOT v.raw), pc.id) AS rn
           FROM (SELECT DISTINCT trim(village) AS raw FROM mk_case WHERE trim(coalesce(village, '')) <> '') v
@@ -1548,21 +1570,15 @@ used AS (
     UNION
     SELECT e.village_place FROM x_entry e JOIN chosen c ON c.id = e.id
 )
-SELECT CASE WHEN trim(coalesce(p.comment, '')) <> ''
-                 AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
-            THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END, p.np_type,
+SELECT (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id), p.np_type,
        CASE WHEN p.guberniya IS NULL OR trim(p.guberniya) = '' THEN NULL
             WHEN instr(trim(p.guberniya), ' ') > 0 THEN trim(p.guberniya) ELSE trim(p.guberniya) || ' губерния' END,
        CASE WHEN p.uyezd IS NULL OR trim(p.uyezd) = '' THEN NULL
             WHEN instr(trim(p.uyezd), ' ') > 0 THEN trim(p.uyezd) ELSE trim(p.uyezd) || ' уезд' END,
        CASE WHEN p.volost IS NULL OR trim(p.volost) = '' THEN NULL
             WHEN instr(trim(p.volost), ' ') > 0 THEN trim(p.volost) ELSE trim(p.volost) || ' волость' END,
-       coalesce(p.short_location, CASE WHEN trim(coalesce(p.comment, '')) <> ''
-                 AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
-            THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END),
-       coalesce(p.full_location, CASE WHEN trim(coalesce(p.comment, '')) <> ''
-                 AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
-            THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END),
+       coalesce(p.short_location, (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)),
+       coalesce(p.full_location, (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)),
        nullif(trim(p.familio_url), ''),
        CASE WHEN instr(p.familio_url, '/settlements/') > 0
             THEN nullif(trim(substr(p.familio_url, instr(p.familio_url, '/settlements/') + length('/settlements/')), '/ '), '') END
