@@ -1626,6 +1626,31 @@ def incident_20261016_oshibki_i_dovodka():
           "iof || '|' || coalesce(place, '') IN (" in read("db/migrate.sql"))
 
 
+def incident_20261020_mac_povrezhdeno_i_resizeobserver():
+    """
+    20.10.2026, Mike: на Mac скачанная программа «повреждена, её не удаётся
+    открыть» — у пакета .app была только подпись компоновщика у исполняемого
+    файла (codesign: «code has no resources but signature indicates they must
+    be present»). На Windows при смене высоты окна — полоса «Непредвиденная
+    ошибка»: «ResizeObserver loop completed with undelivered notifications»
+    (список «Набрано» менял свою высоту прямо в отклике наблюдателя).
+    """
+    conf = read("src-tauri/tauri.conf.json")
+    check("пакет macOS подписывается целиком (ad-hoc, signingIdentity «-»)",
+          '"signingIdentity": "-"' in conf)
+    build = read(".github/workflows/build.yml")
+    check("сборка проверяет подпись .app внутри образа (codesign --verify --deep --strict)",
+          "codesign --verify --deep --strict" in build)
+    fill = read("src/fill.ts")
+    check("высота списка ставится в следующем кадре, а не в отклике ResizeObserver",
+          "new ResizeObserver(later)" in fill and "requestAnimationFrame(fit)" in fill)
+    check("высота не сбрасывается на замер и пишется только при изменении",
+          'el.style.maxHeight = ""' not in fill and "if (el.style.maxHeight !== want)" in fill)
+    main = read("src/main.tsx")
+    check("предупреждение «ResizeObserver loop» не показывается полосой ошибки",
+          "/^ResizeObserver loop/" in main)
+
+
 def incident_20261019_oshibki_svyazej():
     """
     19.10.2026, ответ Романа на сборку 17.10 (intent/2026-10-19-…, спека
@@ -1737,6 +1762,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261020_mac_povrezhdeno_i_resizeobserver,
     incident_20261019_oshibki_svyazej,
     incident_20261017_semya_celikom_2,
     incident_20261017_semya_celikom_1,

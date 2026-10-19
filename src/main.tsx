@@ -11,6 +11,10 @@ window.addEventListener("unhandledrejection", (e) => {
   report("Непредвиденная ошибка программы", e.reason instanceof Error ? e.reason.stack ?? e.reason : e.reason);
 });
 window.addEventListener("error", (e) => {
+  // «ResizeObserver loop…» — не ошибка, а предупреждение браузера: отклик
+  // наблюдателя сменил размер, и часть уведомлений перенесена на следующий
+  // кадр. Полосу ошибки по нему не показываем (Mike 20.10.2026, Windows).
+  if (!e.error && /^ResizeObserver loop/.test(e.message ?? "")) return;
   report("Непредвиденная ошибка программы", e.error instanceof Error ? e.error.stack ?? e.message : e.message);
 });
 

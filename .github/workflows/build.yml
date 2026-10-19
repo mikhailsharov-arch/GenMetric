@@ -354,7 +354,7 @@ jobs:
           }
           exit 0
 
-      - name: Лицензии шрифта и просмотрщика — внутри образа (macOS)
+      - name: Лицензии шрифта и просмотрщика и подпись — внутри образа (macOS)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
@@ -369,6 +369,10 @@ jobs:
             echo "$name: $found"
             test -n "$found" || { echo "$name в образе не найден"; bad=1; }
           done
+          # Пакет подписан целиком (ad-hoc): с одной подписью компоновщика
+          # скачанная программа для macOS «повреждена» (Mike 20.10.2026).
+          app=$(find "$mount" -maxdepth 1 -name "*.app" -print -quit)
+          codesign --verify --deep --strict --verbose=2 "$app" || { echo "подпись пакета .app неполная"; bad=1; }
           hdiutil detach "$mount" >/dev/null || true
           test "$bad" = 0
 
