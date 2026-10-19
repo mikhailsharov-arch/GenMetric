@@ -598,7 +598,9 @@ def run(driver, wait, archive):
         check("полное ИОФ под полем: «Мария Николаевна»; без отца — пусто",
               fam["full"] == "Мария Николаевна" and fam["none"] is None, f"{fam['full']} / {fam['none']}")
         # 19.10.2026: год с записями — не «новый год» (команда через настоящий Rust).
-        check("год с записями (1897) командой case_open_year не заводится заново", fam.get("oldYear") is None, str(fam.get("oldYear")))
+        old = fam.get("oldYear") or {}
+        check("год с записями (1897): case_open_year отдаёт его дело без чистого листа и ничего не заводит",
+              (old.get("case") or {}).get("year") == 1897 and old.get("fresh") is False and old.get("created") is False, str(old)[:300])
         check("подсказка персон несёт год смерти (живые — пусто)",
               isinstance(fam["hints"], list) and len(fam["hints"]) > 0 and all("died" in h for h in fam["hints"]),
               str(fam["hints"])[:300])

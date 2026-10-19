@@ -710,6 +710,13 @@ fn case_open_year(app: State<App>, year: i64) -> Result<OpenedYear, String> {
             .query_row("SELECT max(c.year) FROM entry e JOIN mk_case c ON c.id = e.case_id", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         let fresh = entries == 0;
+        // В приходе ещё нет ни одной записи — переходить не с чего: формы и так
+        // с чистого листа, а набранную до года страницу стирать нельзя (e2e
+        // 19.10.2026: страница, набранная до года, пропадала). Год получит
+        // дело при первой записи, как раньше.
+        if last.is_none() {
+            return Ok(OpenedYear { case: None, fresh, created: false });
+        }
         if fresh && !has_case && last.is_some_and(|l| year != l + 1) {
             return Ok(OpenedYear { case: None, fresh, created: false });
         }

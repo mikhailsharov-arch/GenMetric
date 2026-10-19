@@ -1656,7 +1656,7 @@ def incident_20261019_oshibki_svyazej():
     check("блок скана изначально включён, выключенный руками — нет", 'if (v !== "0") setOnState(true);' in scan)
     check("новый год на любой форме — дело года, все формы с чистого листа, окно папки; дальний пустой год (опечатка) — нет",
           'invoke<{ case: Case | null; fresh: boolean; created: boolean }>("case_open_year", { year })' in read("src/App.tsx")
-          and "fresh && !has_case && last.is_some_and(|l| year != l + 1)" in read("src-tauri/src/main.rs") and "scanCtx.askDir(year)" in read("src/MarriageForm.tsx")
+          and "fresh && !has_case && last.is_some_and(|l| year != l + 1)" in read("src-tauri/src/main.rs") and "if last.is_none() {" in read("src-tauri/src/main.rs") and "scanCtx.askDir(year)" in read("src/MarriageForm.tsx")
           and "fn case_open_year(" in read("src-tauri/src/main.rs"))
     check("при возврате убирается только дело, заведённое сменой года, а не заведённое человеком на «Деле» (ревьюер 19.10.2026)",
           "openedEmpty.current = r.created ? year : null;" in read("src/App.tsx")
