@@ -1712,6 +1712,21 @@ def incident_20261020_otvet_na_sborku_19_10():
           and "fn person_key_folds_patronymic_spellings()" in search)
 
 
+def incident_20261021_podpis_str_v_e2e():
+    """
+    21.10.2026, сборка c6fc2dd: e2e на Windows упал — «видимого элемента нет:
+    //div[contains(@class,'field')][./label[normalize-space()='Стр.']]//input».
+    Значок заморозки листания ⏸ (долг п. 76) стоял текстом внутри подписи
+    поля «Стр.», и подпись стала «Стр. ⏸» — даже скрытым стилем текст входит
+    в normalize-space(). Теперь значок — содержимым стиля (::after), подпись
+    остаётся «Стр.». Поведение держит стенд s66 (XPath e2e при видимом значке).
+    """
+    page = read("src/PageField.tsx")
+    check("значок ⏸ не текстом в подписи поля «Стр.»", "⏸" not in page.split("<label>")[1].split("</label>")[0])
+    css = read("src/styles.css")
+    check("значок ⏸ — содержимым стиля", '.pagefrozen::after { content: " ⏸"; }' in css)
+
+
 def incident_20261020_mac_povrezhdeno_i_resizeobserver():
     """
     20.10.2026, Mike: на Mac скачанная программа «повреждена, её не удаётся
@@ -1849,6 +1864,7 @@ def incident_20261017_semya_celikom_1():
 
 ИНЦИДЕНТЫ = [
     incident_20261020_otvet_na_sborku_19_10,
+    incident_20261021_podpis_str_v_e2e,
     incident_20261020_mac_povrezhdeno_i_resizeobserver,
     incident_20261019_oshibki_svyazej,
     incident_20261017_semya_celikom_2,
