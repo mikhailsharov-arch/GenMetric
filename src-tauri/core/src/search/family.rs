@@ -49,6 +49,9 @@ const AGE_SLACK: i64 = 5;
 /// Смерть младенца — не позже чем через столько лет после рождения (замер на
 /// его базе: 82 % смертей с отцом находят рождение в этих пределах).
 const INFANT_SPAN: i64 = 5;
+/// Своё рождение вне диапазона взрослого, но не дальше этого, — «возможно»
+/// (Роман 20.10.2026: разница в 3 года — «вывести эту запись в плашке»).
+const NEAR_BIRTH: i64 = 3;
 
 fn named(row: &Row) -> bool {
     !row.first.is_empty() && row.first != NO_NAME && !row.first.starts_with(NO_NAME)
@@ -163,15 +166,18 @@ fn same_parent(a: &Row, b: &Row) -> bool {
 /// 2026-10-19-oshibki-svyazej-i-dovodka, Ж1.2). Роман 19.10.2026: «Если
 /// диапазоны возможных годов рождения из разных записей пересекаются — это
 /// может быть один человек. Если не пересекаются — это однозначно разные
-/// люди». Возрасты ролей — индексатора А.К.: родители 17–55, восприемники
-/// 6–60, поручители 17–60. None — упоминание ничего не говорит (год не
-/// записан, причт, умерший без возраста).
+/// люди». Возрасты ролей — индексатора А.К.: мать 17–55, восприемники
+/// 6–60, поручители 17–60. Отец — до 75 (спека 2026-10-20-dosye-i-dovodka, п.
+/// 1.2): Петр Михайлов из Лубян с третьей женой был отцом в 56 и 64 года, и
+/// граница 55 резала его на три досье (Роман 20.10.2026). None — упоминание
+/// ничего не говорит (год не записан, причт, умерший без возраста).
 pub(super) fn born_range(r: &Row) -> Option<(i64, i64)> {
     let y = r.year?;
     let ages = |lo: i64, hi: i64| Some((y - hi, y - lo));
     match r.role.trim_end_matches(|c: char| c.is_ascii_digit()) {
         "child" => Some((y, y)),
-        "father" | "mother" => ages(17, 55),
+        "father" => ages(17, 75),
+        "mother" => ages(17, 55),
         "godparent" => ages(6, 60),
         "witness" => ages(17, 60),
         "groom" | "bride" => match r.age_years {
@@ -205,6 +211,23 @@ fn range_of(rows: &[Row], mine: &[usize]) -> Result<Option<(i64, i64)>, ()> {
     mine.iter().try_fold(None, |acc, &i| meet(acc, born_range(&rows[i])))
 }
 
+/// Возраст записан прямо (жених, невеста, умерший): год события − возраст.
+/// Роман 20.10.2026: «высчитывать примерный год рождения … простым
+/// вычитанием: [Год события] − [Возраст]».
+fn stated(r: &Row) -> bool {
+    matches!(r.role.as_str(), "groom" | "bride" | "deceased") && (r.age_years.is_some_and(|a| a > 0) || r.age_small)
+}
+
+/// Диапазон досье, который терпит несовпадения: сначала записанные
+/// возрасты, затем роли; то, что с уже собранным не сходится, пропускается.
+/// Им сверяется своё рождение (п. 1.3): у человека, которого та же жена
+/// держит в одном досье, ролевые диапазоны могут не сойтись.
+fn loose_range(rows: &[Row], mine: &[usize]) -> Option<(i64, i64)> {
+    let mut order: Vec<usize> = mine.to_vec();
+    order.sort_by_key(|&i| (!stated(&rows[i]), i));
+    order.iter().fold(None, |acc, &i| meet(acc, born_range(&rows[i])).unwrap_or(acc))
+}
+
 /// Ключ досье, который не меняется при пересохранении записи: номер
 /// упоминания меняется (запись переписывает людей заново), а номер записи и
 /// место человека в ней — нет (долг п. 74).
@@ -215,7 +238,8 @@ fn stable(r: &Row) -> String {
 /// Персона с диапазонами, которые не сходятся, — несколько людей (Ж1.2):
 /// умершая 2,5 лет и восприемница-тёзка того же пункта. Части — по порядку
 /// лет; «возможно» между ними не ставится: это однозначно разные люди.
-fn split_by_age(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], first_adult: usize, maybe: &mut Vec<(usize, usize)>) {
+fn split_by_age(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &[Option<usize>],
+                first_adult: usize, maybe: &mut Vec<(usize, usize)>) {
     for p in first_adult..persons.len() {
         if persons[p].rows.is_empty() || kind_of(&rows[persons[p].rows[0]].role) == Kind::Clergy || range_of(rows, &persons[p].rows).is_ok() {
             continue;
@@ -248,6 +272,25 @@ fn split_by_age(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], fi
                 }
             }
         }
+        // Та же жена (муж) сильнее ролевых диапазонов (п. 1.1, Роман 20.10.2026:
+        // «наличие одной и той же супруги должно было стопроцентно склеить эти
+        // записи»): упоминание без записанного возраста, у которого супруг тот
+        // же, что у главной части, остаётся в ней. Разводят только записанные
+        // возрасты — их диапазон основная часть уже собрала.
+        let wed = |i: usize, j: usize| match (spouse[i], spouse[j]) {
+            (Some(a), Some(b)) => same_spouse(&rows[a], &rows[b]) && same_human(&rows[a], &rows[b]),
+            _ => false,
+        };
+        rest.retain(|&i| {
+            if !stated(&rows[i]) && main.1.iter().any(|&j| wed(i, j)) {
+                main.1.push(i);
+                false
+            } else {
+                true
+            }
+        });
+        let main_list = main.1.clone();
+        let main_range = main.0;
         let mut parts: Vec<(Option<(i64, i64)>, Vec<usize>)> = vec![main];
         for &i in &rest {
             let r = born_range(&rows[i]);
@@ -273,11 +316,21 @@ fn split_by_age(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], fi
                 owner[i] = n;
             }
             // Отрезана одна запись со взрослым возрастом — может быть и ошибкой
-            // в возрасте («50» вместо «20»): «возможно». Ребёнок и умерший
-            // младенец (до 10 лет) — однозначно другой человек (Роман 19.10.2026).
-            let r = &rows[list[0]];
-            let infant = r.role == "child" || (r.role == "deceased" && (r.age_small || r.age_years.is_some_and(|a| a <= 10)));
-            if list.len() == 1 && !infant {
+            // в возрасте («50» вместо «20»): «возможно». Часть побольше — тоже,
+            // если с главной её связывает супруг или годы рядом (до 5 лет
+            // разрыва): Роман 20.10.2026 — «он был обязан вывести эту запись в
+            // плашке „Возможно“». Ребёнок и умерший младенец (до 10 лет) —
+            // однозначно другой человек (Роман 19.10.2026).
+            let infant = list.iter().any(|&i| {
+                let r = &rows[i];
+                r.role == "child" || (r.role == "deceased" && (r.age_small || r.age_years.is_some_and(|a| a <= 10)))
+            });
+            let near = match (main_range, range_of(rows, &list).ok().flatten()) {
+                (Some((a0, a1)), Some((b0, b1))) => b0 - a1 <= AGE_SLACK && a0 - b1 <= AGE_SLACK,
+                _ => false,
+            };
+            let linked = list.iter().any(|&i| main_list.iter().any(|&j| wed(i, j)));
+            if !infant && (list.len() == 1 || near || linked) {
                 maybe.push((p, n));
             }
         }
@@ -465,7 +518,10 @@ fn split_by_spouse(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row],
             let marker = cur.rows.iter().any(|&i| matches!(rows[i].role.as_str(), "groom" | "bride") && remarried(&rows[i]));
             let gone = deaths.get(rows[prev.rep].first_n.as_str()).into_iter().flatten().any(|&d| {
                 let dr = &rows[d];
-                same_human(&rows[prev.rep], dr)
+                // Родственник «муж» в записи о смерти, если записан, — этот же
+                // человек (долг п. 70): иначе умерла тёзка его жены.
+                let husband_fits = spouse[d].is_none_or(|h| prev.rows.iter().any(|&i| same_human(&rows[h], &rows[i])));
+                husband_fits && same_human(&rows[prev.rep], dr)
                     && (rows[prev.rep].place_norm.is_empty() || dr.place_norm == rows[prev.rep].place_norm)
                     && dr.year.is_some_and(|y| y >= prev.to.min(cur.from) && y <= cur.from)
             });
@@ -537,7 +593,10 @@ fn unite(persons: &mut Vec<Person>, owner: &mut [usize], rows: &[Row], spouse: &
     }
     // Диапазон года рождения у каждого корня: несовместимых не сливаем
     // (Ж1.2), и цепочка слияний это помнит.
-    let mut ranges: Vec<Option<(i64, i64)>> = persons.iter().map(|p| range_of(rows, &p.rows).ok().flatten()).collect();
+    // Досье, которое держит вместе та же жена, может нести несовместимые
+    // ролевые диапазоны — берём терпимый (ревьюер 20.10.2026: иначе оно
+    // сливалось бы с любым возрастом).
+    let mut ranges: Vec<Option<(i64, i64)>> = persons.iter().map(|p| loose_range(rows, &p.rows)).collect();
     let join = |parent: &mut [usize], ranges: &mut [Option<(i64, i64)>], a: usize, b: usize| -> bool {
         let (a, b) = (root(parent, a), root(parent, b));
         if a == b {
@@ -746,8 +805,8 @@ pub(super) fn build(rows: &mut [Row]) -> (Vec<Person>, Vec<Option<usize>>) {
 
     // Часть 2: тёзки с разными супругами (п. 2.1), с фамилией и без (2.2),
     // женщина после замужества (2.3).
-    split_by_age(&mut persons, &mut owner, rows, first_adult, &mut maybe);
     let spouse = spouses(rows);
+    split_by_age(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);
     split_by_spouse(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);
     unite(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);
 
@@ -785,10 +844,16 @@ pub(super) fn build(rows: &mut [Row]) -> (Vec<Person>, Vec<Option<usize>>) {
         for &b in list {
             let br = &rows[persons[b].rows[0]];
             let score = surname_score(sur, &br.sur_base);
-            // Год рождения — в общем диапазоне взрослого (Ж1.2).
-            let fits = |by: i64| range_of(rows, mine).is_ok_and(|r| r.is_none_or(|(lo, hi)| lo <= by && by <= hi));
-            if score > 0 && br.year.is_some_and(fits) {
+            // Год рождения — в диапазоне взрослого, записанные возрасты первыми
+            // (п. 1.3): «1888 − 42 = 1846 … рождение 1843 … такая погрешность —
+            // норма» (Роман 20.10.2026). Не попал, но рядом (ещё до 3 лет) —
+            // «возможно».
+            let range = loose_range(rows, mine);
+            let within = |by: i64, pad: i64| range.is_none_or(|(lo, hi)| lo - pad <= by && by <= hi + pad);
+            if score > 0 && br.year.is_some_and(|by| within(by, 0)) {
                 pairs.push((g, b, score));
+            } else if score > 0 && br.year.is_some_and(|by| within(by, NEAR_BIRTH)) {
+                maybe.push((g, b));
             }
         }
     }

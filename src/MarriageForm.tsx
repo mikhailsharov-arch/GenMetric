@@ -12,9 +12,10 @@ import { dismissWarn, report, warn } from "./errors";
 import { pageOverflow, turnPage } from "./page";
 import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
 import { setDirty } from "./dirty";
-import { maskFragment, rankForRole, titleCase } from "./names";
+import { maskFragment, rankForRole, titleCase, dayMonth } from "./names";
 import type { FormProps } from "./formprops";
 import { useFillDown } from "./fill";
+import { useNewYear } from "./newyear";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
 /**
@@ -103,7 +104,6 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
   // чистого листа, а если у года нет папки сканов — окно выбора папки
   // (Роман 19.10.2026, спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7).
   const scanCtx = useScan();
-  const yearLeft = useRef<number | null>(null);
   const savedList = useRef<HTMLTableElement>(null);
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
@@ -136,6 +136,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
                                month: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   useFillDown(savedList, [saved.length]);
+  const yearHand = useNewYear(year, editingId !== null, onNewYear, scanCtx.askDir);
   const [busy, setBusy] = useState(false);
   // Скан записи: новая получает открытый разворот, запись на правке — свой (scan.tsx).
   const root = useRef<HTMLDivElement>(null);
@@ -165,12 +166,28 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
     // Год набирают по цифре — ответ на прежний год отбрасывается.
     const mine = ++listSeq.current;
     invoke<Brief[]>("entry_list", { section: 2, year, last: false })
-      .then((rows) => { if (mine === listSeq.current) setSaved(rows); })
+      .then((rows) => {
+        if (mine !== listSeq.current) return;
+        setSaved(rows);
+        if (pageFromList.current) {
+          pageFromList.current = false;
+          if (rows[0]?.page) setPage(rows[0].page);
+        }
+      })
       .catch((e) => report("Не удалось прочитать список набранных браков", e));
   }
 
   /** Продолжить с места: страница, год, месяц, следующий номер, причт. */
+  /** Форма уже встала на новый год с чистого листа (окно при запуске
+   *  встало на начатый пустой год): «продолжить с места» прежнего года
+   *  её не возвращает — у Романа 20.10.2026 форма рождений после
+   *  перезапуска оставалась на 1901 при пустом деле 1902, и смена года
+   *  ничего не делала (спека 2026-10-20-dosye-i-dovodka, п. 2). */
+  const placedFresh = useRef(false);
+  /** Вернулись на год с записями — страница из его последней записи (долг п. 77). */
+  const pageFromList = useRef(false);
   function resume(last: Brief) {
+    if (placedFresh.current) return;
     setPage((v) => v ?? last.page);
     if (last.event_year !== null) setYear(last.event_year);
     setCount((v) => v ?? (last.no_male !== null ? last.no_male + 1 : null));
@@ -357,6 +374,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
   /** Новый год без записей — форма с чистого листа (Роман 16.10.2026): и
    *  сразу, и после правки, прерванной сменой года (проверяющий 19.10.2026). */
   function startFresh(_y: number) {
+    placedFresh.current = true;
     setPage(null);
     setCount(1);
     setDay(null);
@@ -367,9 +385,20 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
     // Запись открыта на правку — год у неё свой; новый год дела форма
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
-    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh; }
+    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh || !!workYear.freshSections?.includes(2); }
     // Год без записей — форма с чистого листа (Роман 16.10.2026).
-    if (workYear.fresh && editingId === null) startFresh(workYear.year);
+    // Год без записей в этом разделе — с чистого листа; с записями — со
+    // страницы последней из них (долг п. 77).
+    const freshHere = workYear.fresh || !!workYear.freshSections?.includes(2);
+    if (freshHere && editingId === null) startFresh(workYear.year);
+    // Только смена года из формы (`newYear` несёт `freshSections`): «Сохранить
+    // дело» на экране «Дело» набранную страницу не трогает (ревьюер 20.10.2026).
+    else if (editingId === null && workYear.freshSections) {
+      pageFromList.current = true;
+      // Год на этой форме уже тот (его сменили здесь же): список сам не
+      // перечитается — перечитать, чтобы взять страницу.
+      if (workYear.year === year) refresh();
+    }
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 2) void openEntry(openReq.id);
@@ -548,12 +577,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
       )}
       <section>
         <div className="row tight">
-          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930}
-                       onLeave={() => {
-                         if (editingId !== null || year === null || year < 1700 || !onNewYear || yearLeft.current === year) return;
-                         yearLeft.current = year;
-                         void onNewYear(year).then((fresh) => { if (fresh) scanCtx.askDir(year); });
-                       }} />
+          <NumberField label="Год" value={year} onChange={(v) => yearHand.byHand(v, setYear)} min={1700} max={1930}
+                       onLeave={yearHand.leave} />
           <PageField label="Стр." value={page} onChange={setPage} />
           {/* Вне обхода клавишами: «нумерация идет строго по порядку» (Роман
               06.10.2026). Мышью и кнопками «+/−» поправить можно. */}
@@ -691,7 +716,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
                     {/* Номер (счёт) перед датой — Роман 27.09.2026. */}
-                    {e.no_male !== null ? `№ ${e.no_male}` : "без №"} · {e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.groom || "жених не указан"}
+                    {e.no_male !== null ? `№ ${e.no_male}` : "без №"} · {dayMonth(e.event_day, e.event_month)} · {e.groom || "жених не указан"}
                     <span className="sub"> и {e.bride || "невеста не указана"}</span>
                   </td>
                   <td>стр. {e.page ?? "—"}</td>

@@ -172,6 +172,17 @@ pub fn looks_like_patronymic(word: &str) -> bool {
         .iter().any(|e| w.ends_with(e))
 }
 
+/// Один человек в подсказке персон: ИОФ в современном написании (имя и
+/// отчество из словаря, фамилия как есть), без регистра и конечного «ъ».
+/// «Ксения Александрова» и «Ксения Александровна» — один ключ (Роман
+/// 20.10.2026: две одинаковые на вид строки подсказки).
+pub fn person_key(conn: &Connection, iof: &str, name_surname: bool) -> Result<String, String> {
+    let p = parse_iof_with(conn, iof, name_surname)?;
+    let words = [p.first_name_modern.or(p.first_name), p.patronymic_modern.or(p.patronymic), p.surname];
+    Ok(words.into_iter().flatten().map(|w| crate::text::normalize_name(&w)).filter(|w| !w.is_empty())
+        .collect::<Vec<_>>().join(" "))
+}
+
 pub fn parse_iof_in(conn: &Connection, text: &str) -> Result<ParsedIof, String> {
     parse_iof_with(conn, text, false)
 }
@@ -703,6 +714,10 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
         let keep_scan = entry.scan_file.is_none();
         let scan_file = entry.scan_file.as_ref().and_then(|f| f.as_deref()).map(str::trim).filter(|f| !f.is_empty())
             .map(|f| f.rsplit(['/', '\\']).next().unwrap_or(f).to_string());
+        // Правка: вклад прежних людей записи в память подсказок снимается до
+        // правки записи — она может перейти в дело другого года, а частота
+        // снимается с прежнего (ревьюер 20.10.2026). Новые прибавляются ниже.
+        let forgotten = match entry.id { Some(id) => forget_entry(conn, id, parish)?, None => Vec::new() };
         let entry_id = match entry.id {
             Some(id) => {
                 conn.execute(&statement("entry_update")?, rusqlite::named_params! {
@@ -810,19 +825,21 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             }
             // «***» (имя не указано) — не имя: в частоты и память персон не идёт.
             let nameless = person.first_name.as_deref().map(str::trim) == Some(NO_NAME);
-            if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty() && !nameless) {
+            if let Some(name) = person.first_name.as_deref().map(str::trim).filter(|v| !v.is_empty() && !nameless && !v.contains('*')) {
                 remember(conn, "first_name", name, case_id, parish)?;
             }
             // Фамилии прихода — для подсказки третьим словом ИОФ (Роман
             // 05.10.2026: «чтобы не плодить дубли вроде „Томилин“ и „Тамилин“»).
             // Причт не считаем: он повторяется в каждой записи, и фамилия
             // священника стояла бы первой на свою букву (ревьюер).
+            // Обрывок со звёздочками («Яготи***») — не фамилия: в частоты не
+            // идёт (Роман 20.10.2026). Форма сама превращает его в «***».
             if let Some(surname) = person.surname.as_deref().map(str::trim)
-                .filter(|v| !v.is_empty() && !person.role_code.starts_with("clergy"))
+                .filter(|v| !v.is_empty() && !v.contains('*') && !person.role_code.starts_with("clergy"))
             {
                 remember(conn, "surname", surname, case_id, parish)?;
             }
-            if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty() && *v != NO_NAME) {
+            if let Some(patr) = person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty() && !v.contains('*')) {
                 remember(conn, "patronymic", patr, case_id, parish)?;
             }
 
@@ -844,7 +861,9 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             // Умерший — нет: живым в следующих записях он не встретится, а в
             // подсказках отцов и восприемников мешал бы (ревьюер 27.09.2026).
             let iof = person_iof(person);
-            if !iof.is_empty() && person.role_code != "deceased" && !nameless {
+            // Обрывок со звёздочками («Даниил Филиппов ***») — не человек для
+            // подсказки (ревьюер 20.10.2026).
+            if !iof.is_empty() && person.role_code != "deceased" && !nameless && !iof.contains('*') {
                 conn.execute(&statement("person_remember")?, rusqlite::named_params! {
                     ":iof": iof, ":iof_norm": normalize(&iof),
                     ":place": place_name, ":rank": person.rank, ":gender": person.gender,
@@ -888,6 +907,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
                 }).map_err(|e| e.to_string())?;
             }
         }
+        drop_orphan_lookups(conn, &forgotten)?;
         Ok(Saved { id: entry_id, case_id, new_case_year, fallback_case: fallback.is_some(),
                    fallback_year: fallback.flatten() })
     }
@@ -951,6 +971,85 @@ pub fn place_id_for(conn: &Connection, name: &str) -> Result<i64, String> {
 /// Запоминает введённое значение: пополняет справочник и наращивает частоту
 /// в трёх охватах — дело, приход, вся база. Именно в таком порядке потом
 /// выдаются подсказки.
+/// Снять вклад людей записи в память подсказок — то же, что прибавляет
+/// сохранение (имена, отчества, фамилии, память персон и причта), с теми же
+/// условиями. Звания и прочие перечни не трогаются.
+fn forget_entry(conn: &Connection, entry_id: i64, parish: &str) -> Result<Vec<(&'static str, String)>, String> {
+    struct Old { role: String, first: Option<String>, patr: Option<String>, surname: Option<String>,
+                 rank: Option<String>, place: Option<String>, case_id: i64 }
+    let old: Vec<Old> = {
+        let mut stmt = conn.prepare(&statement("mentions_before_edit")?).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::named_params! { ":entry_id": entry_id }, |r| Ok(Old {
+            role: r.get(0)?, first: r.get(1)?, patr: r.get(2)?, surname: r.get(3)?, rank: r.get(4)?,
+            place: r.get(5)?, case_id: r.get(6)?,
+        })).map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let old_iof = |o: &Old| [&o.first, &o.patr, &o.surname].iter()
+        .filter_map(|v| v.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .collect::<Vec<_>>().join(" ");
+    let clean = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty() && !v.contains('*')).map(str::to_string);
+    let mut names: Vec<(&'static str, String)> = Vec::new();
+    for o in &old {
+        let nameless = o.first.as_deref().map(str::trim) == Some(NO_NAME);
+        let mut kinds: Vec<(&'static str, String)> = Vec::new();
+        if let Some(v) = clean(&o.first).filter(|_| !nameless) { kinds.push(("first_name", v)); }
+        if let Some(v) = clean(&o.surname).filter(|_| !o.role.starts_with("clergy")) { kinds.push(("surname", v)); }
+        if let Some(v) = clean(&o.patr) { kinds.push(("patronymic", v)); }
+        names.extend(kinds.iter().cloned());
+        for (kind, value) in kinds {
+            for (scope, key) in [("case", o.case_id.to_string()), ("parish", parish.to_string()), ("global", String::new())] {
+                conn.execute(&statement("usage_unbump")?, rusqlite::named_params! {
+                    ":kind": kind, ":scope": scope, ":scope_key": key, ":value": value,
+                }).map_err(|e| e.to_string())?;
+            }
+            conn.execute(&statement("usage_drop_empty")?, rusqlite::named_params! { ":kind": kind, ":value": value })
+                .map_err(|e| e.to_string())?;
+        }
+        let iof = old_iof(o);
+        if iof.is_empty() || nameless {
+            continue;
+        }
+        if o.role.starts_with("clergy") {
+            conn.execute(&statement("clergy_unremember")?, rusqlite::named_params! { ":iof": iof, ":rank": o.rank })
+                .map_err(|e| e.to_string())?;
+            conn.execute(&statement("clergy_drop_empty")?, rusqlite::named_params! { ":iof": iof })
+                .map_err(|e| e.to_string())?;
+        } else if o.role != "deceased" && !iof.contains('*') {
+            conn.execute(&statement("person_unremember")?, rusqlite::named_params! {
+                ":iof": iof, ":place": o.place, ":rank": o.rank,
+            }).map_err(|e| e.to_string())?;
+            conn.execute(&statement("person_drop_empty")?, rusqlite::named_params! { ":iof": iof })
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // Пары «муж — жена» (отец — мать, жених — невеста): так же, как их
+    // запоминает сохранение.
+    for (h, w) in [("father", "mother"), ("groom", "bride")] {
+        let (Some(h), Some(w)) = (old.iter().find(|o| o.role == h), old.iter().find(|o| o.role == w)) else { continue };
+        // Как `no_first_name` при сохранении: не в счёт только «***».
+        let named = |o: &Old| o.first.as_deref().map(str::trim) != Some(NO_NAME);
+        let (husband, wife) = (old_iof(h), old_iof(w));
+        if husband.is_empty() || wife.is_empty() || !named(h) || !named(w) {
+            continue;
+        }
+        let pair = rusqlite::named_params! { ":husband_norm": normalize(&husband), ":wife_iof": wife };
+        conn.execute(&statement("spouse_unremember")?, pair).map_err(|e| e.to_string())?;
+        conn.execute(&statement("spouse_drop_empty")?, pair).map_err(|e| e.to_string())?;
+    }
+    Ok(names)
+}
+
+/// Значения, которые правка убрала из записи и которых больше нет нигде, —
+/// из перечней, пополненных набором (после сохранения новых людей).
+fn drop_orphan_lookups(conn: &Connection, values: &[(&str, String)]) -> Result<(), String> {
+    for (kind, value) in values {
+        conn.execute(&statement("lookup_drop_orphan")?, rusqlite::named_params! { ":kind": kind, ":value": value })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &str)
     -> Result<(), String>
 {

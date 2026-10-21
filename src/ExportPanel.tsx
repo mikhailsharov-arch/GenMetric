@@ -4,6 +4,7 @@ import Modal from "./Modal";
 import { focusNextField } from "./focus";
 import { report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
+import { stripPlaceType } from "./names";
 
 /**
  * Выгрузка (сборка #39, Роман 30.09.2026).
@@ -49,7 +50,8 @@ function yearsText(years: number[]): string {
  *  Борисоглебское за 1898 год». */
 function defaultTitle(village: string, years: number[]): string {
   const y = yearsText(years);
-  const where = village ? ` ${village}` : "";
+  // Без приставки типа: «Метрическая книга Балахонка», не «д.Балахонка» (долг п. 75).
+  const where = village ? ` ${stripPlaceType(village)}` : "";
   if (!y) return `Метрические книги${where}`;
   return years.length > 1 && y.includes("-")
     ? `Метрические книги${where} за ${y} годы`

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
+import { markReviewAfterImport } from "./reviewmark";
 import { dirtyForms } from "./dirty";
 import { report } from "./errors";
 
@@ -168,6 +169,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
       });
       setDone(d);
       setMode("done");
+      // После перезагрузки окна экран «Дело» сам откроет список на сверку.
+      markReviewAfterImport();
     } catch (e) {
       // Чаще всего — занятое название: файл программа помнит, поправьте и повторите.
       setRefused(`Импорт не прошёл, приход не создан. ${String(e)}`);

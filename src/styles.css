@@ -662,6 +662,12 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 /* Окно «Приходы» и импорт из Excel (02.10.2026). */
 .parishrow { display: flex; align-items: baseline; gap: 0.6em; margin: 0 0 0.3em; font-size: 0.9rem; }
 .parishrow b { font-weight: 600; }
+/* Список на сверку после импорта — заметно (Роман 20.10.2026). */
+.reviewbar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em 0.8em; margin: 0.3em 0 0.5em;
+             padding: 0.5em 0.7em; background: #fff1c2; border: 0.125em solid #e0a800; border-radius: 0.4em;
+             font-size: 0.95rem; color: #4a3800; }
+.reviewbar b { font-weight: 700; }
+.reviewbar button.primary { width: auto; }
 .facts.parishes td { vertical-align: top; }
 .facts.parishes tr.editing td { background: #fff7e0; }
 .refused { margin: 0 0 0.5em; padding: 0.4em 0.6em; background: #fff7e0; border: 0.0625em solid #e6c766; border-radius: 0.4em; font-size: 0.85rem; }

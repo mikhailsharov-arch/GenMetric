@@ -691,12 +691,21 @@ struct OpenedYear {
     /// Дело завела эта команда (а не человек на экране «Дело»): только такое
     /// пустое дело можно убрать при возврате (ревьюер 19.10.2026).
     created: bool,
+    /// Год без записей не заведён: в прежнем году нет записей — похоже на
+    /// опечатку; окно говорит об этом полосой (Роман 20.10.2026).
+    typo: bool,
+    /// Записей этого года по разделам (рождения, браки, смерти): форма, в
+    /// разделе которой их нет, начинает год с чистого листа (спека
+    /// 2026-10-20-dosye-i-dovodka, п. 2).
+    sections: [i64; 3],
 }
 
 /// Год на форме сменили (спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7;
 /// Роман 19.10.2026: «программа должна автоматически переключить на этот
-/// год и две другие вкладки»). Новый год — следующий за последним набранным,
-/// или у которого дело уже заведено, или первый в приходе: дело заводится
+/// год и две другие вкладки»). Новый год — следующий за любым годом с
+/// записями (не только за самым поздним в приходе: Роман набирает и
+/// приходы с годами вразброс), или у которого дело уже заведено, или первый
+/// в приходе: дело заводится
 /// (копией реквизитов), `fresh`. Год с записями — его дело, без чистого
 /// листа (возврат после опечатки). Дальний год без записей (1889 → 1898) —
 /// None: опечатка не должна заводить дело и стирать формы (ревьюер 19.10.2026).
@@ -710,15 +719,21 @@ fn case_open_year(app: State<App>, year: i64) -> Result<OpenedYear, String> {
             .query_row("SELECT max(c.year) FROM entry e JOIN mk_case c ON c.id = e.case_id", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         let fresh = entries == 0;
+        let mut sections = [0i64; 3];
+        for (k, n) in sections.iter_mut().enumerate() {
+            *n = conn.query_row("SELECT count(*) FROM entry e JOIN mk_case c ON c.id = e.case_id WHERE c.year = ?1 AND e.section = ?2",
+                                rusqlite::params![year, k as i64 + 1], |r| r.get(0)).map_err(|e| e.to_string())?;
+        }
         // В приходе ещё нет ни одной записи — переходить не с чего: формы и так
         // с чистого листа, а набранную до года страницу стирать нельзя (e2e
         // 19.10.2026: страница, набранная до года, пропадала). Год получит
         // дело при первой записи, как раньше.
         if last.is_none() {
-            return Ok(OpenedYear { case: None, fresh, created: false });
+            return Ok(OpenedYear { case: None, fresh, created: false, typo: false, sections });
         }
-        if fresh && !has_case && last.is_some_and(|l| year != l + 1) {
-            return Ok(OpenedYear { case: None, fresh, created: false });
+        let before = count("SELECT count(*) FROM entry e JOIN mk_case c ON c.id = e.case_id WHERE c.year = ?1 - 1")?;
+        if fresh && !has_case && before == 0 {
+            return Ok(OpenedYear { case: None, fresh, created: false, typo: true, sections });
         }
         let created = fresh && genmetric_core::records::case_for_year(conn, year)?.1;
         let case = conn.query_row(&statement("case_current")?, rusqlite::named_params! { ":year": year },
@@ -729,7 +744,7 @@ fn case_open_year(app: State<App>, year: i64) -> Result<OpenedYear, String> {
             }))
             .optional()
             .map_err(|e| e.to_string())?;
-        Ok(OpenedYear { case, fresh, created })
+        Ok(OpenedYear { case, fresh, created, typo: false, sections })
     })
 }
 
@@ -791,6 +806,8 @@ fn suggest_person(handle: tauri::AppHandle, app: State<App>, prefix: String, lim
               else { statement("person_suggest")? };
     let pattern = like_prefix(&prefix);
     let limit = limit.unwrap_or(8).clamp(1, 50);
+    // С запасом: одинаковые на вид строки ниже сворачиваются.
+    let fetch = (limit * 2).min(100);
     let found = with_conn(&app, &format!("Поиск персоны «{prefix}»"), |conn| {
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let hint = |r: &rusqlite::Row| -> rusqlite::Result<PersonHint> {
@@ -801,10 +818,10 @@ fn suggest_person(handle: tauri::AppHandle, app: State<App>, prefix: String, lim
         };
         let rows = match &mask {
             Some((name, rest)) => stmt.query_map(rusqlite::named_params! {
-                ":name": name, ":rest": rest, ":limit": limit, ":gender": gender,
+                ":name": name, ":rest": rest, ":limit": fetch, ":gender": gender,
             }, hint),
             None => stmt.query_map(rusqlite::named_params! {
-                ":prefix": pattern, ":limit": limit, ":gender": gender,
+                ":prefix": pattern, ":limit": fetch, ":gender": gender,
             }, hint),
         }
         .map_err(|e| e.to_string())?;
@@ -830,7 +847,21 @@ fn suggest_person(handle: tauri::AppHandle, app: State<App>, prefix: String, lim
                 hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());
             }
         }
-        Ok((out, genmetric_core::search::changes(conn)?))
+        // Один человек — одна строка: книжные написания одного отчества
+        // («Александрова» и «Александровна») у того же пункта сворачиваются,
+        // остаётся самая частая строка, частоты складываются (Роман
+        // 20.10.2026: «две абсолютно одинаковые персоны»).
+        let mut seen: Vec<(String, Option<String>)> = Vec::new();
+        let mut kept: Vec<PersonHint> = Vec::new();
+        for hint in out {
+            let key = (genmetric_core::records::person_key(conn, &hint.iof, hint.name_surname)?, hint.place.clone());
+            match seen.iter().position(|k| *k == key) {
+                Some(n) => kept[n].uses += hint.uses,
+                None => { seen.push(key); kept.push(hint); }
+            }
+        }
+        kept.truncate(limit as usize);
+        Ok((kept, genmetric_core::search::changes(conn)?))
     })?;
     let (mut out, now) = found;
     // Умершие — по памяти поиска (связи «семьи целиком»). Её перестройка
@@ -1179,7 +1210,7 @@ async fn person_dossier(app: State<'_, App>, key: String, place: String, filter:
     Ok(genmetric_core::search::dossier_in(&index, &key, &place, &filter))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct PlaceCheck {
     known: bool,
     /// Написание известного пункта в справочнике — поле НП приводит к нему
@@ -1188,6 +1219,10 @@ struct PlaceCheck {
     similar: Vec<Similar>,
     /// Волость последнего пункта, заведённого человеком, — в карточку нового.
     last_volost: String,
+    /// Тип, губерния и уезд того же пункта (Роман 20.10.2026).
+    last_type: String,
+    last_guberniya: String,
+    last_uyezd: String,
 }
 
 /// Известен ли населённый пункт, и на что он похож, если нет. Форма
@@ -1198,7 +1233,7 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
     with_conn(&app, &format!("Проверка НП «{name}»"), |conn| {
         let norm = normalize(&name);
         if norm.is_empty() {
-            return Ok(PlaceCheck { known: true, canonical: None, similar: vec![], last_volost: String::new() });
+            return Ok(PlaceCheck { known: true, canonical: None, similar: vec![], ..PlaceCheck::default() });
         }
         let known: Option<String> = conn
             .query_row(&statement("place_find")?, rusqlite::named_params! { ":name_norm": norm },
@@ -1206,10 +1241,10 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
             .optional()
             .map_err(|e| e.to_string())?;
         if known.is_some() {
-            return Ok(PlaceCheck { known: true, canonical: known, similar: vec![], last_volost: String::new() });
+            return Ok(PlaceCheck { known: true, canonical: known, similar: vec![], ..PlaceCheck::default() });
         }
-        let last_volost: String = conn
-            .query_row(&statement("place_last_volost")?, [], |r| r.get(0))
+        let (last_volost, last_type, last_guberniya, last_uyezd): (String, String, String, String) = conn
+            .query_row(&statement("place_last_volost")?, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
@@ -1241,7 +1276,7 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
                 similar.push(s);
             }
         }
-        Ok(PlaceCheck { known: false, canonical: None, similar, last_volost })
+        Ok(PlaceCheck { known: false, canonical: None, similar, last_volost, last_type, last_guberniya, last_uyezd })
     })
 }
 
@@ -1339,7 +1374,7 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
             ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
             ":familio_url": blank(&card.familio_url),
-            ":clean": clean, ":comment": if comment.is_empty() { None } else { Some(comment.clone()) },
+            ":clean": genmetric_core::text::strip_place_type(&clean), ":comment": if comment.is_empty() { None } else { Some(comment.clone()) },
         }).map_err(|e| {
             if e.to_string().contains("UNIQUE") {
                 format!("Пункт «{name}» с такими типом, уездом и губернией уже есть в справочнике")
@@ -1474,7 +1509,7 @@ fn place_save(app: State<App>, card: PlaceCard) -> Result<i64, String> {
             ":np_type": blank(&card.np_type), ":guberniya": blank(&card.guberniya),
             ":uyezd": blank(&card.uyezd), ":volost": blank(&card.volost),
             ":familio_url": blank(&card.familio_url),
-            ":clean": clean, ":comment": if comment.is_empty() { None } else { Some(comment.clone()) },
+            ":clean": genmetric_core::text::strip_place_type(&clean), ":comment": if comment.is_empty() { None } else { Some(comment.clone()) },
         }).map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         // Пункт заведён — тогда и частоты: не раньше, чтобы сбой вставки не
@@ -1599,19 +1634,41 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
             .query_map(rusqlite::named_params! {
                 ":section": section, ":year": year, ":last": last.unwrap_or(false) as i64,
             }, |r| {
-                Ok(EntryBrief {
+                Ok((EntryBrief {
                     id: r.get(0)?, page: r.get(1)?, no_male: r.get(2)?, no_female: r.get(3)?,
                     event_day: r.get(4)?, event_month: r.get(5)?, event_year: r.get(6)?,
                     rite_month: r.get(7)?, child: r.get(8)?, father: r.get(9)?,
                     clergy_noname: r.get::<_, i64>(10)? != 0,
                     groom: r.get(11)?, bride: r.get(12)?, deceased: r.get(13)?,
                     rite_year: r.get(14)?, scan_file: r.get(15)?, rite_day: r.get(16)?,
-                })
+                }, r.get::<_, Option<String>>(17)?, r.get::<_, Option<String>>(18)?))
             })
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
+        // Одна семья — много младенцев: полное ИОФ считается один раз на
+        // имя, пол и отца (ревьюер 20.10.2026: словарь читался на строку).
+        let mut known: std::collections::HashMap<(String, Option<String>, String), Option<String>> = std::collections::HashMap::new();
         for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
+            let (mut brief, gender, father) = row.map_err(|e| e.to_string())?;
+            // Младенец одним именем — полным ИОФ по отцу, тем же правилом, что
+            // строка разбора под полем (только показ; в базе — как в книге).
+            if let (Some(dead), Some(father)) = (brief.deceased.as_deref(), father.as_deref()) {
+                if !dead.trim().is_empty() && !dead.trim().contains(' ') {
+                    let key = (dead.to_string(), gender.clone(), father.to_string());
+                    let full = match known.get(&key) {
+                        Some(v) => v.clone(),
+                        None => {
+                            let v = genmetric_core::search::child_full_iof(conn, dead, gender.as_deref(), father, false).ok().flatten();
+                            known.insert(key, v.clone());
+                            v
+                        }
+                    };
+                    if let Some(full) = full {
+                        brief.deceased = Some(full);
+                    }
+                }
+            }
+            out.push(brief);
         }
         Ok(out)
     })

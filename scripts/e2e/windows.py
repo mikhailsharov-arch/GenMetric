@@ -588,7 +588,8 @@ def run(driver, wait, archive):
         "  const hints = await call('suggest_person', {prefix: 'Пётр', limit: 6, gender: null, preferInfant: false,"
         "                                             keepWifeRank: false, living: true});"
         "  const oldYear = await call('case_open_year', {year: 1897});"
-        "  return {kids: kids.persons, full, none, hints, oldYear};"
+        "  const deaths = await call('entry_list', {section: 3, year: 1897, last: false});"
+        "  return {kids: kids.persons, full, none, hints, oldYear, deaths};"
         "})().then(done, (e) => done({error: String(e)}));")
     check("семья целиком: команды отвечают без ошибки", "error" not in fam, str(fam)[:400])
     if "error" not in fam:
@@ -601,6 +602,10 @@ def run(driver, wait, archive):
         old = fam.get("oldYear") or {}
         check("год с записями (1897): case_open_year отдаёт его дело без чистого листа и ничего не заводит",
               (old.get("case") or {}).get("year") == 1897 and old.get("fresh") is False and old.get("created") is False, str(old)[:300])
+        check("case_open_year отдаёт записи года по разделам (рождения есть)",
+              isinstance(old.get("sections"), list) and len(old["sections"]) == 3 and old["sections"][0] > 0, str(old.get("sections")))
+        check("список смертей с полом и отцом умершего читается настоящим Rust",
+              isinstance(fam.get("deaths"), list), str(fam.get("deaths"))[:300])
         check("подсказка персон несёт год смерти (живые — пусто)",
               isinstance(fam["hints"], list) and len(fam["hints"]) > 0 and all("died" in h for h in fam["hints"]),
               str(fam["hints"])[:300])
@@ -1445,6 +1450,28 @@ def parishes(driver, wait):
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
     year = field(driver, "Год", b).get_attribute("value")
     check("формы встали на новый год", year == "1891", f"«{year}»")
+    # Спека 2026-10-20-dosye-i-dovodka, п. 2 (Роман 20.10.2026): год меняют
+    # кнопками «+/−», без ухода из поля. «−» на 1890 (год с записями), страница
+    # «5», «+» на 1891 (пустое дело заведено заранее) — форма с чистого листа:
+    # без нового года страница осталась бы «5».
+    plus = b + "div[contains(@class,'field')][./label[normalize-space()='Год']]//button[@aria-label='Больше']"
+    minus = b + "div[contains(@class,'field')][./label[normalize-space()='Год']]//button[@aria-label='Меньше']"
+    # Системное окно выбора папки роботу недоступно: «отмена» вместо него.
+    driver.execute_script("window.__pickScanDir = () => null;")
+    click(driver, minus)
+    time.sleep(1.5)
+    fill(driver, "Стр.", "5", b)
+    click(driver, plus)
+    time.sleep(2.0)
+    for _ in range(3):  # окно выбора папки сканов, если открылось
+        if not driver.find_elements(By.CSS_SELECTOR, ".modal"):
+            break
+        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        time.sleep(0.3)
+    year = field(driver, "Год", b).get_attribute("value")
+    page = field(driver, "Стр.", b).get_attribute("value")
+    check("кнопка «+» года: 1891 с чистого листа (страница пуста)", year == "1891" and page == "",
+          f"год «{year}», стр. «{page}» | " + error_details(driver))
     driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
     # Год без правки реквизитов и уход из поля — открывает дело этого года.
     fill(driver, "Год книги", "1890")
@@ -1511,13 +1538,21 @@ def parishes(driver, wait):
           "Не перенесено строк: 1" in report and "Жданко" in report, report.replace("\n", " | ")[:400])
     click(driver, PARISH + "//button[normalize-space()='Перейти в приход']")
     reloaded(driver, wait, "Никольское (из Excel)")
-    # Список на сверку после импорта (Роман 03.10.2026).
-    rows = driver.execute_script(
-        "return [...document.querySelectorAll('.parishrow')].map((e) => e.innerText);") or []
-    check("на экране «Дело» — «На сверку после импорта»", any("На сверку после импорта" in r for r in rows), " || ".join(rows))
-    click(driver, "//div[contains(@class,'parishrow')][contains(.,'На сверку')]//button")
+    # Список на сверку после импорта (Роман 03.10.2026) открывается сам и виден
+    # заметной полосой (Роман 20.10.2026: второй тестировщик его не заметил).
     review = "//div[@data-modal='review']"
-    wait.until(EC.visibility_of_element_located((By.XPATH, review)))
+    try:
+        wait.until(EC.visibility_of_element_located((By.XPATH, review)))
+        auto = True
+    except TimeoutException:
+        auto = False
+    check("после импорта список на сверку открылся сам", auto, error_details(driver))
+    rows = driver.execute_script(
+        "return [...document.querySelectorAll('[data-review-bar]')].map((e) => e.innerText);") or []
+    check("на экране «Дело» — полоса «На сверку после импорта»", any("На сверку после импорта" in r for r in rows), " || ".join(rows))
+    if not auto:
+        click(driver, "//div[@data-review-bar]//button")
+        wait.until(EC.visibility_of_element_located((By.XPATH, review)))
     listing = driver.find_element(By.XPATH, review).text
     check("в списке — несверенное имя и пропущенная строка",
           "Жданко" in listing and "не перенесена" in listing, listing.replace("\n", " | ")[:400])

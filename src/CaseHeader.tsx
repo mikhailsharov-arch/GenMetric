@@ -6,6 +6,7 @@ import { dismissWarn, report, warn } from "./errors";
 import { dirtyForms, setDirty } from "./dirty";
 import ExportPanel from "./ExportPanel";
 import ParishDialog from "./ParishDialog";
+import { takeReviewMark } from "./reviewmark";
 import ReviewDialog from "./ReviewDialog";
 import NumberField from "./NumberField";
 import Modal from "./Modal";
@@ -127,7 +128,14 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
       .catch((e) => report("Не удалось прочитать дело", e));
     void yearsRead.then((v) => { if (v) setYears(v); });
     invoke<number>("review_count")
-      .then(setToReview)
+      .then((n) => {
+        setToReview(n);
+        // Сразу после импорта список открывается сам (Роман 20.10.2026):
+        // окно импорта ставит отметку и перезагружает программу.
+        // Отметка снимается всегда (проверяющий 20.10.2026: после импорта без
+        // строк на сверку она ждала и открывала список позже, невпопад).
+        if (takeReviewMark() && n > 0) setReview(true);
+      })
       .catch((e) => report("Не удалось прочитать список на сверку", e));
   }
   // Запись другого года увела работу в другое дело — перечитать; но не поверх
@@ -325,10 +333,12 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
         <button type="button" className="toggle" onClick={() => setParishes(true)}>Сменить…</button>
       </div>
       {parishes && <ParishDialog onClose={() => setParishes(false)} />}
+      {/* Заметно и всегда под рукой, пока список не пуст (Роман 20.10.2026: второй
+          тестировщик не заметил прежнюю строку, и ошибки импорта осели в базе). */}
       {toReview > 0 && (
-        <div className="parishrow">
-          <span>На сверку после импорта: <b>{toReview}</b></span>
-          <button type="button" className="toggle small" onClick={() => setReview(true)}>Показать…</button>
+        <div className="reviewbar" data-review-bar>
+          <span>На сверку после импорта: <b>{toReview}</b> — проверьте, пока ошибки импорта не разошлись по базе.</span>
+          <button type="button" className="primary" onClick={() => setReview(true)}>Открыть список на сверку</button>
         </div>
       )}
       {review && (

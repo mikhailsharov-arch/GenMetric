@@ -15,9 +15,10 @@ import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, set
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
-import { feminineSurname, maskFragment, rankForRole, titleCase } from "./names";
+import { feminineSurname, maskFragment, rankForRole, titleCase, dayMonth } from "./names";
 import type { FormProps } from "./formprops";
 import { useFillDown } from "./fill";
+import { useNewYear } from "./newyear";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 import { useFullIof } from "./FullIof";
 
@@ -101,7 +102,6 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   // чистого листа, а если у года нет папки сканов — окно выбора папки
   // (Роман 19.10.2026, спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7).
   const scanCtx = useScan();
-  const yearLeft = useRef<number | null>(null);
   const savedList = useRef<HTMLTableElement>(null);
   // Страница — текст: «938об-939» (заказчик 21.09.2026), в базе колонка TEXT.
   const [page, setPage] = useState<string | null>(null);
@@ -265,6 +265,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
                                birthMonth: number | null; riteMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   useFillDown(savedList, [saved.length]);
+  const yearHand = useNewYear(year, editingId !== null, onNewYear, scanCtx.askDir);
   const savedRef = useRef(saved);
   savedRef.current = saved;
   // Год на форме изменён, месяц руками не набирали: когда пришёл список
@@ -324,6 +325,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
         if (mine !== listSeq.current) return;
         savedYear.current = year;
         setSaved(rows);
+        if (pageFromList.current) {
+          pageFromList.current = false;
+          if (rows[0]?.page) setPage(rows[0].page);
+        }
       })
       .catch((e) => report("Не удалось прочитать список набранных записей", e));
   }
@@ -335,7 +340,16 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
    * но программа должна запоминать, над чем я работал — стр., счёт, месяц».
    * Только в пустую форму: набранное до перезапуска не трогаем.
    */
+  /** Форма уже встала на новый год с чистого листа (окно при запуске
+   *  встало на начатый пустой год): «продолжить с места» прежнего года
+   *  её не возвращает — у Романа 20.10.2026 форма рождений после
+   *  перезапуска оставалась на 1901 при пустом деле 1902, и смена года
+   *  ничего не делала (спека 2026-10-20-dosye-i-dovodka, п. 2). */
+  const placedFresh = useRef(false);
+  /** Вернулись на год с записями — страница из его последней записи (долг п. 77). */
+  const pageFromList = useRef(false);
   function resume(last: Brief) {
+    if (placedFresh.current) return;
     // Через функциональный setState: resume вызывается из ответа на запрос
     // первого рендера, и замкнутые page/count там всегда пусты — проверка
     // «форма пуста» через них была бы мёртвой (проверяющий 18.09.2026).
@@ -802,6 +816,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   /** Новый год без записей — форма с чистого листа (Роман 16.10.2026): и
    *  сразу, и после правки, прерванной сменой года (проверяющий 19.10.2026). */
   function startFresh(y: number) {
+    placedFresh.current = true;
     setPage(null);
     countManual.current = false;
     setCount(1);
@@ -821,10 +836,21 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
     // Запись открыта на правку — год у неё свой; новый год дела форма
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
-    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh; }
+    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh || !!workYear.freshSections?.includes(1); }
     // Год без записей — форма с чистого листа (Роман 16.10.2026): страница
     // пуста, счёт 1, дни пусты, месяцы — январь.
-    if (workYear.fresh && editingId === null) startFresh(workYear.year);
+    // Год без записей в этом разделе — с чистого листа; с записями — со
+    // страницы последней из них (долг п. 77).
+    const freshHere = workYear.fresh || !!workYear.freshSections?.includes(1);
+    if (freshHere && editingId === null) startFresh(workYear.year);
+    // Только смена года из формы (`newYear` несёт `freshSections`): «Сохранить
+    // дело» на экране «Дело» набранную страницу не трогает (ревьюер 20.10.2026).
+    else if (editingId === null && workYear.freshSections) {
+      pageFromList.current = true;
+      // Год на этой форме уже тот (его сменили здесь же): список сам не
+      // перечитается — перечитать, чтобы взять страницу.
+      if (workYear.year === year) refresh();
+    }
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 1) void openEntry(openReq.id);
@@ -1025,12 +1051,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
       )}
       <section>
         <div className="row tight">
-          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930}
-                       onLeave={() => {
-                         if (editingId !== null || year === null || year < 1700 || !onNewYear || yearLeft.current === year) return;
-                         yearLeft.current = year;
-                         void onNewYear(year).then((fresh) => { if (fresh) scanCtx.askDir(year); });
-                       }} />
+          <NumberField label="Год" value={year} onChange={(v) => yearHand.byHand(v, setYear)} min={1700} max={1930}
+                       onLeave={yearHand.leave} />
           <PageField label="Стр." value={page} onChange={setPage} />
           {/* Вне обхода клавишами: счёт ставится сам, по полу ребёнка (Роман
               08.10.2026). Мышью и кнопками «+/−» поправить можно. */}
@@ -1270,7 +1292,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
                         с колонкой — единственное место, где видно, что счёт лёг
                         по полу ребёнка (инцидент 13.09.2026). */}
                     {e.no_male !== null ? `№ м. ${e.no_male}` : e.no_female !== null ? `№ ж. ${e.no_female}` : "без №"}
-                    {" · "}{e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.child || "без имени"}
+                    {" · "}{dayMonth(e.event_day, e.event_month)} · {e.child || "без имени"}
                     {/* Отец в строке: правка отца иначе в списке не видна (Роман 23.09.2026). */}
                     {e.father && <span className="sub"> · отец {e.father}</span>}
                   </td>

@@ -1,6 +1,6 @@
 // Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { feminineSurname, maskFragment, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel } from "../src/names.ts";
+import { feminineSurname, maskFragment, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel, stripPlaceType, dayMonth } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -76,6 +76,15 @@ same("волость: остальное не трогается", capFirst("н�
 // крейта place_comment (src-tauri/core/src/text.rs).
 same("метка: «Хмельничное» + «Столпино»", placeLabel("Хмельничное", "Столпино"), "Хмельничное (Столпино)");
 same("метка: пустой комментарий — просто название", placeLabel(" Хмельничное ", "  "), "Хмельничное");
+same("дата списка: 1.9 → 01.09", dayMonth(1, 9), "01.09");
+same("дата списка: 24.10", dayMonth(24, 10), "24.10");
+same("дата списка: неизвестный день", dayMonth(null, 3), "?.03");
+// Те же примеры, что в тесте крейта strips_place_type.
+for (const [raw, clean] of [["д. Горелое", "Горелое"], ["с.Керша", "Керша"], ["с-цо Керша", "Керша"], ["дер. Малово", "Малово"],
+                            ["г.Моршанск", "Моршанск"], ["Сл. Красная", "Красная"], ["Горелое", "Горелое"],
+                            ["Сосновка", "Сосновка"], ["д.", "д."], [" с. Солдатчино ", "Солдатчино"]]) {
+  same(`приставка: «${raw}»`, stripPlaceType(raw), clean);
+}
 same("показ: название и комментарий", JSON.stringify(splitPlaceLabel("Хмельничное (Столпино)")), JSON.stringify({ name: "Хмельничное", comment: "Столпино" }));
 same("показ: без скобок — комментария нет", JSON.stringify(splitPlaceLabel("Хмельничное")), JSON.stringify({ name: "Хмельничное", comment: "" }));
 same("показ: его пункт чужого прихода остаётся целым", splitPlaceLabel("д.Балахонка, Заобнорская волость").comment, "");
@@ -126,6 +135,11 @@ for (const [text, want] of [
   ["*** Васильева", null],
   ["Иван ***", null],
   ["Иван Петров", null],
+  // В любом слове ИОФ (Роман 20.10.2026: «Яготи***» запомнилась фамилией).
+  ["Даниил Филиппов Яготи***", { text: "Даниил Филиппов ***", note: "Фамилия в документе не читаема: Яготи" }],
+  ["Павел Дани***вич Яготин", { text: "Павел *** Яготин", note: "Отчество в документе не читаемо: Дани***вич" }],
+  ["Павел Яготи***", { text: "Павел ***", note: "Отчество или фамилия в документе не читаемы: Яготи" }],
+  ["***кея Ва***на", { text: "*** ***", note: "Имя в документе не читаемо: кея; Отчество или фамилия в документе не читаемы: Ва***на" }],
 ]) same(`«${text}»`, JSON.stringify(maskFragment(text)), JSON.stringify(want));
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);

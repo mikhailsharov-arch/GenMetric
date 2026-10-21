@@ -101,6 +101,10 @@ type Props = {
    *  Нужен, чтобы не предлагать мужчине женское отчество. Для ребёнка
    *  и восприемников роль пола не задаёт — тогда берём из разбора имени. */
   gender?: "М" | "Ж";
+  /** Пол в `gender` угадан по имени в этом же поле, а не задан ролью: пока
+   *  набирается первое слово, подсказка имён его не слушает (Роман
+   *  20.10.2026: «Мари» разбиралось мужским, и «Мария» пропадала). */
+  genderGuessed?: boolean;
   /**
    * Сверка со справочником решена: в поле — имя из словаря, в примечание —
    * «Имя в документе: …». Родитель дописывает примечание персоне (или записи
@@ -129,7 +133,7 @@ type Props = {
 };
 
 export default function IofField({
-  label, value, onChange, onPickPerson, placeholder, inputRef, gender, onResolved, preferInfant, modernOverride,
+  label, value, onChange, onPickPerson, placeholder, inputRef, gender, genderGuessed, onResolved, preferInfant, modernOverride,
   infantRows,
   infantYear,
   infantPlace,
@@ -252,13 +256,20 @@ export default function IofField({
     // и перезапускает эффект — открытый по набору список пропадал бы.
     if (!byKeyboard) return;
     const mine = ++seq.current;
-    const askedGender = gender ?? parsedRef.current?.gender ?? null;
+    // Первое слово (имя) ещё набирается — пол, угаданный по нему же, не в
+    // счёт: «Мари» разобралось мужским, и в подсказке остались Мариав,
+    // Мариан, Марий, Марин без «Марии» (Роман 20.10.2026). Пол роли (мать,
+    // отец) — в счёт всегда.
+    const typingFirst = value.trimStart().split(/\s+/).length <= 1;
+    const askedGender = typingFirst
+      ? (genderGuessed ? null : gender ?? null)
+      : gender ?? parsedRef.current?.gender ?? null;
 
     Promise.all([
       wantPersons
         ? invoke<PersonHint[]>("suggest_person", {
             prefix: query, limit: 6,
-            gender: gender ?? parsedRef.current?.gender ?? null,
+            gender: askedGender,
             // Дети идут своими строками (infantRows) — тогда в общем списке
             // их поднимать незачем.
             preferInfant: (preferInfant ?? false) && !infantRows,
@@ -273,7 +284,7 @@ export default function IofField({
             // (список прокручивается); порядок — от недавно родившихся.
             prefix: query, limit: 30, year: infantYear ?? null,
             place: infantPlace?.trim() || null,
-            gender: gender ?? parsedRef.current?.gender ?? null,
+            gender: askedGender,
           })
         : Promise.resolve([] as InfantHint[]),
       currentWord.length > 0
@@ -281,7 +292,7 @@ export default function IofField({
             kind, prefix: currentWord, limit: 6,
             // Пол роли важнее пола, угаданного по имени: «Никита» словарь
             // знает и как мужское, и как основу женских вариантов.
-            gender: gender ?? parsedRef.current?.gender ?? null,
+            gender: askedGender,
           })
         : Promise.resolve([] as Item[]),
     ])
@@ -332,7 +343,14 @@ export default function IofField({
             // видна — фамилию без пары лучше показать, чем промолчать.
             ? foundWords.filter((w) => !onlyFeminineOf(w.value, currentWord))
             : foundWords;
-        const shownWords = early && foundPersons.length > 0 ? sexed.slice(0, 1) : sexed;
+        // Набранное слово само есть в списке — оно первым: «Александр» в
+        // записи о смерти уступал первую строку частой «Александре», и выбрать
+        // мужское имя было нечем (Роман 20.10.2026). В свёрнутом виде тогда —
+        // оно и самое частое из остальных.
+        const typedNorm = currentWord.toLowerCase().replace(/ъ$/, "");
+        const exactAt = sexed.findIndex((w) => w.value.toLowerCase().replace(/ъ$/, "") === typedNorm);
+        const ordered = exactAt > 0 ? [sexed[exactAt], ...sexed.filter((_, i) => i !== exactAt)] : sexed;
+        const shownWords = early && foundPersons.length > 0 ? ordered.slice(0, exactAt >= 0 ? 2 : 1) : ordered;
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);

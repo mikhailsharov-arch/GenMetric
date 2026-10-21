@@ -688,7 +688,7 @@ def incident_20261001_pustye_mesta():
     check("выгрузка берёт лучшую строку пункта по названию", "CREATE TEMP TABLE x_place" in sql
           and "LEFT JOIN place p ON p.id = xp.best_id" in sql)
     check("полное место не бывает пустым при известном пункте",
-          "coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), '')," in sql
+          "coalesce((SELECT nullif(trim(xc.full_loc), '') FROM x_place xc WHERE xc.id = p.id)," in sql
           and "AS place_full" in sql)
     te = read("db/test_export.py")
     check("поведение проверяется в test_export (двойник и пункт без подробностей)",
@@ -1026,8 +1026,8 @@ def incident_20261007_otvet_na_sborku_06_10():
     check("флажки звания — вне обхода клавишами",
           birth.count("tabIndex={-1} data-auto-rank") == 1 and marriage.count("tabIndex={-1} data-auto-rank") == 1)
     iof = read("src/IofField.tsx")
-    check("подсказка ИОФ: есть персоны — одна словарная строка",
-          "early && foundPersons.length > 0 ? sexed.slice(0, 1) : sexed" in iof)
+    check("подсказка ИОФ: есть персоны — одна словарная строка (и набранное слово, если оно есть в словаре, — 20.10.2026)",
+          "early && foundPersons.length > 0 ? ordered.slice(0, exactAt >= 0 ? 2 : 1) : ordered" in iof)
     check("НП умершего идёт родственнику у любого умершего, не только у младенца",
           "!/младен/i.test(dead.rank)" not in death and "editingId !== null || relPlaceManual.current" in death)
     check("правило младенца — не у записи на правке и не поверх звания, тронутого руками",
@@ -1432,7 +1432,7 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
           and "export function riteMonthFor(" not in month and "export function eventMonthFor(" not in month)
     statements, main_rs = read("db/statements.sql"), read("src-tauri/src/main.rs")
     check("день обряда доходит до формы в списке набранных записей",
-          "       e.scan_file,\n       -- День обряда" in statements and "       e.rite_day\n  FROM entry e" in statements
+          "       e.scan_file,\n       -- День обряда" in statements and "       e.rite_day,\n" in statements
           and "rite_day: r.get(16)?" in main_rs
           and "rite_day: riteDay, rite_month: months.riteMonth, rite_year: year, child:" in birth
           and "rite_day: burialDay, rite_month: months.riteMonth, rite_year: year, deceased:" in death)
@@ -1598,7 +1598,7 @@ def incident_20261016_oshibki_i_dovodka():
     records = read("src-tauri/core/src/records.rs")
     check("заглушка на месте отчества — «отчество не читается», не часть фамилии",
           "if rest.first().is_some_and(|w| is_no_name(w)) {" in records
-          and "filter(|v| !v.is_empty() && *v != NO_NAME)" in records)
+          and "person.patronymic.as_deref().map(str::trim).filter(|v| !v.is_empty() && !v.contains('*'))" in records)
     case = read("src/CaseHeader.tsx")
     check("после «Сохранить дело» с новым годом окно встаёт на его дело; пересохранение пустого года форму не сбрасывает",
           'invoke<Case | null>("case_load", { year: empty ? next.year : null })' in case
@@ -1609,7 +1609,7 @@ def incident_20261016_oshibki_i_dovodka():
           "autofocus={!existing && !twin && similar.length === 0}" in read("src/PlaceCard.tsx")
           and 'querySelector<HTMLElement>("[data-autofocus]")' in read("src/Modal.tsx"))
     check("новый год — форма с чистого листа во всех трёх формах",
-          all("if (workYear.fresh && editingId === null) startFresh(workYear.year);" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
+          all("if (freshHere && editingId === null) startFresh(workYear.year);" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
           and "onWorkYear(next.year, fresh);" in case and "if (!last) return 1;" in read("src/count.ts"))
     check("у нового пункта есть поле названия (кроме тёзки)", "const titleEditable = !!existing || !twin;" in read("src/PlaceCard.tsx"))
     sql = read("db/statements.sql").split("-- @usage_bump\n", 1)[1].split("\n-- @", 1)[0]
@@ -1624,6 +1624,91 @@ def incident_20261016_oshibki_i_dovodka():
           'useParishFlag(CONFESSION_LOCK, "замок вероисповедания");' in read("src/PersonBlock.tsx"))
     check("«ИФ» старой памяти — по ИОФ и пункту (долг п. 65)",
           "iof || '|' || coalesce(place, '') IN (" in read("db/migrate.sql"))
+
+
+def incident_20261020_otvet_na_sborku_19_10():
+    """
+    20.10.2026, Роман (спека 2026-10-20-dosye-i-dovodka):
+    1) Петр Михайлов из Лубян («Жары») — три досье: 16, 2 и 1 упоминание.
+       Отцом в 56 и 64 года он не проходил по диапазону родителей 17–55, и
+       разделение по возрасту шло раньше правила «та же жена»; своё рождение
+       1843 не прикрепилось, «Возможно» не было.
+    2) Смена года 1901 → 1902 на «Рождениях» сбросила только счёт и месяцы:
+       новый год срабатывал лишь при уходе из поля «Год», дело 1902 было
+       заведено заранее, окно и формы после перезапуска расходились.
+    3) «д. д. Керша» в колонках сборки Familio (долг п. 75).
+    4) Второй тестировщик не заметил список на сверку после импорта.
+    5) «Мари» прятала «Мария»; «Александр» уступал строку «Александре».
+    6) «Яготи***» запомнилась фамилией.
+    7) «Ксения Александрова» и «Ксения Александровна» — две строки подсказки.
+    8) Исправленная опечатка («Павлоа», «Владимир Ремов») оставалась в подсказках.
+    """
+    family = read("src-tauri/core/src/search/family.rs")
+    check("отец — до 75 лет; та же жена держит упоминания без записанного возраста в одном досье",
+          '"father" => ages(17, 75),' in family
+          and "if !stated(&rows[i]) && main.1.iter().any(|&j| wed(i, j)) {" in family)
+    check("своё рождение — по записанным возрастам (loose_range), рядом — «возможно»",
+          "let range = loose_range(rows, mine);" in family and "within(by, NEAR_BIRTH)" in family)
+    check("«возможно» у отрезанной части любого размера, если её связывает супруг или годы рядом",
+          "if !infant && (list.len() == 1 || near || linked) {" in family)
+    check("долг п. 70: вдовец по смерти жены — с проверкой родственника «муж»",
+          "let husband_fits = spouse[d].is_none_or(" in family)
+    search = read("src-tauri/core/src/search.rs")
+    check("регресс «Петр Михайлов» и «та же жена» — в тесте крейта",
+          "Петр Михайлов — одно досье со своим рождением" in search and "та же жена — одна женщина" in search)
+    check("долг п. 72: «Возможно» — с ролями экрана",
+          "let everything = Filter { own: f.own, part: f.part, clergy: f.clergy, skip: f.skip.clone(), ..Filter::default() };" in search)
+    ny = read("src/newyear.ts")
+    check("новый год — по смене года руками (кнопки «+/−», цифры), не только по уходу из поля",
+          "byHand(v: number | null, set: (v: number | null) => void)" in ny and "window.setTimeout(() => fire(year), 500)" in ny
+          and all("onChange={(v) => yearHand.byHand(v, setYear)}" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")))
+    app = read("src/App.tsx")
+    check("окно уже на новом году, форма на прежнем — формы всё равно встают на него",
+          "if (mkCase?.year === year) return false;" not in app)
+    check("год с записями только в другом разделе (следующий год формы) и возврат «−» — все формы идут за ним",
+          "const back = lastMove.current?.to === from && lastMove.current?.from === year;" in app
+          and "!(from !== null && year === from + 1)" in app
+          and all("workYear.freshSections?.includes(" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
+          and "sections: [i64; 3]," in read("src-tauri/src/main.rs"))
+    check("то же значение года — не смена руками", "if (v === year) return;" in read("src/newyear.ts"))
+    check("страница из последней записи — только при смене года из формы, не при «Сохранить дело» (ревьюер 20.10.2026)",
+          all("else if (editingId === null && workYear.freshSections) {" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")))
+    check("отказ завести год — полосой, не молча", "if (r.typo) warn(`Дело ${year} года не заведено`," in app)
+    check("«продолжить с места» не возвращает форму с начатого нового года",
+          all("if (placedFresh.current) return;" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")))
+    check("долг п. 77: вернулись на год с записями — страница из его последней записи",
+          all("if (rows[0]?.page) setPage(rows[0].page);" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")))
+    sql = read("db/statements.sql")
+    check("сборка Familio без двойной приставки: краткое и полное место пересобираются из чистого названия",
+          "AS short_loc," in sql and "AS full_loc" in sql
+          and "genmetric_core::text::strip_place_type(&clean)" in read("src-tauri/src/main.rs"))
+    check("имя файла выгрузки и название по умолчанию — без приставки",
+          "crate::text::strip_place_type(&name)" in read("src-tauri/core/src/export.rs")
+          and "stripPlaceType(village)" in read("src/ExportPanel.tsx"))
+    case = read("src/CaseHeader.tsx")
+    check("список на сверку после импорта открывается сам и виден заметной полосой",
+          "if (takeReviewMark() && n > 0) setReview(true);" in case and 'className="reviewbar"' in case
+          and "markReviewAfterImport();" in read("src/ParishDialog.tsx"))
+    iof = read("src/IofField.tsx")
+    check("подсказка имени на первом слове не слушает пол, угаданный по нему же",
+          "? (genderGuessed ? null : gender ?? null)" in iof and "genderGuessed={!!parsedSex}" in read("src/DeathForm.tsx"))
+    names = read("src/names.ts")
+    check("обрывок со звёздочками — в любом слове ИОФ", '"Фамилия в документе не читаема"' in names)
+    records = read("src-tauri/core/src/records.rs")
+    check("обрывок со звёздочками не идёт в частоты фамилий и имён",
+          ".filter(|v| !v.is_empty() && !v.contains('*') && !person.role_code.starts_with(\"clergy\"))" in records)
+    check("подсказка персон: одно отчество в двух написаниях — одна строка",
+          "genmetric_core::records::person_key(conn, &hint.iof, hint.name_surname)?" in read("src-tauri/src/main.rs"))
+    check("правка записи снимает вклад прежних людей в память подсказок",
+          "let forgotten = match entry.id { Some(id) => forget_entry(conn, id, parish)?, None => Vec::new() };" in records
+          and records.index("let forgotten = match entry.id") < records.index('conn.execute(&statement("entry_update")?')
+          and 'conn.execute(&statement("spouse_unremember")?, pair)' in records
+          and "drop_orphan_lookups(conn, &forgotten)?;" in records)
+    check("выгрузка: тёзка с комментарием не склеивается с одноимённой деревней (ревьюер 20.10.2026)",
+          "OR (bc.clean = a.clean AND trim(coalesce(p.comment, '')) = '' AND trim(coalesce(b.comment, '')) = '')" in sql
+          and "тёзка с комментарием — своё полное место" in read("db/test_export.py"))
+    check("регрессы памяти — в тестах крейта", "fn edit_forgets_typos()" in search and "fn masked_words_stay_out_of_memory()" in search
+          and "fn person_key_folds_patronymic_spellings()" in search)
 
 
 def incident_20261020_mac_povrezhdeno_i_resizeobserver():
@@ -1663,10 +1748,10 @@ def incident_20261019_oshibki_svyazej():
     """
     blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
     family = read("src-tauri/core/src/search/family.rs")
-    check("диапазоны возраста по ролям — как у индексатора А.К. (родители 17–55, восприемники 6–60, поручители 17–60)",
-          '"father" | "mother" => ages(17, 55),' in family and '"godparent" => ages(6, 60),' in family
+    check("диапазоны возраста по ролям — как у индексатора А.К. (мать 17–55, восприемники 6–60, поручители 17–60; отец до 75 — с 20.10.2026)",
+          '"father" => ages(17, 75),' in family and '"mother" => ages(17, 55),' in family and '"godparent" => ages(6, 60),' in family
           and '"witness" => ages(17, 60),' in family)
-    check("несовместимые диапазоны делят персону и не дают слить", "split_by_age(&mut persons, &mut owner, rows, first_adult, &mut maybe);" in family
+    check("несовместимые диапазоны делят персону и не дают слить", "split_by_age(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);" in family
           and "let Ok(both) = meet(ranges[a], ranges[b]) else { return false };" in family)
     check("женщина у того же мужа — одна при похожих именах с тем же отчеством (Соломония/Соломонида), но не две жены вдовца (Наталья и Анна Ивановны)",
           "|| (!pa.is_empty() && pa == pb && alike(na, nb));" in family and "!died_before(rows, &persons[*a].rows, &persons[*b].rows)" in family)
@@ -1680,8 +1765,8 @@ def incident_20261019_oshibki_svyazej():
           'if (visible && !shown) freeze(true);' in scan and "if (e.altKey || e.ctrlKey || e.metaKey) return;" in scan)
     check("блок скана изначально включён, выключенный руками — нет", 'if (v !== "0") setOnState(true);' in scan)
     check("новый год на любой форме — дело года, все формы с чистого листа, окно папки; дальний пустой год (опечатка) — нет",
-          'invoke<{ case: Case | null; fresh: boolean; created: boolean }>("case_open_year", { year })' in read("src/App.tsx")
-          and "fresh && !has_case && last.is_some_and(|l| year != l + 1)" in read("src-tauri/src/main.rs") and "if last.is_none() {" in read("src-tauri/src/main.rs") and "scanCtx.askDir(year)" in read("src/MarriageForm.tsx")
+          'invoke<{ case: Case | null; fresh: boolean; created: boolean; typo: boolean; sections: number[] }>("case_open_year", { year })' in read("src/App.tsx")
+          and "if fresh && !has_case && before == 0 {" in read("src-tauri/src/main.rs") and "if last.is_none() {" in read("src-tauri/src/main.rs") and "scanCtx.askDir" in read("src/MarriageForm.tsx")
           and "fn case_open_year(" in read("src-tauri/src/main.rs"))
     check("при возврате убирается только дело, заведённое сменой года, а не заведённое человеком на «Деле» (ревьюер 19.10.2026)",
           "openedEmpty.current = r.created ? year : null;" in read("src/App.tsx")
@@ -1762,6 +1847,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261020_otvet_na_sborku_19_10,
     incident_20261020_mac_povrezhdeno_i_resizeobserver,
     incident_20261019_oshibki_svyazej,
     incident_20261017_semya_celikom_2,

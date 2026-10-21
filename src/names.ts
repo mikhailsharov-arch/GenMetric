@@ -188,6 +188,22 @@ export function placeLabel(name: string, comment: string): string {
 }
 
 /**
+ * Название без приставки типа: «д.Керша», «с-цо Керша» → «Керша». Копия
+ * `text::strip_place_type` из крейта: правишь одно — правь другое.
+ */
+export function stripPlaceType(name: string): string {
+  const n = name.trim();
+  for (const p of ["с-цо ", "С-цо ", "дер.", "пос.", "сел.", "Дер.", "Пос.", "Сел.", "с-цо", "С-цо",
+                   "сл.", "Сл.", "д.", "с.", "г.", "п.", "Д.", "С.", "Г.", "П."]) {
+    if (n.startsWith(p)) {
+      const rest = n.slice(p.length).trimStart();
+      if (rest) return rest;
+    }
+  }
+  return n;
+}
+
+/**
  * Метка пункта для показа: название и комментарий в скобках на конце — он
  * рисуется серым. Только для экрана: настоящий комментарий лежит в карточке
  * пункта, а здесь он угадывается по скобкам — у названия со своими скобками
@@ -199,15 +215,39 @@ export function splitPlaceLabel(label: string): { name: string; comment: string 
 }
 
 /**
- * Обрывок имени со звёздочками — «***кея», «Ф***» (Роман 16.10.2026): «этот
- * огрызок нельзя пускать в справочник имен и базу. Но и удалять эту
- * информацию жалко». Первое слово становится «***», обрывок без крайних
- * звёздочек — пометкой в примечание. Не обрывок (нет звёздочки или букв) —
- * null.
+ * Обрывки со звёздочками — «***кея», «Ф***», «Яготи***» (Роман 16.10.2026):
+ * «этот огрызок нельзя пускать в справочник имен и базу. Но и удалять эту
+ * информацию жалко». С 20.10.2026 — в любом слове ИОФ, не только в имени
+ * (Роман: «должна работать универсально для всех частей ФИО»): слово
+ * становится «***», обрывок без крайних звёздочек — пометкой в примечание.
+ * Какое это слово — по месту: первое — имя; из трёх и более второе —
+ * отчество, последнее — фамилия; второе из двух — «отчество или фамилия».
+ * Обрывков нет (нет звёздочки или букв) — null.
  */
 export function maskFragment(text: string): { text: string; note: string } | null {
-  const m = /^(\s*)(\S+)([\s\S]*)$/.exec(text);
-  if (!m || !m[2].includes("*") || !/\p{L}/u.test(m[2])) return null;
-  const frag = m[2].replace(/^\*+|\*+$/g, "");
-  return { text: m[1] + NO_NAME + m[3], note: `Имя в документе не читаемо: ${frag}` };
+  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(text);
+  if (!m) return null;
+  const words = m[2].split(/(\s+)/);
+  const tokens = words.filter((_, i) => i % 2 === 0);
+  const notes: string[] = [];
+  let k = 0;
+  for (let i = 0; i < words.length; i += 2, k++) {
+    const w = words[i];
+    if (!w.includes("*") || !/\p{L}/u.test(w)) continue;
+    const frag = w.replace(/^\*+|\*+$/g, "");
+    const what = k === 0 ? "Имя в документе не читаемо"
+      : tokens.length >= 3 && k === tokens.length - 1 ? "Фамилия в документе не читаема"
+      : tokens.length >= 3 ? "Отчество в документе не читаемо"
+      : "Отчество или фамилия в документе не читаемы";
+    notes.push(`${what}: ${frag}`);
+    words[i] = NO_NAME;
+  }
+  return notes.length ? { text: m[1] + words.join("") + m[3], note: notes.join("; ") } : null;
+}
+
+/** Дата в списке набранных — «01.09», двумя цифрами (Роман 20.10.2026: «1.9»
+ *  в общем списке легко потерять); неизвестное — «?». */
+export function dayMonth(day: number | null | undefined, month: number | null | undefined): string {
+  const two = (v: number | null | undefined) => (v == null ? "?" : String(v).padStart(2, "0"));
+  return `${two(day)}.${two(month)}`;
 }

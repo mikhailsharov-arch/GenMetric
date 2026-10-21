@@ -60,7 +60,7 @@ export default function App() {
   // «Сохранить дело» с годом — формы встают на него (спека 2026-10-03, п. 1.2);
   // «Открыть запись» из списка на сверку — запись в форме своего раздела.
   // n — счётчик: то же значение второй раз тоже должно сработать.
-  const [workYear, setWorkYear] = useState<{ year: number; n: number; fresh?: boolean } | null>(null);
+  const [workYear, setWorkYear] = useState<{ year: number; n: number; fresh?: boolean; freshSections?: number[] } | null>(null);
   const [openReq, setOpenReq] = useState<{ section: number; id: number; n: number } | null>(null);
   function openEntry(section: number, id: number) {
     setScreen(section === 1 ? "births" : section === 2 ? "marriages" : "deaths");
@@ -74,17 +74,37 @@ export default function App() {
    *  новый год — его дело, все формы и окно встают на него с чистого листа;
    *  возврат с только что заведённого года на год с записями — окно и формы
    *  возвращаются, пустое дело убирается. Ответ — новый ли это год. */
-  async function newYear(year: number): Promise<boolean> {
-    if (mkCase?.year === year) return false;
+  /** Последний переход на новый год без записей: откуда и куда. Вернулись
+   *  «−» с него на прежний год — все формы возвращаются (проверяющий
+   *  20.10.2026: дело нового года было заведено заранее, и назад уходила
+   *  одна форма). */
+  const lastMove = useRef<{ from: number; to: number } | null>(null);
+  async function newYear(year: number, from: number | null): Promise<boolean> {
     try {
-      const r = await invoke<{ case: Case | null; fresh: boolean; created: boolean }>("case_open_year", { year });
-      if (!r.case) return false;
+      const r = await invoke<{ case: Case | null; fresh: boolean; created: boolean; typo: boolean; sections: number[] }>("case_open_year", { year });
+      if (!r.case) {
+        // Год без записей, но не следующий за набранным, — похоже на опечатку:
+        // дело не заводится, формы не трогаются. Молча — нельзя: у Романа
+        // 20.10.2026 смена года «ничего не сделала», и он не знал почему.
+        if (r.typo) warn(`Дело ${year} года не заведено`,
+          `в ${year - 1} году нет ни одной записи — похоже на опечатку. Если год верный, заведите его дело на экране «Дело».`);
+        return false;
+      }
       const left = openedEmpty.current;
-      if (!r.fresh && left === null) return false;
+      const back = lastMove.current?.to === from && lastMove.current?.from === year;
+      // Год с записями: формы идут за ним, только если это возврат с только
+      // что начатого года или следующий год формы (в другом разделе он уже
+      // начат — рождения 1902 набраны, смерти 1902 начинаются). Иначе — как
+      // раньше: форма просто стоит на этом году.
+      if (!r.fresh && left === null && !back && !(from !== null && year === from + 1)) return false;
       if (!r.fresh && left === year) return false;
+      // Окно уже на этом годе (пустое дело, заведённое до перезапуска), а
+      // форма — на прежнем: формы всё равно встают на него (Роман 20.10.2026).
       setMkCase(r.case);
       setShowYear((prev) => ({ year, n: (prev?.n ?? 0) + 1 }));
-      setWorkYear((prev) => ({ year, fresh: r.fresh, n: (prev?.n ?? 0) + 1 }));
+      const freshSections = [1, 2, 3].filter((k) => (r.sections?.[k - 1] ?? 0) === 0);
+      setWorkYear((prev) => ({ year, fresh: r.fresh, freshSections, n: (prev?.n ?? 0) + 1 }));
+      lastMove.current = r.fresh && from !== null ? { from, to: year } : null;
       // Убрать при возврате можно только дело, которое завела сама смена года:
       // заведённое человеком на экране «Дело» (с реквизитами) — нет.
       openedEmpty.current = r.created ? year : null;
@@ -92,6 +112,8 @@ export default function App() {
         await invoke<boolean>("case_delete", { year: left })
           .catch((e) => { report(`Пустое дело ${left} года не убрано`, e); return false; });
       }
+      // Окно выбора папки — только году совсем без записей: у начатого года
+      // папка уже выбрана, а возврат не повод её спрашивать.
       return r.fresh;
     } catch (e) {
       report(`Не удалось открыть дело ${year} года`, e);

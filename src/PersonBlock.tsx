@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import IofField, { type Parsed, type PersonHint } from "./IofField";
-import PlaceCard, { type PlaceInfo, type Similar } from "./PlaceCard";
+import PlaceCard, { lastPlace, type LastPlace, type LastPlaceReply, type PlaceInfo, type Similar } from "./PlaceCard";
 import { focusNextField } from "./focus";
 import { report } from "./errors";
 import { placeCase } from "./names";
@@ -78,6 +78,8 @@ type Props = {
    *  не задаёт, там он определяется по имени. Нужен, чтобы отцу не предлагали
    *  женское отчество (пункт 6 отчёта от 24.08.2026). */
   gender?: "М" | "Ж";
+  /** Пол в `gender` угадан по имени (умерший), а не задан ролью. */
+  genderGuessed?: boolean;
   /**
    * Причт: только ИОФ, звание и примечание — как в Excel, где у
    * церковнослужителей нет ни населённого пункта, ни вероисповедания.
@@ -244,7 +246,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, compact, placeDefaults, onPlaceRenamed, before, modernOverride, extra, titleExtra, noPlace, titleAfter,
+  inputRef, gender, genderGuessed, compact, placeDefaults, onPlaceRenamed, before, modernOverride, extra, titleExtra, noPlace, titleAfter,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
   defaultRank, enterToEmpty, onIofLeave, keepWifeRank, hidden,
 }: Props) {
@@ -269,7 +271,7 @@ export default function PersonBlock({
   // После «Исправить название» (Esc) не открывается снова, пока название
   // не изменится.
   const [placeCard, setPlaceCard] = useState<{ name: string; similar: Similar[]; existing?: PlaceInfo;
-                                                lastVolost?: string; twin?: boolean } | null>(null);
+                                                lastVolost?: string; last?: LastPlace; twin?: boolean } | null>(null);
   const placeSkip = useRef(false);
   useEffect(() => { placeSkip.current = false; }, [person.place]);
   const placeRef = useRef<HTMLInputElement | null>(null);
@@ -282,7 +284,7 @@ export default function PersonBlock({
     if ((related === null && !document.hasFocus()) || document.querySelector(".modal")) return;
     if (!text || placeSkip.current || placeCard) return;
     try {
-      const r = await invoke<{ known: boolean; canonical?: string | null; similar: Similar[]; last_volost: string }>("place_check", { name: text });
+      const r = await invoke<{ known: boolean; canonical?: string | null; similar: Similar[] } & LastPlaceReply>("place_check", { name: text });
       // Известный пункт набран по-своему («заборье (нежитино)») — в поле
       // встаёт написание справочника: иначе в память персон легло бы
       // набранное, и подсказка разошлась бы с пунктом. Только набранное в
@@ -293,7 +295,7 @@ export default function PersonBlock({
       if (r.known || placeNow.current.trim() !== text || document.querySelector(".modal")) return;
       // Форма уже скрыта (ушли на другую вкладку) — карточку не показывать.
       if (placeRef.current?.offsetParent == null) return;
-      setPlaceCard({ name: text, similar: r.similar, lastVolost: r.last_volost });
+      setPlaceCard({ name: text, similar: r.similar, lastVolost: r.last_volost, last: lastPlace(r) });
     } catch (e) {
       report(`Не удалось проверить населённый пункт «${text}»`, e);
     }
@@ -309,8 +311,8 @@ export default function PersonBlock({
         setPlaceCard({ name: existing.name, similar: [], existing });
         return;
       }
-      const r = await invoke<{ known: boolean; similar: Similar[]; last_volost: string }>("place_check", { name: text });
-      setPlaceCard({ name: text, similar: r.similar, lastVolost: r.last_volost });
+      const r = await invoke<{ known: boolean; similar: Similar[] } & LastPlaceReply>("place_check", { name: text });
+      setPlaceCard({ name: text, similar: r.similar, lastVolost: r.last_volost, last: lastPlace(r) });
     } catch (e) {
       report(`Не удалось открыть карточку «${text}»`, e);
     }
@@ -441,6 +443,7 @@ export default function PersonBlock({
         onNameSurname={(on) => set({ nameSurname: on, parsed: null })}
         inputRef={inputRef}
         gender={sex}
+        genderGuessed={genderGuessed || (!gender && !!sex)}
         preferInfant={preferInfant}
         modernOverride={modernOverride}
         enterToEmpty={enterToEmpty}
@@ -500,6 +503,7 @@ export default function PersonBlock({
                                    lastVolost: placeCard.existing!.volost ?? "", twin: true })
             : undefined}
           lastVolost={placeCard.lastVolost}
+          last={placeCard.last}
           defaults={placeDefaults ?? { guberniya: "", uyezd: "" }}
           onPick={placeDone}
           onSaved={(saved) => {

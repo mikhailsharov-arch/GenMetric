@@ -29,6 +29,15 @@ export type PlaceInfo = {
   comment: string; clean: string;
 };
 
+/** Последний заведённый или исправленный пункт: его тип, губерния, уезд и
+ *  волость — в карточку нового (Роман 20.10.2026: «Чаще всего пункты идут из
+ *  одной волости/уезда»). Пустое поле — как раньше, из дела. */
+export type LastPlace = { np_type: string; guberniya: string; uyezd: string; volost: string };
+export type LastPlaceReply = { last_volost: string; last_type?: string; last_guberniya?: string; last_uyezd?: string };
+export function lastPlace(r: LastPlaceReply): LastPlace {
+  return { np_type: r.last_type ?? "", guberniya: r.last_guberniya ?? "", uyezd: r.last_uyezd ?? "", volost: r.last_volost ?? "" };
+}
+
 type Props = {
   name: string;
   similar: Similar[];
@@ -38,6 +47,8 @@ type Props = {
   /** Волость последнего заведённого пункта — по умолчанию у нового (Роман
    *  06.10.2026): пункты одной волости заводят подряд. */
   lastVolost?: string;
+  /** Последний пункт целиком — тип, губерния, уезд (у нового пункта из формы). */
+  last?: LastPlace;
   /** Тип нового пункта по умолчанию: «с.» у села прихода, иначе «д.». */
   defaultType?: string;
   /** Известный пункт без единой подробности заполнять из дела, как новый, —
@@ -55,7 +66,7 @@ type Props = {
   onCancel: () => void;
 };
 
-export default function PlaceCard({ name, similar, defaults, existing, lastVolost, defaultType, fillBare, twin, onTwin, onPick, onSaved, onCancel }: Props) {
+export default function PlaceCard({ name, similar, defaults, existing, lastVolost, last, defaultType, fillBare, twin, onTwin, onPick, onSaved, onCancel }: Props) {
   // Название правится только у известного пункта (Роман 25.09.2026: «вдруг
   // пользователь допустил ошибку в названии»); у нового оно уже в заголовке.
   // Название в карточке — чистое; комментарий деревни-тёзки — отдельным
@@ -79,9 +90,12 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
     && ![existing.np_type, existing.guberniya, existing.uyezd, existing.volost, existing.familio_url]
       .some((v) => (v ?? "").trim() !== "");
   const fresh = !existing || bare;
-  const [npType, setNpType] = useState(fresh ? defaultType ?? "д." : existing.np_type ?? "");
-  const [guberniya, setGuberniya] = useState(fresh ? defaults.guberniya : existing.guberniya ?? "");
-  const [uyezd, setUyezd] = useState(fresh ? defaults.uyezd : existing.uyezd ?? "");
+  // Новый пункт из формы — по последнему пункту, пустое — из дела. Село
+  // прихода (карточка с экрана «Дело») — по-прежнему из дела и «с.».
+  const prev = !existing && !defaultType ? last : undefined;
+  const [npType, setNpType] = useState(fresh ? defaultType ?? (prev?.np_type || "д.") : existing.np_type ?? "");
+  const [guberniya, setGuberniya] = useState(fresh ? prev?.guberniya || defaults.guberniya : existing.guberniya ?? "");
+  const [uyezd, setUyezd] = useState(fresh ? prev?.uyezd || defaults.uyezd : existing.uyezd ?? "");
   const [volost, setVolost] = useState(existing && !bare ? existing.volost ?? "" : existing ? "" : lastVolost ?? "");
   const [url, setUrl] = useState(existing?.familio_url ?? "");
   const [busy, setBusy] = useState(false);

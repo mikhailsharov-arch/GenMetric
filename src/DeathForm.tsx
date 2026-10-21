@@ -17,9 +17,10 @@ import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
 import { dismissWarn, report, warn } from "./errors";
 import { setDirty } from "./dirty";
-import { maskFragment, titleCase } from "./names";
+import { maskFragment, titleCase, dayMonth } from "./names";
 import type { FormProps } from "./formprops";
 import { useFillDown } from "./fill";
+import { useNewYear } from "./newyear";
 import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
 
 /**
@@ -53,6 +54,8 @@ import { FoldLine, FoldLink, foldSummary, useFold } from "./Fold";
  */
 
 const KIN_DEFAULT = "отец";
+/** Родство у умершей жены (Роман 20.10.2026: «на „супруг“ или „муж“»; в закрытом перечне родства — «супруг»). */
+const KIN_HUSBAND = "супруг";
 
 type Deceased = Person & { cause: string; age: string };
 type Relative = Person & { kinship: string };
@@ -94,7 +97,6 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   // чистого листа, а если у года нет папки сканов — окно выбора папки
   // (Роман 19.10.2026, спека 2026-10-19-oshibki-svyazej-i-dovodka, Ж2.7).
   const scanCtx = useScan();
-  const yearLeft = useRef<number | null>(null);
   const savedList = useRef<HTMLTableElement>(null);
   const [page, setPage] = useState<string | null>(null);
   const [year, setYear] = useState<number | null>(mkCase.year ?? null);
@@ -213,6 +215,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                                deathMonth: number | null; burialMonth: number | null } | null>(null);
   const [saved, setSaved] = useState<Brief[]>([]);
   useFillDown(savedList, [saved.length]);
+  const yearHand = useNewYear(year, editingId !== null, onNewYear, scanCtx.askDir);
   const savedRef = useRef(saved);
   savedRef.current = saved;
   // Год на форме изменён, месяц руками не набирали: когда пришёл список
@@ -269,12 +272,25 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
         if (mine !== listSeq.current) return;
         savedYear.current = year;
         setSaved(rows);
+        if (pageFromList.current) {
+          pageFromList.current = false;
+          if (rows[0]?.page) setPage(rows[0].page);
+        }
       })
       .catch((e) => report("Не удалось прочитать список набранных смертей", e));
   }
 
   /** Продолжить с места: страница, год, счёт, месяцы. Причт — общий. */
+  /** Форма уже встала на новый год с чистого листа (окно при запуске
+   *  встало на начатый пустой год): «продолжить с места» прежнего года
+   *  её не возвращает — у Романа 20.10.2026 форма рождений после
+   *  перезапуска оставалась на 1901 при пустом деле 1902, и смена года
+   *  ничего не делала (спека 2026-10-20-dosye-i-dovodka, п. 2). */
+  const placedFresh = useRef(false);
+  /** Вернулись на год с записями — страница из его последней записи (долг п. 77). */
+  const pageFromList = useRef(false);
   function resume(last: Brief) {
+    if (placedFresh.current) return;
     setPage((v) => v ?? last.page);
     if ((last.rite_year ?? last.event_year) !== null) setYear(last.rite_year ?? last.event_year);
     // Счёт ставит себе сам — по списку записей года (эффект ниже).
@@ -384,6 +400,27 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     setCount(v);
   }
   const deadSex: Sex | null = (nameless ? null : (dead.parsed?.gender as Sex | null | undefined) ?? null) ?? sexManual;
+  // Умершая — «жена» (звание набрано или пришло с персоной): родственник —
+  // муж, а не «отец» (Роман 20.10.2026). Только в новой записи и пока родство
+  // не меняли руками; «жену» стёрли — снова «отец».
+  const kinByRank = useRef(false);
+  useEffect(() => {
+    if (editingId !== null) return;
+    const wife = /(^|\s)жена(\s|$)/i.test((dead.rank ?? "").trim());
+    setRel((r) => {
+      const kin = r.kinship.trim();
+      if (wife && (kin === "" || kin === KIN_DEFAULT) && !kinByRank.current) {
+        kinByRank.current = true;
+        return { ...r, kinship: KIN_HUSBAND };
+      }
+      if (!wife && kinByRank.current && kin === KIN_HUSBAND) {
+        kinByRank.current = false;
+        return { ...r, kinship: KIN_DEFAULT };
+      }
+      if (kin !== KIN_HUSBAND) kinByRank.current = false;
+      return r;
+    });
+  }, [dead.rank, editingId]);
   const fullDead = useFullIof(dead.iof, deadSex, rel.kinship.trim().toLowerCase().startsWith("отец") ? rel.iof : "", nameSurnameNow(rel));
   useEffect(() => {
     if (editingId !== null || countManual.current) return;
@@ -634,6 +671,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   /** Новый год без записей — форма с чистого листа (Роман 16.10.2026): и
    *  сразу, и после правки, прерванной сменой года (проверяющий 19.10.2026). */
   function startFresh(y: number) {
+    placedFresh.current = true;
     setPage(null);
     countManual.current = false;
     setCount(1);
@@ -652,9 +690,20 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     // Запись открыта на правку — год у неё свой; новый год дела форма
     // подхватит, когда правка закончится (restoreAfterEdit).
     if (editingId === null) setYear(workYear.year);
-    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh; }
+    else { yearWhileEditing.current = workYear.year; freshWhileEditing.current = !!workYear.fresh || !!workYear.freshSections?.includes(3); }
     // Год без записей — форма с чистого листа (Роман 16.10.2026).
-    if (workYear.fresh && editingId === null) startFresh(workYear.year);
+    // Год без записей в этом разделе — с чистого листа; с записями — со
+    // страницы последней из них (долг п. 77).
+    const freshHere = workYear.fresh || !!workYear.freshSections?.includes(3);
+    if (freshHere && editingId === null) startFresh(workYear.year);
+    // Только смена года из формы (`newYear` несёт `freshSections`): «Сохранить
+    // дело» на экране «Дело» набранную страницу не трогает (ревьюер 20.10.2026).
+    else if (editingId === null && workYear.freshSections) {
+      pageFromList.current = true;
+      // Год на этой форме уже тот (его сменили здесь же): список сам не
+      // перечитается — перечитать, чтобы взять страницу.
+      if (workYear.year === year) refresh();
+    }
   }, [workYear?.n]);
   useEffect(() => {
     if (openReq && openReq.section === 3) void openEntry(openReq.id);
@@ -875,12 +924,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
       )}
       <section>
         <div className="row tight">
-          <NumberField label="Год" value={year} onChange={setYear} min={1700} max={1930}
-                       onLeave={() => {
-                         if (editingId !== null || year === null || year < 1700 || !onNewYear || yearLeft.current === year) return;
-                         yearLeft.current = year;
-                         void onNewYear(year).then((fresh) => { if (fresh) scanCtx.askDir(year); });
-                       }} />
+          <NumberField label="Год" value={year} onChange={(v) => yearHand.byHand(v, setYear)} min={1700} max={1930}
+                       onLeave={yearHand.leave} />
           <PageField label="Стр." value={page} onChange={setPage} />
           {/* Вне обхода клавишами: счёт ставится сам, по полу умершего (Роман
               08.10.2026). Мышью и кнопками «+/−» поправить можно. */}
@@ -919,6 +964,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                      }}
                      onIofLeave={() => void deadLeft()}
                      gender={parsedSex ?? sexManual ?? undefined}
+                     genderGuessed={!!parsedSex}
                      onPickPerson={pickDeceased} preferInfant infantRows infantYear={year}
                      // НП, который программа сама подставила от родителя прошлого
                      // выбора, список не сужает: выбрали не ту «Евдокию» — нужная
@@ -968,7 +1014,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                 <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
                   <td>
                     {e.no_male !== null ? `№ м. ${e.no_male}` : e.no_female !== null ? `№ ж. ${e.no_female}` : "без №"}
-                    {" · "}{e.event_day ?? "?"}.{e.event_month ?? "?"} · {e.deceased || "личность не установлена"}
+                    {" · "}{dayMonth(e.event_day, e.event_month)} · {e.deceased || "личность не установлена"}
                   </td>
                   <td>стр. {e.page ?? "—"}</td>
                   <td>

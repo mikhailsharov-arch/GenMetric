@@ -134,6 +134,54 @@ UPDATE entry SET case_id = :case_id, page = :page, no_male = :no_male, no_female
                  updated_at = datetime('now')
  WHERE id = :id;
 
+-- @mentions_before_edit
+-- Люди записи до правки — их вклад в память подсказок снимается перед
+-- сохранением новых (Роман 20.10.2026: исправленная опечатка «Павлоа»,
+-- «Владимир Ремов» оставалась в подсказках и в списке причта навсегда).
+SELECT m.role_code, m.first_name, m.patronymic, m.surname, m.rank, p.name, e.case_id
+  FROM person_mention m JOIN entry e ON e.id = m.entry_id LEFT JOIN place p ON p.id = m.place_id
+ WHERE m.entry_id = :entry_id;
+
+-- @usage_unbump
+-- Обратное usage_bump: частота минус один; дошла до нуля — строки нет.
+-- Значение из архива Excel или из других записей остаётся: его частота
+-- больше единицы.
+UPDATE usage_stat SET count = count - 1
+ WHERE kind = :kind AND scope = :scope AND scope_key = :scope_key AND value = :value;
+
+-- @usage_drop_empty
+DELETE FROM usage_stat WHERE kind = :kind AND value = :value AND count <= 0;
+
+-- @lookup_drop_orphan
+-- Перечень, пополненный набором, теряет значение, которого больше нет ни в
+-- частотах, ни в записях. Значения поставки (origin = 'seed') не трогаются.
+DELETE FROM lookup
+ WHERE kind = :kind AND value = :value AND origin = 'user'
+   AND NOT EXISTS (SELECT 1 FROM usage_stat u WHERE u.kind = :kind AND u.value = :value)
+   AND NOT EXISTS (SELECT 1 FROM person_mention m
+                    WHERE (:kind = 'first_name' AND m.first_name = :value)
+                       OR (:kind = 'surname' AND m.surname = :value)
+                       OR (:kind = 'patronymic' AND m.patronymic = :value));
+
+-- @person_unremember
+UPDATE person_index SET uses = uses - 1
+ WHERE iof = :iof AND place = coalesce(:place, '') AND rank = coalesce(:rank, '');
+
+-- @person_drop_empty
+DELETE FROM person_index WHERE iof = :iof AND uses <= 0;
+
+-- @spouse_unremember
+UPDATE spouse_index SET uses = uses - 1 WHERE husband_norm = :husband_norm AND wife_iof = :wife_iof;
+
+-- @spouse_drop_empty
+DELETE FROM spouse_index WHERE husband_norm = :husband_norm AND wife_iof = :wife_iof AND uses <= 0;
+
+-- @clergy_unremember
+UPDATE clergy_index SET uses = uses - 1 WHERE iof = :iof AND rank = coalesce(:rank, '');
+
+-- @clergy_drop_empty
+DELETE FROM clergy_index WHERE iof = :iof AND uses <= 0;
+
 -- @mentions_clear
 -- Персоны записи переписываются целиком: так проще и надёжнее, чем сверять
 -- построчно, а записей на одну правку немного.
@@ -460,9 +508,13 @@ INSERT INTO setting (key, value) VALUES (:key, :value)
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 -- @place_last_volost
--- Волость последнего пункта, заведённого человеком, — в карточку следующего
--- (Роман 06.10.2026: «предзаполнялось значением от последнего заведенного НП»).
-SELECT coalesce(volost, '') FROM place WHERE origin = 'user' ORDER BY id DESC LIMIT 1;
+-- Тип, губерния, уезд и волость последнего пункта, заведённого или
+-- исправленного человеком, — в карточку следующего (Роман 06.10.2026 —
+-- волость; 20.10.2026 — и остальное: «Чаще всего пункты идут из одной
+-- волости/уезда»).
+SELECT coalesce(volost, ''), coalesce(np_type, ''), coalesce(guberniya, ''), coalesce(uyezd, '')
+  FROM place WHERE origin = 'user'
+ ORDER BY max(created_at, coalesce(updated_at, '')) DESC, id DESC LIMIT 1;
 
 -- @rank_default
 -- Самое частое звание роли и пола в приходе — в пустое поле звания (Роман
@@ -530,7 +582,16 @@ SELECT e.id, e.page, e.no_male, e.no_female,
        -- Файл скана разворота — значок в строке списка (10.10.2026).
        e.scan_file,
        -- День обряда: по нему считается месяц следующей записи (12.10.2026).
-       e.rite_day
+       e.rite_day,
+       -- Смерти: пол умершего и родственник «отец» — по ним в строке списка
+       -- полное ИОФ младенца «Мария Кузьминична Колмакова», а не «Мария»
+       -- (Роман 20.10.2026: «7 записей смертей подряд … просто имя „Мария“»).
+       (SELECT m.gender FROM person_mention m WHERE m.entry_id = e.id AND m.role_code = 'deceased') AS deceased_gender,
+       (SELECT trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '') || ' ' || coalesce(m.surname, ''))
+          FROM person_mention m
+         WHERE m.entry_id = e.id AND m.role_code LIKE 'deceased\_%' ESCAPE '\'
+           AND (m.kinship LIKE 'отец%' OR m.kinship LIKE 'Отец%')
+         ORDER BY m.sort_order LIMIT 1) AS deceased_father
   FROM entry e
  -- Записи года книги (:year), а не всего прихода: после импорта из Excel в
  -- списке иначе была бы тысяча строк. :last = 1 — одна последняя запись
@@ -607,8 +668,11 @@ WITH ranked AS (
     UNION ALL
     {dict}
 )
+-- При равной частоте короче — раньше: «Мари» в пустом приходе давала шесть
+-- строк по алфавиту (Мариав … Марианна), и «Мария» за них не помещалась
+-- (Роман 20.10.2026). Слово, ближе всего к набранному, — первым.
 SELECT value, min(tier) AS tier, max(count) AS cnt
-  FROM ranked GROUP BY value ORDER BY tier, cnt DESC, value LIMIT :limit;
+  FROM ranked GROUP BY value ORDER BY tier, cnt DESC, length(value), value LIMIT :limit;
 
 -- @usage_gender_filter
 -- Подставляется в suggest_ranked (место в фигурных скобках) для имён и отчеств.
@@ -1047,6 +1111,7 @@ DROP TABLE IF EXISTS temp.x_witness;
 DROP TABLE IF EXISTS temp.x_text;
 DROP TABLE IF EXISTS temp.x_row;
 DROP TABLE IF EXISTS temp.x_place;
+DROP TABLE IF EXISTS temp.x_place0;
 DROP TABLE IF EXISTS temp.x_village;
 
 -- Пункт → самая полная строка с тем же названием. У Романа 01.10.2026 в
@@ -1058,21 +1123,40 @@ DROP TABLE IF EXISTS temp.x_village;
 -- 06.10.2026) и без приставки типа, набранной в название («д. Горелое»,
 -- «с.Керша», «с-цо Керша» → «Горелое», «Керша»; Роман 19.10.2026). Копия
 -- правила — text::strip_place_type: правишь одно — правь другое.
-CREATE TEMP TABLE x_place AS
-SELECT id, best_id,
+CREATE TEMP TABLE x_place0 AS
+SELECT id, n,
        CASE WHEN substr(n, 1, 5) IN ('с-цо ', 'С-цо ') AND trim(substr(n, 6)) <> '' THEN trim(substr(n, 6))
             WHEN substr(n, 1, 4) IN ('дер.', 'пос.', 'сел.', 'Дер.', 'Пос.', 'Сел.', 'с-цо', 'С-цо') AND trim(substr(n, 5)) <> '' THEN trim(substr(n, 5))
             WHEN substr(n, 1, 3) IN ('сл.', 'Сл.') AND trim(substr(n, 4)) <> '' THEN trim(substr(n, 4))
             WHEN substr(n, 1, 2) IN ('д.', 'с.', 'г.', 'п.', 'Д.', 'С.', 'Г.', 'П.') AND trim(substr(n, 3)) <> '' THEN trim(substr(n, 3))
             ELSE n END AS clean
   FROM (SELECT p.id,
-               (SELECT b.id FROM place b WHERE b.name_norm = p.name_norm
-                 ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
-                          (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id LIMIT 1) AS best_id,
                trim(CASE WHEN trim(coalesce(p.comment, '')) <> ''
                               AND substr(p.name, -length(trim(p.comment)) - 3) = ' (' || trim(p.comment) || ')'
                          THEN substr(p.name, 1, length(p.name) - length(trim(p.comment)) - 3) ELSE p.name END) AS n
           FROM place p);
+CREATE INDEX ix_x_place0 ON x_place0 (clean);
+-- Самая полная строка пункта — по названию или по чистому названию: «д.
+-- Горелое» и «Горелое» — одна строка листа location (долг п. 75). Краткое
+-- и полное место — без приставки внутри: карточка, заведённая до 20.10.2026,
+-- собрала их из названия с приставкой, и в колонках сборки Familio выходило
+-- «д. д. Керша» (Роман 20.10.2026).
+CREATE TEMP TABLE x_place AS
+SELECT a.id, a.clean,
+       -- По чистому названию — только пункты без комментария: «Старово
+       -- (Нерехтский)» и «Старово» — разные деревни (ревьюер 20.10.2026).
+       (SELECT b.id FROM place b JOIN x_place0 bc ON bc.id = b.id
+         WHERE b.name_norm = p.name_norm
+            OR (bc.clean = a.clean AND trim(coalesce(p.comment, '')) = '' AND trim(coalesce(b.comment, '')) = '')
+         ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
+                  (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id LIMIT 1) AS best_id,
+       CASE WHEN a.clean <> a.n AND substr(p.short_location, 1, length(trim(coalesce(p.np_type, '') || ' ' || a.n))) = trim(coalesce(p.np_type, '') || ' ' || a.n)
+            THEN trim(coalesce(p.np_type, '') || ' ' || a.clean) || substr(p.short_location, length(trim(coalesce(p.np_type, '') || ' ' || a.n)) + 1)
+            ELSE p.short_location END AS short_loc,
+       CASE WHEN a.clean <> a.n AND substr(p.full_location, 1, length(trim(coalesce(p.np_type, '') || ' ' || a.n))) = trim(coalesce(p.np_type, '') || ' ' || a.n)
+            THEN trim(coalesce(p.np_type, '') || ' ' || a.clean) || substr(p.full_location, length(trim(coalesce(p.np_type, '') || ' ' || a.n)) + 1)
+            ELSE p.full_location END AS full_loc
+  FROM x_place0 a JOIN place p ON p.id = a.id;
 CREATE INDEX ix_x_place ON x_place (id);
 
 -- Примечания по частям («Имя в документе: Пискарь; того же дому»). У ребёнка
@@ -1128,7 +1212,8 @@ SELECT m.id, m.entry_id, m.role_code, m.sort_order, m.gender,
        -- Название — чистое: комментарий деревни-тёзки («Хмельничное (Столпино)»)
        -- в выгрузки не идёт (Роман 06.10.2026).
        (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id) AS place,
-       coalesce(nullif(trim(p.full_location), ''), nullif(trim(p.short_location), ''),
+       coalesce((SELECT nullif(trim(xc.full_loc), '') FROM x_place xc WHERE xc.id = p.id),
+                (SELECT nullif(trim(xc.short_loc), '') FROM x_place xc WHERE xc.id = p.id),
                 (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)) AS place_full,
        -- Причт — по званию, а не по номеру: у Романа во втором причте 733
        -- псаломщика, и по номеру они легли бы в колонки дьякона (разбор эталона).
@@ -1202,7 +1287,7 @@ SELECT e.id, e.section, e.page, e.no_male, e.no_female,
        nullif(trim(c.uyezd), '') AS uyezd, nullif(trim(c.guberniya), '') AS guberniya,
        -- Самая полная строка пункта с этим названием; нет карточки или
        -- подробностей — название (Роман 01.10.2026: full_location был пуст).
-       coalesce((SELECT nullif(trim(b.full_location), '') FROM x_village xv JOIN place b ON b.id = xv.best_id
+       coalesce((SELECT nullif(trim(xb.full_loc), '') FROM x_village xv JOIN x_place xb ON xb.id = xv.best_id
                   WHERE xv.raw = trim(c.village)),
                 (SELECT xv.clean FROM x_village xv WHERE xv.raw = trim(c.village))) AS village_full
   FROM entry e JOIN mk_case c ON c.id = e.case_id;
@@ -1577,8 +1662,8 @@ SELECT (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id), p.np_type,
             WHEN instr(trim(p.uyezd), ' ') > 0 THEN trim(p.uyezd) ELSE trim(p.uyezd) || ' уезд' END,
        CASE WHEN p.volost IS NULL OR trim(p.volost) = '' THEN NULL
             WHEN instr(trim(p.volost), ' ') > 0 THEN trim(p.volost) ELSE trim(p.volost) || ' волость' END,
-       coalesce(p.short_location, (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)),
-       coalesce(p.full_location, (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)),
+       coalesce((SELECT xc.short_loc FROM x_place xc WHERE xc.id = p.id), (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)),
+       coalesce((SELECT xc.full_loc FROM x_place xc WHERE xc.id = p.id), (SELECT xc.clean FROM x_place xc WHERE xc.id = p.id)),
        nullif(trim(p.familio_url), ''),
        CASE WHEN instr(p.familio_url, '/settlements/') > 0
             THEN nullif(trim(substr(p.familio_url, instr(p.familio_url, '/settlements/') + length('/settlements/')), '/ '), '') END

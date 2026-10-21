@@ -725,8 +725,10 @@ pub fn dossier_in(index: &Index, key: &str, place: &str, f: &Filter) -> Dossier 
     let mut ranks: Vec<(String, usize)> = ranks.into_iter().collect();
     ranks.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let person = n.map(|n| &index.persons[n]);
-    // «Возможно» — без отборов экрана: это подсказка, где ещё посмотреть.
-    let everything = Filter { own: true, part: true, clergy: true, ..Filter::default() };
+    // «Возможно» — без отборов по словам, годам и пункту: это подсказка, где
+    // ещё посмотреть. Но роли — как на экране: выключили «причт» — причта в
+    // «Возможно» нет (долг п. 72, проверяющий 17.10.2026).
+    let everything = Filter { own: f.own, part: f.part, clergy: f.clergy, skip: f.skip.clone(), ..Filter::default() };
     let possible = person.map(|p| p.possible.iter().filter_map(|&m| {
         let theirs = index.mine(m, &everything, &None);
         (!theirs.is_empty()).then(|| index.hit(m, &theirs))
@@ -1250,15 +1252,56 @@ mod tests {
         second.marriage_order = Some("Вторым браком".into());
         wedding(1883, second, woman("bride", "Анна", ("Иванова", "Ивановна"), "", "Ушаково"));
         birth(1884, vec![kid("Нил", "М"), tim("father"), woman("mother", "Анна", ("Иванова", "Ивановна"), "", "Ушаково")]);
-        // Жених с опиской в возрасте («50» вместо «20») не отрезает у отца полжизни.
+        // Жених с опиской в возрасте («70» вместо «20») не отрезает у отца
+        // полжизни. («50» с 20.10.2026 уже не описка: отцу можно до 75 лет.)
         let mut old = man("groom", "Ефим", ilin, "", "Ушаково");
-        old.age_years = Some(50);
+        old.age_years = Some(70);
         wedding(1880, old, woman("bride", "Ирина", ("Петрова", "Петровна"), "", "Ушаково"));
         for y in [1882, 1885, 1890, 1895, 1900] {
             birth(y, vec![kid("Ия", "Ж"), man("father", "Ефим", ilin, "", "Ушаково"), woman("mother", "Ирина", ("Петрова", "Петровна"), "", "Ушаково")]);
         }
 
+        // Спека 2026-10-20-dosye-i-dovodka, п. 1 (Роман 20.10.2026, «Жары»):
+        // Петр Михайлов из Лубян — брак 1888 «42 года, третьим браком», отец
+        // до 64 лет с той же женой, смерть 1913 «71 год», своё рождение 1843.
+        // Один человек со своим рождением, а не три досье.
+        let mut petr = person("child", 10, ("Петр", "", ""), ("Петр", ""), "", "", "М");
+        petr.age_years = None;
+        save_entry(&conn, &entry(1, 1843, 6, 23, "100", vec![petr, man("father", "Михаил", ("Захаров", "Захарович"), "", "Лубяны"),
+                                                          woman("mother", "Варвара", ("Иванова", "Ивановна"), "", "Лубяны")])).unwrap();
+        let pm = |role: &str| man(role, "Петр", ("Михайлов", "Михайлович"), "", "Лубяны");
+        let favsta = || woman("mother", "Фавста", ("Яковлева", "Яковлевна"), "", "Лубяны");
+        birth(1886, vec![kid("Александр", "М"), pm("father"), woman("mother", "Ольга", ("Тихонова", "Тихоновна"), "", "Лубяны")]);
+        let mut groom = pm("groom");
+        groom.age_years = Some(42);
+        groom.marriage_order = Some("Третьим браком".into());
+        let mut fb = woman("bride", "Фавста", ("Яковлева", "Яковлевна"), "", "Лубяны");
+        fb.age_years = Some(21);
+        wedding(1888, groom, fb);
+        for y in [1891, 1893, 1896, 1897, 1901, 1902, 1906, 1910] {
+            birth(y, vec![kid("Ия", "Ж"), pm("father"), favsta()]);
+        }
+        let mut dead = pm("deceased");
+        dead.age_years = Some(71);
+        save_entry(&conn, &entry(3, 1913, 1, 1, "493", vec![dead])).unwrap();
+        // Та же жена сильнее ролевых диапазонов: невеста «40 лет» (описка) —
+        // и мать через 23 года всё равно одна женщина у того же мужа.
+        let lav = |role: &str| man(role, "Лаврентий", ilin, "", "Лубяны");
+        let pel = |role: &str| woman(role, "Пелагея", ("Петрова", "Петровна"), "", "Лубяны");
+        let mut old_bride = pel("bride");
+        old_bride.age_years = Some(40);
+        wedding(1880, lav("groom"), old_bride);
+        for y in [1882, 1890, 1903] {
+            birth(y, vec![kid("Ия", "Ж"), lav("father"), pel("mother")]);
+        }
+
         let index = Index::load(&conn).unwrap();
+        let in_lubyany = |text: &str| find_in(&index, &Filter { query: text.into(), place: Some("Лубяны".into()), ..all() }).persons;
+        let petrs = in_lubyany("петр михайлович");
+        assert_eq!(petrs.iter().map(|h| (h.mentions, h.born)).collect::<Vec<_>>(), vec![(12, Some(1843))],
+                   "Петр Михайлов — одно досье со своим рождением");
+        let pelageya = in_lubyany("пелагея петровна");
+        assert_eq!(pelageya.iter().map(|h| h.mentions).collect::<Vec<_>>(), vec![4], "та же жена — одна женщина, хоть возраст невесты и не сходится");
         let find = |text: &str| find_in(&index, &Filter { query: text.into(), place: Some("Ушаково".into()), ..all() }).persons;
         assert_eq!(find("тимофей ильич").len(), 1, "вдовец — один человек");
         let wives: Vec<usize> = find("ивановна").iter().filter(|h| h.iof.starts_with("Наталья") || h.iof.starts_with("Анна Ивановна")).map(|h| h.mentions).collect();
@@ -1292,6 +1335,12 @@ mod tests {
         let ivans = find("иван петрович");
         assert_eq!(ivans.iter().map(|h| h.mentions).collect::<Vec<_>>(), vec![1, 1, 1], "две жены одновременно и восприемник — три досье");
         assert!(ivans.iter().all(|h| open(h).possible.len() == 2), "у каждого «возможно» к двум другим: {:?}", ivans.iter().map(|h| (h.iof.clone(), open(h).possible.len())).collect::<Vec<_>>());
+        // Долг п. 72: роли «Возможно» — как на экране. Без «участия»
+        // восприемник-тёзка там не показывается, отец с другой женой — да.
+        let own_f = Filter { own: true, part: false, ..Filter::default() };
+        let father_ivan = ivans.iter().find(|h| open(h).events.iter().any(|e| e.me.role_code == "father")).unwrap();
+        assert_eq!(dossier_in(&index, &father_ivan.key, &father_ivan.place, &own_f).possible.len(), 1,
+                   "без «участия» в «Возможно» нет восприемника");
 
         let semyon = find("семен ильич");
         assert_eq!((semyon.len(), semyon[0].mentions), (1, 3), "жена умерла до второго брака — один человек");
@@ -1319,6 +1368,61 @@ mod tests {
         let olga = find("ольга петровна");
         let mum = olga.iter().find(|h| h.mentions == 1 && h.born.is_none()).unwrap();
         assert_eq!(open(mum).possible.len(), 1, "долг п. 69: только «возможно»");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Исправленная опечатка уходит из памяти подсказок (Роман 20.10.2026:
+    /// «Павлоа», «Владимир Ремов» оставались после правки записи), а
+    /// неизменённое пересохранение частоты не наращивает.
+    #[test]
+    fn edit_forgets_typos() {
+        let Some((path, conn)) = fresh("forget") else { return };
+        let people = |sur: &str, priest: &str| vec![
+            person("child", 10, ("Ия", "", ""), ("Ия", ""), "", "", "Ж"),
+            person("father", 20, ("Павел", "Петров", sur), ("Павел", "Петрович"), "Ушаково", "крестьянин", "М"),
+            person("mother", 30, ("Анна", "Ивановна", "Кулаева"), ("Анна", "Ивановна"), "Ушаково", "", "Ж"),
+            person("clergy1", 90, ("Владимир", "", priest), ("Владимир", ""), "", "священник", "М"),
+        ];
+        let saved = save_entry(&conn, &entry(1, 1915, 1, 1, "1", people("Павлоа", "Ремов"))).unwrap();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT count(*) FROM usage_stat WHERE value = 'Павлоа'"), 3, "опечатка запомнилась (дело, приход, база)");
+        let mut fixed = entry(1, 1915, 1, 1, "1", people("Павлов", "Реморов"));
+        fixed.id = Some(saved.id);
+        save_entry(&conn, &fixed).unwrap();
+        assert_eq!(count("SELECT count(*) FROM usage_stat WHERE value = 'Павлоа'"), 0, "опечатки нет в частотах");
+        assert_eq!(count("SELECT count(*) FROM lookup WHERE value = 'Павлоа'"), 0, "и в перечне фамилий");
+        assert_eq!(count("SELECT count(*) FROM person_index WHERE iof LIKE '%Павлоа%'"), 0, "и в памяти персон");
+        assert_eq!(count("SELECT count(*) FROM clergy_index WHERE iof = 'Владимир Ремов'"), 0, "и в списке причта");
+        assert_eq!(count("SELECT count(*) FROM clergy_index WHERE iof = 'Владимир Реморов'"), 1);
+        assert_eq!(count("SELECT max(count) FROM usage_stat WHERE value = 'Кулаева' AND scope = 'global'"), 1,
+                   "неизменённая фамилия после правки — та же частота");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Подсказка персон: книжные написания одного отчества — один человек
+    /// (Роман 20.10.2026, «Ксения Александрова» и «Ксения Александровна»).
+    #[test]
+    fn person_key_folds_patronymic_spellings() {
+        let Some((path, conn)) = fresh("pkey") else { return };
+        let key = |s: &str| crate::records::person_key(&conn, s, false).unwrap();
+        assert_eq!(key("Ксения Александрова"), key("Ксения Александровна"));
+        assert_eq!(key("Иванъ Петров Кулаев"), key("Иван Петрович Кулаев"));
+        assert_ne!(key("Ксения Александровна"), key("Ксения Алексеевна"));
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Обрывок со звёздочками не идёт в частоты фамилий, отчеств и имён
+    /// (Роман 20.10.2026: «Яготи***» запомнилась новой фамилией).
+    #[test]
+    fn masked_words_stay_out_of_memory() {
+        let Some((path, conn)) = fresh("masked") else { return };
+        let p = person("deceased_relative", 20, ("Даниил", "Фил***ов", "Яготи***"), ("Даниил", ""), "Ушаково", "", "М");
+        save_entry(&conn, &entry(3, 1915, 1, 1, "1", vec![p])).unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM usage_stat WHERE value LIKE '%*%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "обрывков со звёздочками в частотах нет");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

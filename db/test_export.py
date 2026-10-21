@@ -499,6 +499,33 @@ def main() -> int:
         names = [x[0] for x in rows(db, sql, "familio_location")]
         check("приставка типа в названии пункта отсекается: «с.Керша» → «Керша» в записи и на листе location",
               v("AO") == "Керша" and "Керша" in names and not any(str(n).startswith("с.") for n in names), str([v("AO"), names]))
+        # Карточка, заведённая до 20.10.2026, собрала краткое и полное место
+        # из названия с приставкой: «с. с.Керша». Роман 20.10.2026: в колонках
+        # сборки Familio — «с. с. Керша». И «с.Керша» рядом с «Керша» — одна
+        # строка location (долг п. 75).
+        db.execute("UPDATE place SET np_type = 'с.', short_location = 'с. с.Керша', full_location = 'с. с.Керша, Макарьевский уезд' WHERE id = ?", (kersha,))
+        plain = db.execute(sql["place_insert"], {"name": "Керша", "name_norm": norm("Керша")}).lastrowid
+        g2 = db.execute("SELECT id, place_id FROM person_mention WHERE role_code = 'godparent1'").fetchall()
+        db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent1'", (plain,))
+        db.executescript(sql["export_prepare"])
+        loc = [x for x in rows(db, sql, "familio_location") if "Керша" in str(x[0])]
+        check("сборка Familio: «с. Керша», а не «с. с.Керша»; «с.Керша» и «Керша» — одна строка location",
+              [(x[0], x[5], x[6]) for x in loc] == [("Керша", "с. Керша", "с. Керша, Макарьевский уезд")], str(loc))
+        full = db.execute("SELECT place_full FROM x_person WHERE place = 'Керша'").fetchall()
+        check("полное место персоны — без двойной приставки", full and all(f[0] == "с. Керша, Макарьевский уезд" for f in full), str(full))
+        db.executemany("UPDATE person_mention SET place_id = ? WHERE id = ?", [(pl, i) for i, pl in g2])
+        # Ревьюер 20.10.2026: деревня-тёзка с комментарием («Старово
+        # (Нерехтский)») не склеивается с одноимённой из другого уезда.
+        st = db.execute(sql["place_insert"], {"name": "Старово", "name_norm": norm("Старово")}).lastrowid
+        db.execute("UPDATE place SET np_type = 'д.', uyezd = 'Макарьевский', full_location = 'д. Старово, Макарьевский уезд' WHERE id = ?", (st,))
+        st2 = db.execute(sql["place_insert"], {"name": "Старово (Нерехтский)", "name_norm": norm("Старово (Нерехтский)")}).lastrowid
+        db.execute("UPDATE place SET np_type = 'д.', uyezd = 'Нерехтский', comment = 'Нерехтский', full_location = 'д. Старово, Нерехтский уезд' WHERE id = ?", (st2,))
+        g2 = db.execute("SELECT id, place_id FROM person_mention WHERE role_code = 'godparent1'").fetchall()
+        db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent1'", (st2,))
+        db.executescript(sql["export_prepare"])
+        full = db.execute("SELECT DISTINCT place_full FROM x_person WHERE role_code = 'godparent1'").fetchall()
+        check("тёзка с комментарием — своё полное место, не макарьевское", full == [("д. Старово, Нерехтский уезд",)], str(full))
+        db.executemany("UPDATE person_mention SET place_id = ? WHERE id = ?", [(pl, i) for i, pl in g2])
         db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent3'", (twin,))
         db.executescript(sql["export_prepare"])
         excel = [str(c) for x in rows(db, sql, "excel_births") for c in x]
