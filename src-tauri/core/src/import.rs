@@ -26,8 +26,8 @@ use crate::statement;
 use crate::text::normalize;
 use crate::xlsx::read_sheet;
 
-type Row = BTreeMap<u32, String>;
-type Sheet = BTreeMap<u32, Row>;
+pub(crate) type Row = BTreeMap<u32, String>;
+pub(crate) type Sheet = BTreeMap<u32, Row>;
 
 /// Что нашлось в файле — до импорта: человек видит, тот ли это файл.
 #[derive(Serialize, Debug, Default)]
@@ -65,6 +65,8 @@ pub struct ImportReport {
     pub skipped: Vec<String>,
     /// Строки, перенесённые с оговоркой (год в дате не совпал с годом книги).
     pub notes: Vec<String>,
+    /// Шаблон Familio: строки без данных (номер, «#N/A») — пропущены.
+    pub empty_rows: usize,
 }
 
 const SHEETS: [(&str, &str, &str); 3] = [("1", "Рождения", "рождения"), ("2", "Браки", "бракосочетания"), ("3", "Смерти", "смерти")];
@@ -88,22 +90,49 @@ const SHEETS: [(&str, &str, &str); 3] = [("1", "Рождения", "рожден
 /// прежними — раньше это происходило молча.
 fn import_places(conn: &Connection, bytes: &[u8]) -> Result<Vec<(u32, String)>, String> {
     let Ok(sheet) = read_sheet(bytes, "НП") else { return Ok(Vec::new()) };
-    let kept = statement("place_import_kept")?;
-    let mut notes = Vec::new();
-    let find = statement("place_find")?;
-    let fill = statement("place_import_fill")?;
-    let insert = statement("place_import_insert")?;
-    let e = |e: rusqlite::Error| format!("лист «НП»: {e}");
+    let mut rows = Vec::new();
     for (r, row) in &sheet {
         if *r < 3 {
             continue;
         }
         let Some(name) = place(row, 10).or_else(|| place(row, 1)) else { continue };
-        let norm = normalize(&name);
-        let (np_type, guberniya, uyezd, volost) = (place(row, 2), place(row, 3), place(row, 4), place(row, 5));
-        let (short, full) = (place(row, 6), place(row, 7));
-        let url = place(row, 8).filter(|u| u.starts_with("http"));
-        if [&np_type, &guberniya, &uyezd, &volost, &short, &full, &url].iter().all(|v| v.is_none()) {
+        rows.push((*r, PlaceRow {
+            name, np_type: place(row, 2), guberniya: place(row, 3), uyezd: place(row, 4), volost: place(row, 5),
+            short: place(row, 6), full: place(row, 7), url: place(row, 8).filter(|u| u.starts_with("http")),
+        }));
+    }
+    add_places(conn, &rows, "лист «НП»")
+}
+
+/// Строка справочника пунктов из файла: лист «НП» индексатора или лист
+/// `location` шаблона Familio.
+pub(crate) struct PlaceRow {
+    pub(crate) name: String,
+    pub(crate) np_type: Option<String>,
+    pub(crate) guberniya: Option<String>,
+    pub(crate) uyezd: Option<String>,
+    pub(crate) volost: Option<String>,
+    pub(crate) short: Option<String>,
+    pub(crate) full: Option<String>,
+    pub(crate) url: Option<String>,
+}
+
+/// Пункты файла — в справочник: пункты записей к этому моменту уже заведены
+/// одними названиями и здесь получают подробности, а пункты, которых в
+/// записях нет, заводятся. Возвращает оговорки (строка и текст).
+pub(crate) fn add_places(conn: &Connection, rows: &[(u32, PlaceRow)], what: &str) -> Result<Vec<(u32, String)>, String> {
+    let kept = statement("place_import_kept")?;
+    let mut notes = Vec::new();
+    let find = statement("place_find")?;
+    let fill = statement("place_import_fill")?;
+    let insert = statement("place_import_insert")?;
+    let e = |e: rusqlite::Error| format!("{what}: {e}");
+    for (r, p) in rows {
+        let name = &p.name;
+        let norm = normalize(name);
+        let (np_type, guberniya, uyezd, volost) = (&p.np_type, &p.guberniya, &p.uyezd, &p.volost);
+        let (short, full, url) = (&p.short, &p.full, &p.url);
+        if [np_type, guberniya, uyezd, volost, short, full, url].iter().all(|v| v.is_none()) {
             continue; // строка без единой подробности ничего не добавит
         }
         let id: Option<i64> = conn
@@ -152,7 +181,7 @@ fn import_places(conn: &Connection, bytes: &[u8]) -> Result<Vec<(u32, String)>, 
 }
 
 /// Текст ячейки. Число `read_sheet` отдаёт с «#»: «#873», «#1.5».
-fn cell(row: &Row, col: u32) -> String {
+pub(crate) fn cell(row: &Row, col: u32) -> String {
     let v = row.get(&col).map(|s| s.trim()).unwrap_or("");
     match v.strip_prefix('#') {
         Some(n) => match n.parse::<f64>() {
@@ -184,7 +213,7 @@ fn no_name(iof: &str) -> bool {
 /// ближайший другой год файла — дальше десяти лет («1989» среди 1886–1897).
 /// Опечатка заводит отдельное дело, и записи уходят из своего года — об этом
 /// надо сказать. Файл, честно охватывающий много лет подряд, сюда не попадает.
-fn odd_years(counts: &BTreeMap<i64, usize>) -> Vec<i64> {
+pub(crate) fn odd_years(counts: &BTreeMap<i64, usize>) -> Vec<i64> {
     counts.iter()
         .filter(|(year, n)| {
             let nearest = counts.keys().filter(|y| y != year).map(|y| (*y - **year).abs()).min();
@@ -194,7 +223,7 @@ fn odd_years(counts: &BTreeMap<i64, usize>) -> Vec<i64> {
         .collect()
 }
 
-fn years_span(counts: &BTreeMap<i64, usize>, odd: &[i64]) -> String {
+pub(crate) fn years_span(counts: &BTreeMap<i64, usize>, odd: &[i64]) -> String {
     let rest: Vec<i64> = counts.keys().copied().filter(|y| !odd.contains(y)).collect();
     match (rest.first(), rest.last()) {
         (Some(a), Some(b)) if a != b => format!("{a}–{b}"),
@@ -273,7 +302,7 @@ fn split_mk(text: &str) -> [Option<String>; 4] {
 }
 
 /// Пол по родству — как `kinGender` в формах.
-fn kin_gender(kin: &str) -> Option<String> {
+pub(crate) fn kin_gender(kin: &str) -> Option<String> {
     let k = kin.trim().to_lowercase();
     if ["отец", "брат", "дядя", "дед", "супруг", "муж", "сын"].contains(&k.as_str()) {
         Some("М".into())
@@ -398,19 +427,19 @@ pub fn inspect(bytes: &[u8]) -> Result<Inspect, String> {
 //  Перенос
 // ----------------------------------------------------------------------------
 
-struct Importer<'a> {
-    conn: &'a Connection,
-    unknown: BTreeMap<String, usize>,
-    unknown_total: usize,
-    unknown_patr: BTreeMap<String, usize>,
-    unknown_patr_total: usize,
+pub(crate) struct Importer<'a> {
+    pub(crate) conn: &'a Connection,
+    pub(crate) unknown: BTreeMap<String, usize>,
+    pub(crate) unknown_total: usize,
+    pub(crate) unknown_patr: BTreeMap<String, usize>,
+    pub(crate) unknown_patr_total: usize,
     /// Несверенное в персонах текущей строки — в список на сверку, когда
     /// запись сохранится и у неё появится номер: (вид, текст).
-    pending: Vec<(&'static str, String)>,
+    pub(crate) pending: Vec<(&'static str, String)>,
 }
 
 /// Роль словами — для списка на сверку.
-fn role_title(code: &str) -> &'static str {
+pub(crate) fn role_title(code: &str) -> &'static str {
     match code {
         "child" => "ребёнок", "father" => "отец", "mother" => "мать",
         "groom" => "жених", "bride" => "невеста",

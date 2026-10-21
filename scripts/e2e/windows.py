@@ -1622,6 +1622,59 @@ def parishes(driver, wait):
     click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
     reloaded(driver, wait, "Борисоглебское")
 
+    print("\n16а. Импорт из шаблона Familio — два файла разом в один приход (спека 2026-10-17)")
+    # Фикстуры — наша выгрузка Familio синтетического индексатора: весь приход
+    # и один 1890 год (import_familio::tests::familio_fixtures). Записи 1890
+    # года есть в обоих файлах — обе переносятся и обе идут на сверку.
+    fam_files = [REPO / "db" / "fixtures" / "familio.xlsx", REPO / "db" / "fixtures" / "familio-1890.xlsx"]
+    open_parishes(driver, wait)
+    fam_input = driver.find_element(By.CSS_SELECTOR, "input[data-familio-file]")
+    driver.execute_script("arguments[0].hidden = false;", fam_input)
+    fam_input.send_keys("\n".join(str(f) for f in fam_files))
+    try:
+        WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-familio-total]")))
+    except TimeoutException:
+        pass
+    seen = driver.find_element(By.XPATH, PARISH).text
+    check("оба файла прочитаны, итог по двум: рождений 7, браков 3, смертей 6",
+          "familio.xlsx" in seen and "familio-1890.xlsx" in seen and "Всего: рождений 7, браков 3, смертей 6" in seen,
+          seen.replace("\n", " | ")[:500] + " | " + error_details(driver))
+    name = field(driver, "Название", PARISH + "//").get_attribute("value")
+    check("название — «Никольское (из Familio)»", name == "Никольское (из Familio)", f"«{name}»")
+    click(driver, PARISH + "//button[normalize-space()='Импортировать']")
+    try:
+        WebDriverWait(driver, 180).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-import-done]")))
+    except TimeoutException:
+        pass
+    done = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-import-done]")]
+    check("импорт Familio прошёл: 7 рождений, 3 брака, 6 смертей, годы 1889–1890",
+          bool(done) and "рождений 7, браков 3, смертей 6" in done[0] and "1889–1890" in done[0],
+          (done[0] if done else "итога нет") + " | " + error_details(driver))
+    if done:
+        click(driver, PARISH + "//button[normalize-space()='Перейти в приход']")
+        reloaded(driver, wait, "Никольское (из Familio)")
+        review = "//div[@data-modal='review']"
+        try:
+            wait.until(EC.visibility_of_element_located((By.XPATH, review)))
+            listing = driver.find_element(By.XPATH, review).text
+        except TimeoutException:
+            listing = ""
+        check("на сверке — одинаковые записи двух файлов, с именем файла и строкой",
+              "Одна запись в двух файлах" in listing and "файл «familio-1890.xlsx», лист «РОЖДЕНИЕ», строка 4" in listing,
+              listing.replace("\n", " | ")[:500] + " | " + error_details(driver))
+        for _ in range(2):
+            modals = driver.find_elements(By.CSS_SELECTOR, ".modal")
+            if not modals:
+                break
+            modals[0].send_keys(Keys.ESCAPE)
+            time.sleep(0.5)
+        open_parishes(driver, wait)
+        listed = driver.find_element(By.XPATH, PARISH).text
+        check("в перечне приходов — оба файла источника", "из familio.xlsx, familio-1890.xlsx" in listed,
+              listed.replace("\n", " | ")[:400])
+        click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+        reloaded(driver, wait, "Борисоглебское")
+
 
 REPO = Path(__file__).resolve().parents[2]
 

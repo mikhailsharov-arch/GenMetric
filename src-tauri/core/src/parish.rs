@@ -190,7 +190,9 @@ pub fn list(dir: &Path) -> Result<Vec<ParishRow>, String> {
             entries,
             missing,
             current: id == current,
-            source_name,
+            // Несколько файлов Familio — строками «имя|размер» (sources_text).
+            source_name: source_name.map(|v| v.lines().map(|l| l.rsplit_once('|').map(|x| x.0).unwrap_or(l))
+                                                 .collect::<Vec<_>>().join(", ")),
         });
     }
     Ok(out)
@@ -415,12 +417,22 @@ pub fn create(dir: &Path, bundled: &Path, name: &str) -> Result<i64, String> {
     create_with(dir, bundled, name, None, None, |_| Ok(())).map(|(id, ())| id)
 }
 
-/// Приход, уже импортированный из этого файла Excel (по имени и размеру).
+/// Источник прихода из нескольких файлов (импорт Familio, 21.10.2026):
+/// строками «имя|размер». Один файл пишется как прежде — именем и размером.
+pub fn sources_text(files: &[(String, i64)]) -> String {
+    files.iter().map(|(n, size)| format!("{n}|{size}")).collect::<Vec<_>>().join("\n")
+}
+
+/// Приход, уже импортированный из этого файла Excel (по имени и размеру) —
+/// одного или одного из нескольких (`sources_text`).
 pub fn imported_from(dir: &Path, source_name: &str, source_size: i64) -> Result<Option<(i64, String)>, String> {
     let common = open_common(dir)?;
     common
         .query_row(
-            "SELECT id, coalesce(name, '') FROM parish WHERE source_name = ?1 AND source_size = ?2 ORDER BY id DESC LIMIT 1",
+            "SELECT id, coalesce(name, '') FROM parish
+              WHERE (source_name = ?1 AND source_size = ?2)
+                 OR instr(char(10) || source_name || char(10), char(10) || ?1 || '|' || ?2 || char(10)) > 0
+              ORDER BY id DESC LIMIT 1",
             rusqlite::params![source_name, source_size],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -620,6 +632,22 @@ mod tests {
             "SELECT count(*) FROM common.place WHERE name = 'Новое Тестово'", [], |r| r.get(0)).unwrap();
         assert_eq!(shared, 1);
         drop(opened);
+
+        // Несколько файлов Familio в один приход (21.10.2026): каждый файл
+        // узнаётся по имени и размеру, в перечне — имена через запятую.
+        let fam: [(&str, &[u8]); 2] = [("familio.xlsx", include_bytes!("../../../db/fixtures/familio.xlsx")),
+                                       ("familio-1890.xlsx", include_bytes!("../../../db/fixtures/familio-1890.xlsx"))];
+        let files: Vec<(String, Vec<u8>)> = fam.iter().map(|(n, b)| (n.to_string(), b.to_vec())).collect();
+        let source = sources_text(&files.iter().map(|(n, b)| (n.clone(), b.len() as i64)).collect::<Vec<_>>());
+        let (fam_id, rep) = create_with(&dir, &seed, "Никольское (из Familio)", Some((&source, 1)), None,
+                                        |conn| crate::import_familio::import_into(conn, &files)).unwrap();
+        assert_eq!((rep.births, rep.marriages, rep.deaths), (7, 3, 6));
+        assert_eq!(imported_from(&dir, "familio-1890.xlsx", fam[1].1.len() as i64).unwrap().map(|x| x.0), Some(fam_id));
+        assert_eq!(imported_from(&dir, "familio.xlsx", fam[0].1.len() as i64).unwrap().map(|x| x.0), Some(fam_id));
+        assert_eq!(imported_from(&dir, "familio.xlsx", 1).unwrap(), None, "другой размер — другой файл");
+        assert_eq!(imported_from(&dir, "1890.xlsx", fam[1].1.len() as i64).unwrap(), None, "часть имени — не имя");
+        let row = list(&dir).unwrap().into_iter().find(|r| r.id == fam_id).unwrap();
+        assert_eq!(row.source_name.as_deref(), Some("familio.xlsx, familio-1890.xlsx"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

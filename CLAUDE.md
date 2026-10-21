@@ -31,7 +31,7 @@
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
-    python3 db/test_export.py                                   # → «Итог: успешно 132, ошибок 0» (выгрузка Familio и Excel)
+    python3 db/test_export.py                                   # → «Итог: успешно 136, ошибок 0» (выгрузка Familio и Excel)
     python3 db/test_parish.py                                   # → «Итог: успешно 40, ошибок 0» (приходы, общие справочники)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 44, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель)
@@ -53,13 +53,16 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 37 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 43 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
 сохранение записи и разбор ИОФ (`records.rs`), разбор возраста (`age.rs`,
 копия `src/age.ts` — правишь одно, правь другое), приходы (`parish.rs`),
-импорт из Excel-индексатора (`import.rs`). С 06.10.2026 там же: сборка
+импорт из Excel-индексатора (`import.rs`), с 21.10.2026 — импорт из шаблона
+Familio (`import_familio.rs`: колонки по подписям, несколько файлов в один
+приход; образцы Романа — `cargo test samples -- --ignored` с
+`GENMETRIC_FAMILIO_DIR`, фикстуры e2e — `familio_fixtures`). С 06.10.2026 там же: сборка
 запроса подсказок (`suggest_sql`), адрес поиска на Familio
 (`familio_search_url`) и перехват паники (`guarded`). Правило «имени в книге
 нет» — `records::is_no_name`, его копия для окна — `noNameWord` в

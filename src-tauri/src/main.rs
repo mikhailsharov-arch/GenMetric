@@ -45,6 +45,8 @@ struct App {
     /// Файл Excel для импорта: приходит из окна частями (он 7 МБ; байты —
     /// обычными аргументами, инцидент 13.09.2026) и ждёт здесь команды.
     import_file: Mutex<Vec<u8>>,
+    /// Файлы Familio, выбранные для импорта в один приход (имя, байты).
+    familio_files: Mutex<Vec<(String, Vec<u8>)>>,
     /// Упоминания открытого прихода для экрана «Поиск» и счётчик изменений
     /// соединения, при котором они прочитаны (search.rs, `Index`).
     search: Mutex<Option<(i64, Arc<genmetric_core::search::Index>)>>,
@@ -2082,6 +2084,107 @@ async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, fi
     Ok(ImportDone { report, parish_name })
 }
 
+// ----------------------------------------------------------------------------
+//  Импорт из шаблона Familio (спека 2026-10-17-import-iz-shablona-familio)
+// ----------------------------------------------------------------------------
+
+/// Начать выбор файлов Familio заново.
+#[tauri::command]
+fn familio_reset(app: State<App>) {
+    let mut files = app.familio_files.lock().unwrap_or_else(|e| e.into_inner());
+    files.clear();
+    files.shrink_to_fit();
+}
+
+#[derive(Serialize)]
+struct FamilioSeen {
+    #[serde(flatten)]
+    seen: genmetric_core::import_familio::FileSeen,
+    size: usize,
+    /// Приход, уже импортированный из этого файла (по имени и размеру).
+    already_id: Option<i64>,
+    already_name: Option<String>,
+    /// Название нового прихода по всем выбранным файлам: «Н.П. (из Familio)».
+    parish_village: String,
+}
+
+/// Присланный частями файл (`import_chunk`) — в список файлов Familio: что в
+/// нём нашлось. Тот же файл второй раз — отказ.
+#[tauri::command]
+async fn familio_add(app: State<'_, App>, file_name: String) -> Result<FamilioSeen, String> {
+    let fail = |e: String| {
+        let msg = format!("Чтение файла «{file_name}»: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    };
+    let mut file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
+    let bytes = std::mem::take(&mut *file);
+    drop(file);
+    let mut files = app.familio_files.lock().unwrap_or_else(|e| e.into_inner());
+    // Тот же файл — отказ; другой файл с тем же именем — тоже: в списке на
+    // сверку файлы различаются по имени (ревьюер 21.10.2026).
+    if let Some((_, b)) = files.iter().find(|(n, _)| *n == file_name) {
+        return Err(if b.len() == bytes.len() {
+            format!("файл «{file_name}» уже выбран")
+        } else {
+            format!("файл с именем «{file_name}» уже выбран — переименуйте один из них")
+        });
+    }
+    let seen = genmetric_core::guarded("разбор файла Familio", || genmetric_core::import_familio::inspect(&file_name, &bytes))
+        .map_err(fail)?;
+    let already = parish::imported_from(&app.data_dir, &file_name, bytes.len() as i64).map_err(fail)?;
+    let size = bytes.len();
+    files.push((file_name.clone(), bytes));
+    let mut all: Vec<genmetric_core::import_familio::FileSeen> = Vec::new();
+    for (n, b) in files.iter() {
+        if *n == file_name {
+            all.push(seen.clone());
+        } else if let Ok(s) = genmetric_core::import_familio::inspect(n, b) {
+            all.push(s);
+        }
+    }
+    Ok(FamilioSeen {
+        parish_village: genmetric_core::import_familio::parish_village(&all),
+        seen,
+        size,
+        already_id: already.as_ref().map(|a| a.0),
+        already_name: already.map(|a| a.1),
+    })
+}
+
+/// Импорт выбранных файлов Familio в один новый приход — и он же открыт.
+#[tauri::command]
+async fn familio_run(app: State<'_, App>, window: tauri::Window, name: String) -> Result<ImportDone, String> {
+    let fail = |e: String| {
+        let msg = format!("Импорт Familio: {e}");
+        write_log(&app.log_path, &msg);
+        msg
+    };
+    let bundled = bundled_seed(&app).map_err(fail)?;
+    let mut files = app.familio_files.lock().unwrap_or_else(|e| e.into_inner());
+    if files.is_empty() {
+        return Err(fail("файлы не выбраны — выберите их ещё раз".into()));
+    }
+    // Один файл — именем и размером, как импорт Excel; несколько — строками.
+    let (source, size) = if files.len() == 1 {
+        (files[0].0.clone(), files[0].1.len() as i64)
+    } else {
+        let list: Vec<(String, i64)> = files.iter().map(|(n, b)| (n.clone(), b.len() as i64)).collect();
+        (parish::sources_text(&list), list.iter().map(|x| x.1).sum())
+    };
+    let made = parish::create_with(&app.data_dir, &bundled, &name, Some((&source, size)), None,
+                                   |conn| genmetric_core::import_familio::import_into(conn, &files));
+    let (id, report) = made.map_err(fail)?;
+    write_log(&app.log_path, &format!(
+        "Импорт Familio ({} файл.): рождений {}, браков {}, смертей {}; имён не сверено {}",
+        files.len(), report.births, report.marriages, report.deaths, report.unknown_names));
+    files.clear();
+    files.shrink_to_fit();
+    drop(files);
+    let parish_name = switch_parish(&app, &window, id)?;
+    Ok(ImportDone { report, parish_name })
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -2136,6 +2239,7 @@ fn main() {
                 parish: Mutex::new(current),
                 warning: Mutex::new(warning),
                 import_file: Mutex::new(Vec::new()),
+                familio_files: Mutex::new(Vec::new()),
                 search: Mutex::new(None),
                 search_busy: std::sync::atomic::AtomicBool::new(false),
                 narrow_width: Mutex::new(None),
@@ -2233,6 +2337,9 @@ fn main() {
             import_chunk,
             import_inspect,
             import_run,
+            familio_reset,
+            familio_add,
+            familio_run,
             export::export_years,
             export::export_familio,
             export::export_excel,

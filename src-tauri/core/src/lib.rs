@@ -9,6 +9,7 @@ pub mod age;
 pub mod db;
 pub mod export;
 pub mod import;
+pub mod import_familio;
 pub mod parish;
 pub mod records;
 pub mod scans;

@@ -14,18 +14,25 @@ import { report } from "./errors";
  */
 
 type Item = {
-  id: number; kind: "name" | "patronymic" | "note" | "skipped"; text: string;
+  id: number; kind: "name" | "patronymic" | "note" | "skipped" | "duplicate"; text: string;
   sheet: string | null; row: number | null; entry_id: number | null; done: boolean;
   section: number | null; year: number | null; page: string | null; no: number | null;
 };
 
 const KIND: Record<Item["kind"], string> = {
   skipped: "Строки, которые не перенесены",
+  duplicate: "Одна запись в двух файлах",
   note: "Перенесено с оговоркой",
   name: "Имена, которых нет в словаре",
   patronymic: "Отчества, которых нет в словаре",
 };
-const ORDER: Item["kind"][] = ["skipped", "note", "name", "patronymic"];
+const ORDER: Item["kind"][] = ["skipped", "duplicate", "note", "name", "patronymic"];
+
+/** Откуда строка: импорт Familio пишет лист как «РОЖДЕНИЕ | файл.xlsx». */
+function source(sheet: string, row: number | null): string {
+  const [name, file] = sheet.split(" | ");
+  return file ? `файл «${file}», лист «${name}», строка ${row}` : `Excel: лист «${sheet}», строка ${row}`;
+}
 const SECTION = ["", "рождение", "брак", "смерть"];
 
 export default function ReviewDialog({ onClose, onOpenEntry }: {
@@ -80,7 +87,7 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
                       <div className="fieldhint">
                         {i.section ? `${SECTION[i.section]} ${i.year ?? "без года"}` : ""}
                         {i.no !== null ? `, № ${i.no}` : ""}{i.page ? `, стр. ${i.page}` : ""}
-                        {i.sheet ? `${i.section ? " · " : ""}Excel: лист «${i.sheet}», строка ${i.row}` : ""}
+                        {i.sheet ? `${i.section ? " · " : ""}${source(i.sheet, i.row)}` : ""}
                       </div>
                     </td>
                     <td>

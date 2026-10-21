@@ -1240,10 +1240,12 @@ SELECT q.*,
             ELSE trim(coalesce(coalesce(q.doc_first, q.first_b) || ' ', '') || coalesce(coalesce(q.doc_patr, q.patr_b) || ' ', '')
                       || coalesce(q.surname_b, '')) END AS fio_book,
        -- Фамилия без девичьей в скобках: «Иванова (Петрова)» → «Иванова».
-       nullif(trim(CASE WHEN instr(q.surname_b, '(') > 0 THEN substr(q.surname_b, 1, instr(q.surname_b, '(') - 1)
-                        ELSE q.surname_b END), '') AS surname_base,
-       coalesce(q.maiden_f, nullif(trim(replace(CASE WHEN instr(q.surname_b, '(') > 0
-                                                     THEN substr(q.surname_b, instr(q.surname_b, '(') + 1) END, ')', '')), '')) AS maiden
+       -- Пометка сомнения «(?)» из шаблона Familio («Кудряков(?)») — не
+       -- скобки второй фамилии: на время разбора она «‹?›» (импорт Familio, 21.10.2026).
+       replace(nullif(trim(CASE WHEN instr(replace(q.surname_b, '(?)', '‹?›'), '(') > 0 THEN substr(replace(q.surname_b, '(?)', '‹?›'), 1, instr(replace(q.surname_b, '(?)', '‹?›'), '(') - 1)
+                        ELSE replace(q.surname_b, '(?)', '‹?›') END), ''), '‹?›', '(?)') AS surname_base,
+       coalesce(q.maiden_f, replace(nullif(trim(replace(CASE WHEN instr(replace(q.surname_b, '(?)', '‹?›'), '(') > 0
+                                                     THEN substr(replace(q.surname_b, '(?)', '‹?›'), instr(replace(q.surname_b, '(?)', '‹?›'), '(') + 1) END, ')', '')), ''), '‹?›', '(?)')) AS maiden
   FROM x_person0 q;
 CREATE INDEX ix_x_person ON x_person (entry_id, role_code);
 
@@ -1508,7 +1510,9 @@ SELECT coalesce(rite_year, event_year) AS year,
 -- JSON-массивом, «[]» — весь приход. Отчества — современные (Роман
 -- 30.09.2026), Н.П. — название без типа, как в колонке A листа location:
 -- по нему образец ищет полное место (ВПР). День и месяц — числами, как в
--- образце (у индексатора — текстом «05»).
+-- образце (у индексатора — текстом «05»). «Фамилия-2» — вторая фамилия в
+-- скобках («Глухов (Логунков)»): так её кладёт импорт Familio (21.10.2026).
+-- В «ФИО» одной колонкой (восприемники) фамилия — со скобками, как набрана.
 SELECT row_number() OVER (ORDER BY e.book_year, e.id),
        e.archive, e.fond, e.opis, e.delo, e.page,
        e.village, e.village_full, e.church,
@@ -1518,12 +1522,13 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
             WHEN 'Ж' THEN 'жен' WHEN 'М' THEN 'муж' END,
        e.event_day, e.event_month, e.event_year, e.rite_day, e.rite_month, e.rite_year,
        ch.first_m,
-       f.place, f.place_full, f.rank, f.surname_base, NULL, f.first_m, f.patr_m,
+       -- Н.П. приписки родителей — отца, а без отца — матери (незаконнорождённые).
+       coalesce(f.place, m.place), coalesce(f.place_full, m.place_full), f.rank, f.surname_base, f.maiden, f.first_m, f.patr_m,
        m.rank, m.surname_base, m.maiden, m.first_m, m.patr_m,
-       g1.rank, g1.place, g1.place_full, nullif(trim(coalesce(g1.surname_base || ' ', '') || coalesce(g1.first_m || ' ', '') || coalesce(g1.patr_m, '')), ''),
-       g2.rank, g2.place, g2.place_full, nullif(trim(coalesce(g2.surname_base || ' ', '') || coalesce(g2.first_m || ' ', '') || coalesce(g2.patr_m, '')), ''),
-       g3.rank, g3.place, g3.place_full, nullif(trim(coalesce(g3.surname_base || ' ', '') || coalesce(g3.first_m || ' ', '') || coalesce(g3.patr_m, '')), ''),
-       g4.rank, g4.place, g4.place_full, nullif(trim(coalesce(g4.surname_base || ' ', '') || coalesce(g4.first_m || ' ', '') || coalesce(g4.patr_m, '')), ''),
+       g1.rank, g1.place, g1.place_full, nullif(trim(coalesce(g1.surname_b || ' ', '') || coalesce(g1.first_m || ' ', '') || coalesce(g1.patr_m, '')), ''),
+       g2.rank, g2.place, g2.place_full, nullif(trim(coalesce(g2.surname_b || ' ', '') || coalesce(g2.first_m || ' ', '') || coalesce(g2.patr_m, '')), ''),
+       g3.rank, g3.place, g3.place_full, nullif(trim(coalesce(g3.surname_b || ' ', '') || coalesce(g3.first_m || ' ', '') || coalesce(g3.patr_m, '')), ''),
+       g4.rank, g4.place, g4.place_full, nullif(trim(coalesce(g4.surname_b || ' ', '') || coalesce(g4.first_m || ' ', '') || coalesce(g4.patr_m, '')), ''),
        NULL, NULL, NULL, NULL, NULL, NULL,
        NULL, NULL, NULL, NULL, NULL, NULL,
        k1.rank, k1.fio, NULL, NULL, k2.rank, k2.fio, k3.rank, k3.fio,
@@ -1553,14 +1558,14 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
        e.archive, e.fond, e.opis, e.delo, e.page,
        e.village, e.village_full, e.church, 'брак', e.no_male,
        e.event_day, e.event_month, e.event_year,
-       g.place, g.place_full, g.rank, g.surname_base, NULL, g.first_m, g.patr_m,
+       g.place, g.place_full, g.rank, g.surname_base, g.maiden, g.first_m, g.patr_m,
        CASE WHEN g.marriage_order LIKE 'перв%' OR g.marriage_order LIKE 'Перв%' THEN 1
             WHEN g.marriage_order LIKE 'втор%' OR g.marriage_order LIKE 'Втор%' THEN 2
             WHEN g.marriage_order LIKE 'трет%' OR g.marriage_order LIKE 'Трет%' THEN 3
             WHEN g.marriage_order LIKE 'четв%' OR g.marriage_order LIKE 'Четв%' THEN 4
             ELSE g.marriage_order END,
        g.age_years, NULL, NULL, NULL,
-       gf.place, gf.place_full, gf.rank, gf.surname_base, NULL, gf.first_m, gf.patr_m,
+       gf.place, gf.place_full, gf.rank, gf.surname_base, gf.maiden, gf.first_m, gf.patr_m,
        b.place, b.place_full, b.rank, b.surname_b, b.first_m, b.patr_m,
        CASE WHEN b.marriage_order LIKE 'перв%' OR b.marriage_order LIKE 'Перв%' THEN 1
             WHEN b.marriage_order LIKE 'втор%' OR b.marriage_order LIKE 'Втор%' THEN 2
@@ -1568,17 +1573,17 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
             WHEN b.marriage_order LIKE 'четв%' OR b.marriage_order LIKE 'Четв%' THEN 4
             ELSE b.marriage_order END,
        b.age_years, NULL, NULL, NULL,
-       bf.place, bf.place_full, bf.rank, bf.surname_base, NULL, bf.first_m, bf.patr_m,
-       w1.rank, w1.place, w1.place_full, nullif(trim(coalesce(w1.surname_base || ' ', '') || coalesce(w1.first_m || ' ', '') || coalesce(w1.patr_m, '')), ''),
-       w2.rank, w2.place, w2.place_full, nullif(trim(coalesce(w2.surname_base || ' ', '') || coalesce(w2.first_m || ' ', '') || coalesce(w2.patr_m, '')), ''),
-       w3.rank, w3.place, w3.place_full, nullif(trim(coalesce(w3.surname_base || ' ', '') || coalesce(w3.first_m || ' ', '') || coalesce(w3.patr_m, '')), ''),
-       w4.rank, w4.place, w4.place_full, nullif(trim(coalesce(w4.surname_base || ' ', '') || coalesce(w4.first_m || ' ', '') || coalesce(w4.patr_m, '')), ''),
-       w5.rank, w5.place, w5.place_full, nullif(trim(coalesce(w5.surname_base || ' ', '') || coalesce(w5.first_m || ' ', '') || coalesce(w5.patr_m, '')), ''),
-       w6.rank, w6.place, w6.place_full, nullif(trim(coalesce(w6.surname_base || ' ', '') || coalesce(w6.first_m || ' ', '') || coalesce(w6.patr_m, '')), ''),
+       bf.place, bf.place_full, bf.rank, bf.surname_base, bf.maiden, bf.first_m, bf.patr_m,
+       w1.rank, w1.place, w1.place_full, nullif(trim(coalesce(w1.surname_b || ' ', '') || coalesce(w1.first_m || ' ', '') || coalesce(w1.patr_m, '')), ''),
+       w2.rank, w2.place, w2.place_full, nullif(trim(coalesce(w2.surname_b || ' ', '') || coalesce(w2.first_m || ' ', '') || coalesce(w2.patr_m, '')), ''),
+       w3.rank, w3.place, w3.place_full, nullif(trim(coalesce(w3.surname_b || ' ', '') || coalesce(w3.first_m || ' ', '') || coalesce(w3.patr_m, '')), ''),
+       w4.rank, w4.place, w4.place_full, nullif(trim(coalesce(w4.surname_b || ' ', '') || coalesce(w4.first_m || ' ', '') || coalesce(w4.patr_m, '')), ''),
+       w5.rank, w5.place, w5.place_full, nullif(trim(coalesce(w5.surname_b || ' ', '') || coalesce(w5.first_m || ' ', '') || coalesce(w5.patr_m, '')), ''),
+       w6.rank, w6.place, w6.place_full, nullif(trim(coalesce(w6.surname_b || ' ', '') || coalesce(w6.first_m || ' ', '') || coalesce(w6.patr_m, '')), ''),
        CASE WHEN gx.id IS NOT NULL THEN 'жениха' END, gx.kinship, gx.rank, gx.place, gx.place_full,
-       nullif(trim(coalesce(gx.surname_base || ' ', '') || coalesce(gx.first_m || ' ', '') || coalesce(gx.patr_m, '')), ''),
+       nullif(trim(coalesce(gx.surname_b || ' ', '') || coalesce(gx.first_m || ' ', '') || coalesce(gx.patr_m, '')), ''),
        CASE WHEN bx.id IS NOT NULL THEN 'невесты' END, bx.kinship, bx.rank, bx.place, bx.place_full,
-       nullif(trim(coalesce(bx.surname_base || ' ', '') || coalesce(bx.first_m || ' ', '') || coalesce(bx.patr_m, '')), ''),
+       nullif(trim(coalesce(bx.surname_b || ' ', '') || coalesce(bx.first_m || ' ', '') || coalesce(bx.patr_m, '')), ''),
        k1.rank, k1.fio, NULL, NULL, k2.rank, k2.fio, k3.rank, k3.fio,
        t.notes, t.author
   FROM x_entry e
@@ -1617,9 +1622,9 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
        CASE coalesce(u.gender, CASE WHEN e.no_female IS NOT NULL THEN 'Ж' WHEN e.no_male IS NOT NULL THEN 'М' END)
             WHEN 'Ж' THEN 'жен' WHEN 'М' THEN 'муж' END,
        e.event_day, e.event_month, e.event_year, e.rite_day, e.rite_month, e.rite_year,
-       u.place, u.place_full, u.rank, u.surname_base, NULL, u.first_m, u.patr_m,
+       u.place, u.place_full, u.rank, u.surname_base, u.maiden, u.first_m, u.patr_m,
        u.age_years, u.age_months, u.age_weeks, u.age_days,
-       r.kinship, r.place, r.place_full, r.rank, r.surname_base, NULL, r.first_m, r.patr_m,
+       r.kinship, r.place, r.place_full, r.rank, r.surname_base, r.maiden, r.first_m, r.patr_m,
        u.death_cause,
        kc.rank, kc.fio, NULL, NULL,
        k1.rank, k1.fio, NULL, NULL,

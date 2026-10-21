@@ -526,6 +526,28 @@ def main() -> int:
         full = db.execute("SELECT DISTINCT place_full FROM x_person WHERE role_code = 'godparent1'").fetchall()
         check("тёзка с комментарием — своё полное место, не макарьевское", full == [("д. Старово, Нерехтский уезд",)], str(full))
         db.executemany("UPDATE person_mention SET place_id = ? WHERE id = ?", [(pl, i) for i, pl in g2])
+        # Импорт Familio (21.10.2026): «Фамилия-2» хранится в скобках
+        # («Глухов (Логунков)») и уходит обратно в свою колонку X; пометка
+        # сомнения «(?)» — часть фамилии, а не вторая фамилия.
+        fid, fsur = db.execute("SELECT id, surname FROM person_mention WHERE role_code = 'father' ORDER BY id LIMIT 1").fetchone()
+        db.execute("UPDATE person_mention SET surname = 'Глухов (Логунков)' WHERE id = ?", (fid,))
+        db.executescript(sql["export_prepare"])
+        fb = [x for x in rows(db, sql, "familio_birth") if x[col("W")] == "Глухов"]
+        check("Фамилия-2 отца — в колонке X: «Глухов» и «Логунков»", len(fb) == 1 and fb[0][col("X")] == "Логунков", str([x[col("W") - 1:col("X") + 1] for x in fb]))
+        db.execute("UPDATE person_mention SET surname = 'Кудряков(?)' WHERE id = ?", (fid,))
+        db.executescript(sql["export_prepare"])
+        fb = [x for x in rows(db, sql, "familio_birth") if str(x[col("W")]).startswith("Кудряков")]
+        check("«Кудряков(?)» — фамилия как есть, второй фамилии нет", len(fb) == 1 and fb[0][col("W")] == "Кудряков(?)" and fb[0][col("X")] is None,
+              str([x[col("W") - 1:col("X") + 1] for x in fb]))
+        db.execute("UPDATE person_mention SET surname = ? WHERE id = ?", (fsur, fid))
+        # Ревьюер 21.10.2026: «Фамилия-2» жениха (S) и умершего (W) — тоже из скобок.
+        for role, block, w, x in [("groom", "familio_marriage", "R", "S"), ("deceased", "familio_death", "V", "W")]:
+            pid, psur = db.execute("SELECT id, surname FROM person_mention WHERE role_code = ? ORDER BY id LIMIT 1", (role,)).fetchone()
+            db.execute("UPDATE person_mention SET surname = 'Глухов (Логунков)' WHERE id = ?", (pid,))
+            db.executescript(sql["export_prepare"])
+            got = [(r[col(w)], r[col(x)]) for r in rows(db, sql, block) if r[col(w)] == "Глухов"]
+            check(f"Фамилия-2 ({role}) — в колонке {x}", got == [("Глухов", "Логунков")], str(got))
+            db.execute("UPDATE person_mention SET surname = ? WHERE id = ?", (psur, pid))
         db.execute("UPDATE person_mention SET place_id = ? WHERE role_code = 'godparent3'", (twin,))
         db.executescript(sql["export_prepare"])
         excel = [str(c) for x in rows(db, sql, "excel_births") for c in x]

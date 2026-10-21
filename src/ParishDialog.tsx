@@ -11,8 +11,10 @@ import { report } from "./errors";
  * Каждый приход — свой файл; открыт один. Роман 02.10.2026: файлы нужны,
  * чтобы «индексировать сразу несколько приходов одновременно, переключаясь
  * между ними … не смешивая данные в одну кучу». Здесь — список, «Открыть»,
- * «Новый приход…» и «Импортировать из Excel…» (старый индексатор становится
- * новым приходом; в открытый приход ничего не добавляется).
+ * «Новый приход…», «Импортировать из Excel…» (старый индексатор становится
+ * новым приходом; в открытый приход ничего не добавляется) и «Импортировать
+ * из Familio…» (спека 2026-10-17-import-iz-shablona-familio: один или
+ * несколько файлов шаблона Familio — в один новый приход).
  *
  * После смены прихода окно программы перечитывается целиком: все формы,
  * списки и подсказки принадлежали прежнему приходу. Удаления прихода нет.
@@ -36,6 +38,18 @@ type Done = {
   years: number[]; unknown_names: number; unknown_examples: string[];
   unknown_patronymics: number; unknown_patronymic_examples: string[];
   skipped: string[]; notes: string[]; parish_name: string;
+  /** Шаблон Familio: строки без данных (номер, «#N/A»). */
+  empty_rows: number;
+};
+
+/** Один файл Familio — что в нём нашлось (import_familio::FileSeen). */
+type FamSeen = {
+  file_name: string; births: number; marriages: number; deaths: number; years: number[];
+  odd_years: number[]; village: string; church: string; indexer: string; empty_rows: number;
+  missing: string[]; extra: string[];
+  size: number; already_id: number | null; already_name: string | null;
+  /** Н.П. нового прихода по всем выбранным файлам. */
+  parish_village: string;
 };
 
 /** Файл уходит в программу частями: байты — обычным аргументом (сырое тело
@@ -58,7 +72,7 @@ function yearsText(years: number[]): string {
 
 export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<ParishRow[]>([]);
-  const [mode, setMode] = useState<"list" | "new" | "import" | "done">("list");
+  const [mode, setMode] = useState<"list" | "new" | "import" | "familio" | "done">("list");
   // Окно меняет вид (список → название → итог): фокус — в первое поле нового вида.
   useEffect(() => {
     // Поля нет (список, итог) — на само окно: иначе фокус остаётся на
@@ -76,6 +90,14 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const [done, setDone] = useState<Done | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   const filePick = useRef<HTMLInputElement>(null);
+  const famPick = useRef<HTMLInputElement>(null);
+  const [fam, setFam] = useState<FamSeen[]>([]);
+  /** Итог — импорта Familio: отчество там остаётся отчеством, а не уходит в фамилию. */
+  const [famDone, setFamDone] = useState(false);
+  /** Разные Н.П. в файлах — возможно, разные приходы (проверяющий 21.10.2026). */
+  const villages = [...new Set(fam.map((f) => f.village).filter((v) => v))];
+  /** Название поправили руками — новые файлы его не меняют. */
+  const nameTouched = useRef(false);
 
   useEffect(() => {
     invoke<ParishRow[]>("parish_list")
@@ -123,27 +145,32 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /** Файл — в программу частями; возвращает, сколькими. */
+  async function upload(file: File, label = "Читаю файл…"): Promise<number> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const step = chunkSize();
+    let sent = 0;
+    let got = 0;
+    for (let at = 0; at < bytes.length || at === 0; at += step) {
+      got = await invoke<number>("import_chunk", { bytes: bytes.subarray(at, at + step), first: at === 0 });
+      sent += 1;
+      setBusy(`${label} ${Math.min(100, Math.round(((at + step) / Math.max(1, bytes.length)) * 100))}%`);
+      if (bytes.length === 0) break;
+    }
+    // Программа отвечает, сколько байт у неё собралось: не столько, сколько
+    // в файле, — часть потерялась по дороге, и разбирать такой файл нельзя.
+    if (got !== bytes.length)
+      throw new Error(`файл дошёл до программы не целиком: ${got} из ${bytes.length} байт — выберите его ещё раз`);
+    return sent;
+  }
+
   async function pick(file: File) {
     if (blocked()) return;
     setRefused(null);
     setBusy("Читаю файл…");
     setSeen(null);
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const step = chunkSize();
-      let sent = 0;
-      let got = 0;
-      for (let at = 0; at < bytes.length || at === 0; at += step) {
-        got = await invoke<number>("import_chunk", { bytes: bytes.subarray(at, at + step), first: at === 0 });
-        sent += 1;
-        setBusy(`Читаю файл… ${Math.min(100, Math.round(((at + step) / Math.max(1, bytes.length)) * 100))}%`);
-        if (bytes.length === 0) break;
-      }
-      // Программа отвечает, сколько байт у неё собралось: не столько, сколько
-      // в файле, — часть потерялась по дороге, и разбирать такой файл нельзя.
-      if (got !== bytes.length)
-        throw new Error(`файл дошёл до программы не целиком: ${got} из ${bytes.length} байт — выберите его ещё раз`);
-      setParts(sent);
+      setParts(await upload(file));
       const s = await invoke<Seen>("import_inspect", { fileName: file.name });
       setSeen(s);
       setFileName(file.name);
@@ -179,6 +206,54 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /** Файлы Familio: первый выбор начинает список заново, «Добавить файлы…» — дописывает. */
+  async function pickFamilio(files: File[], more: boolean) {
+    if (blocked()) return;
+    setRefused(null);
+    const errors: string[] = [];
+    let list = more ? fam : [];
+    try {
+      if (!more) await invoke("familio_reset");
+      for (const [i, file] of files.entries()) {
+        const label = files.length > 1 ? `Читаю файл Familio ${i + 1} из ${files.length}…` : "Читаю файл Familio…";
+        setBusy(label);
+        try {
+          await upload(file, label);
+          const s = await invoke<FamSeen>("familio_add", { fileName: file.name });
+          list = [...list, s];
+          if (!nameTouched.current) setName(`${s.parish_village || "Приход"} (из Familio)`);
+        } catch (e) {
+          // Не шаблон Familio, битый файл, тот же файл второй раз — говорим и идём дальше.
+          errors.push(`«${file.name}»: ${String(e)}`);
+        }
+      }
+      setFam(list);
+      if (list.length) setMode("familio");
+      if (errors.length) setRefused(`Не взяты: ${errors.join("; ")}`);
+    } catch (e) {
+      setRefused(String(e));
+    } finally {
+      setBusy(null);
+      if (famPick.current) famPick.current.value = "";
+    }
+  }
+
+  async function runFamilio() {
+    if (!fam.length || blocked()) return;
+    setBusy("import");
+    try {
+      const d = await invoke<Done>("familio_run", { name });
+      setFamDone(true);
+      setDone(d);
+      setMode("done");
+      markReviewAfterImport();
+    } catch (e) {
+      setRefused(`Импорт не прошёл, приход не создан. ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   // Итог импорта: приход уже открыт программой, любое закрытие — перечитать окно.
   if (mode === "done" && done) {
     return (
@@ -189,17 +264,22 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
         </p>
         {done.unknown_names > 0 && (
           <p className="hint">
-            Имён, которых нет в словаре: {done.unknown_names} — перенесены как в Excel
+            Имён, которых нет в словаре: {done.unknown_names} — перенесены как в файле
             {done.unknown_examples.length > 0 && <> ({done.unknown_examples.join(", ")})</>}.
             Сверить можно позже: откройте запись и выйдите из поля ИОФ.
           </p>
         )}
         {done.unknown_patronymics > 0 && (
           <p className="hint">
-            Вторых слов, похожих на отчество, но не найденных в словаре: {done.unknown_patronymics} — перенесены
-            как часть фамилии
+            {famDone
+              ? <>Отчеств, которых нет в словаре: {done.unknown_patronymics} — перенесены как в файле</>
+              : <>Вторых слов, похожих на отчество, но не найденных в словаре: {done.unknown_patronymics} — перенесены
+            как часть фамилии</>}
             {done.unknown_patronymic_examples.length > 0 && <> ({done.unknown_patronymic_examples.join(", ")})</>}.
           </p>
+        )}
+        {done.empty_rows > 0 && (
+          <p className="hint" data-import-empty>Пустых строк шаблона (номер без записи) пропущено: {done.empty_rows}.</p>
         )}
         {done.skipped.length > 0 && (
           <>
@@ -228,6 +308,10 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     <Modal title="Приходы" kind="parish"
            onClose={busy ? () => {} : mode === "list" ? onClose : () => { setRefused(null); setMode("list"); }}>
       {refused && <p className="refused">{refused}</p>}
+      {/* Вне вида «список»: «Добавить файлы…» в виде Familio выбирает через него же. */}
+      <input ref={famPick} type="file" hidden multiple data-familio-file
+             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+             onChange={(e) => { const f = Array.from(e.target.files ?? []); if (f.length) void pickFamilio(f, mode === "familio"); }} />
       {mode === "list" && (
         <>
           <p className="hint">
@@ -268,7 +352,11 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
             </button>
             <button type="button" className="toggle" disabled={busy !== null}
                     onClick={() => { setRefused(null); filePick.current?.click(); }}>
-              {busy && busy.startsWith("Читаю") ? busy : "Импортировать из Excel…"}
+              {busy && busy.startsWith("Читаю") && !busy.includes("Familio") ? busy : "Импортировать из Excel…"}
+            </button>
+            <button type="button" className="toggle" disabled={busy !== null} data-familio-button
+                    onClick={() => { setRefused(null); nameTouched.current = false; famPick.current?.click(); }}>
+              {busy && busy.includes("Familio") ? busy : "Импортировать из Familio…"}
             </button>
             <button type="button" className="toggle" disabled={busy !== null} onClick={onClose}>Закрыть (Esc)</button>
           </div>
@@ -346,6 +434,72 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
               {busy === "import" ? "Импортирую… это может занять минуту" : "Импортировать"}
             </button>
             <button type="button" className="toggle" disabled={busy !== null} onClick={() => setMode("list")}>Назад</button>
+          </div>
+        </>
+      )}
+      {mode === "familio" && fam.length > 0 && (
+        <>
+          <p className="hint">
+            Файлы шаблона Familio лягут в один новый приход — в открытый ничего не добавится. Записи разных
+            файлов делятся на дела по годам; одинаковые записи из разных файлов перенесутся обе и попадут в
+            список на сверку. Написание — как в файле.
+          </p>
+          <ul className="importnotes" data-familio-seen>
+            {fam.map((f) => (
+              <li key={f.file_name + f.size}>
+                <b>{f.file_name}</b>: рождений {f.births}, браков {f.marriages}, смертей {f.deaths};
+                годы {yearsText(f.years)}{f.village ? `; ${f.village}` : ""}{f.church ? `, церковь ${f.church}` : ""}
+                {f.indexer ? `; индексация: ${f.indexer}` : ""}.
+                {f.already_id !== null && (
+                  <div className="reviewbusy">Этот файл уже импортирован — приход «{f.already_name}».</div>
+                )}
+                {f.odd_years.length > 0 && (
+                  <div className="reviewbusy">
+                    {f.odd_years.length === 1 ? "Год" : "Годы"} {f.odd_years.join(", ")} — далеко от остальных и
+                    с малым числом записей: не опечатка ли?
+                  </div>
+                )}
+                {f.missing.length > 0 && (
+                  <div className="fieldhint">Колонок шаблона нет в файле (их поля будут пусты): {f.missing.join("; ")}.</div>
+                )}
+                {f.extra.length > 0 && (
+                  <div className="fieldhint">Колонки не из шаблона — не переносятся: {f.extra.join("; ")}.</div>
+                )}
+              </li>
+            ))}
+          </ul>
+          {villages.length > 1 && (
+            <p className="reviewbusy" data-familio-villages>
+              В файлах разные населённые пункты: {villages.join(", ")}. Если это разные приходы, импортируйте их
+              по отдельности: записи одного года из разных файлов лягут в одно дело с реквизитами первого файла.
+            </p>
+          )}
+          {fam.length > 1 && (
+            <p data-familio-total>
+              Всего: рождений {fam.reduce((a, f) => a + f.births, 0)}, браков {fam.reduce((a, f) => a + f.marriages, 0)},
+              смертей {fam.reduce((a, f) => a + f.deaths, 0)}; годы {yearsText(fam.flatMap((f) => f.years))}.
+            </p>
+          )}
+          <div className="field">
+            <label>Название</label>
+            <div className="fieldbody">
+              <input data-field value={name} autoComplete="off" spellCheck={false}
+                     onChange={(e) => { nameTouched.current = true; setName(e.target.value); }}
+                     onKeyDown={(e) => { if (e.key === "Enter" && name.trim() && !busy) { e.preventDefault(); void runFamilio(); } }} />
+              <div className="fieldhint">как приход будет называться в перечне и в заголовке окна</div>
+            </div>
+          </div>
+          <div className="modalbar">
+            <button type="button" className="primary" disabled={busy !== null || !name.trim()}
+                    onClick={() => void runFamilio()}>
+              {busy === "import" ? "Импортирую… это может занять минуту" : "Импортировать"}
+            </button>
+            <button type="button" className="toggle" disabled={busy !== null}
+                    onClick={() => { setRefused(null); famPick.current?.click(); }}>
+              {busy && busy.startsWith("Читаю") ? busy : "Добавить файлы…"}
+            </button>
+            <button type="button" className="toggle" disabled={busy !== null}
+                    onClick={() => { setFam([]); void invoke("familio_reset"); setMode("list"); }}>Назад</button>
           </div>
         </>
       )}
