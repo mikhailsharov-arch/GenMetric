@@ -94,6 +94,17 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const [fam, setFam] = useState<FamSeen[]>([]);
   /** Итог — импорта Familio: отчество там остаётся отчеством, а не уходит в фамилию. */
   const [famDone, setFamDone] = useState(false);
+  /** Все уже импортированные файлы — из одного прихода: его можно заменить
+   *  (долг п. 81, как у импорта Excel). Из разных — только предупреждение. */
+  const againIds = [...new Set(fam.map((f) => f.already_id).filter((v): v is number => v !== null))];
+  const againAny = againIds.length === 1 ? fam.find((f) => f.already_id === againIds[0]) ?? null : null;
+  // Замена — только тем же набором файлов: приход из A и B, выбран один A —
+  // заменённый потерял бы записи B (ревьюер 21.10.2026). Источник прихода в
+  // перечне — имена файлов через запятую (parish.rs).
+  const againSources = (rows.find((r) => r.id === againAny?.already_id)?.source_name ?? "").split(", ").filter((v) => v);
+  const missing = againSources.filter((n) => !fam.some((f) => f.file_name === n));
+  const again = againAny && !missing.length && againSources.length === fam.length ? againAny : null;
+  const [famReplace, setFamReplace] = useState(false);
   /** Разные Н.П. в файлах — возможно, разные приходы (проверяющий 21.10.2026). */
   const villages = [...new Set(fam.map((f) => f.village).filter((v) => v))];
   /** Название поправили руками — новые файлы его не меняют. */
@@ -213,7 +224,10 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     const errors: string[] = [];
     let list = more ? fam : [];
     try {
-      if (!more) await invoke("familio_reset");
+      if (!more) {
+        await invoke("familio_reset");
+        setFamReplace(false);
+      }
       for (const [i, file] of files.entries()) {
         const label = files.length > 1 ? `Читаю файл Familio ${i + 1} из ${files.length}…` : "Читаю файл Familio…";
         setBusy(label);
@@ -242,7 +256,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     if (!fam.length || blocked()) return;
     setBusy("import");
     try {
-      const d = await invoke<Done>("familio_run", { name });
+      const swap = famReplace && again ? again : null;
+      const d = await invoke<Done>("familio_run", { name: swap ? swap.already_name : name, replace: swap ? swap.already_id : null });
       setFamDone(true);
       setDone(d);
       setMode("done");
@@ -468,6 +483,27 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
               </li>
             ))}
           </ul>
+          {again && (
+            <div className="importagain" data-familio-again>
+              <p>{fam.length > 1 ? "Файлы уже импортированы" : "Этот файл уже импортирован"} — приход «{again.already_name}». Что сделать?</p>
+              <label>
+                <input type="radio" name="famagain" checked={!famReplace} onChange={() => setFamReplace(false)} />
+                {" "}создать ещё один приход
+              </label>
+              <label>
+                <input type="radio" name="famagain" checked={famReplace} onChange={() => setFamReplace(true)} />
+                {" "}заменить приход «{again.already_name}» — набранное в нём после импорта в новый не попадёт
+                (прежний файл останется в папке приходов с пометкой «заменён»)
+              </label>
+            </div>
+          )}
+          {againAny && !again && (
+            <p className="reviewbusy" data-familio-partial>
+              Часть файлов уже импортирована в приход «{againAny.already_name}»
+              {missing.length ? <>; в нём есть и файлы, которых здесь нет: {missing.join(", ")}</> : null}.
+              Заменить его можно, только выбрав те же файлы целиком; иначе создастся ещё один приход.
+            </p>
+          )}
           {villages.length > 1 && (
             <p className="reviewbusy" data-familio-villages>
               В файлах разные населённые пункты: {villages.join(", ")}. Если это разные приходы, импортируйте их
@@ -480,7 +516,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
               смертей {fam.reduce((a, f) => a + f.deaths, 0)}; годы {yearsText(fam.flatMap((f) => f.years))}.
             </p>
           )}
-          <div className="field">
+          {!(famReplace && again) && <div className="field">
             <label>Название</label>
             <div className="fieldbody">
               <input data-field value={name} autoComplete="off" spellCheck={false}
@@ -488,9 +524,9 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                      onKeyDown={(e) => { if (e.key === "Enter" && name.trim() && !busy) { e.preventDefault(); void runFamilio(); } }} />
               <div className="fieldhint">как приход будет называться в перечне и в заголовке окна</div>
             </div>
-          </div>
+          </div>}
           <div className="modalbar">
-            <button type="button" className="primary" disabled={busy !== null || !name.trim()}
+            <button type="button" className="primary" disabled={busy !== null || (!(famReplace && again) && !name.trim())}
                     onClick={() => void runFamilio()}>
               {busy === "import" ? "Импортирую… это может занять минуту" : "Импортировать"}
             </button>

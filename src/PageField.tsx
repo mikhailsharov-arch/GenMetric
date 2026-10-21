@@ -48,8 +48,17 @@ export default function PageField({ label, value, onChange, width }: Props) {
   }
 
   return (
-    <div className="field num wide" style={width ? { width } : undefined}>
-      <label>{label}</label>
+    <div className="field num wide pagefield" style={width ? { width } : undefined}>
+      {/* Высота — дефицит: заморозка листания (долг п. 76) — значком в
+          подписи, объяснение — в подсказке. Виден он стилем по атрибутам
+          формы (scan.tsx, useEntryScan), без перерисовки. */}
+      <label>
+        {label}
+        <span className="pagefrozen" data-page-frozen aria-hidden="true"
+              title="Страница не идёт за сканом: вы перешли на эту вкладку. Начните набор — и листание скана снова будет менять страницу.">
+          {" "}⏸
+        </span>
+      </label>
       <div className="fieldbody numrow">
         <button type="button" onClick={() => click(-1)} tabIndex={-1} aria-label="Меньше">
           −

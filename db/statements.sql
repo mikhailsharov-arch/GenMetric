@@ -359,6 +359,17 @@ UPDATE place
 SELECT coalesce(np_type, ''), coalesce(guberniya, ''), coalesce(uyezd, ''), coalesce(volost, '')
   FROM place WHERE id = :id;
 
+-- @place_without_card
+-- Пункты записей прихода без карточки: ни типа, ни уезда, ни губернии
+-- (импорт Familio — пункта нет на листе location, долг п. 80, 21.10.2026).
+-- Первая запись с ним — чтобы «Открыть запись» из списка на сверку.
+SELECT p.name, min(m.entry_id), count(*)
+  FROM person_mention m JOIN place p ON p.id = m.place_id
+ WHERE trim(coalesce(p.np_type, '')) = '' AND trim(coalesce(p.uyezd, '')) = ''
+   AND trim(coalesce(p.guberniya, '')) = ''
+ GROUP BY p.name_norm
+ ORDER BY p.name;
+
 -- @place_import_insert
 -- …и пункт листа «НП», которого в записях нет: справочник индексатора
 -- переносится целиком — это деревни того же прихода, они понадобятся.
@@ -1112,6 +1123,7 @@ DROP TABLE IF EXISTS temp.x_text;
 DROP TABLE IF EXISTS temp.x_row;
 DROP TABLE IF EXISTS temp.x_place;
 DROP TABLE IF EXISTS temp.x_place0;
+DROP TABLE IF EXISTS temp.x_place_best;
 DROP TABLE IF EXISTS temp.x_village;
 
 -- Пункт → самая полная строка с тем же названием. У Романа 01.10.2026 в
@@ -1141,15 +1153,31 @@ CREATE INDEX ix_x_place0 ON x_place0 (clean);
 -- и полное место — без приставки внутри: карточка, заведённая до 20.10.2026,
 -- собрала их из названия с приставкой, и в колонках сборки Familio выходило
 -- «д. д. Керша» (Роман 20.10.2026).
+-- Кандидаты — двумя поисками по индексам (название, чистое название), а не
+-- одним «ИЛИ»: с «ИЛИ» индекс не работал, и сборка шла квадратично — 3 тыс.
+-- пунктов за секунду (ревьюер 20.10.2026, долг 21.10).
+CREATE TEMP TABLE x_place_best AS
+WITH cand AS (
+    SELECT p.id AS aid, b.id AS bid FROM place p JOIN place b ON b.name_norm = p.name_norm
+    UNION
+    -- По чистому названию — только пункты без комментария: «Старово
+    -- (Нерехтский)» и «Старово» — разные деревни (ревьюер 20.10.2026).
+    SELECT a.id, bc.id
+      FROM x_place0 a JOIN place p ON p.id = a.id
+      JOIN x_place0 bc ON bc.clean = a.clean JOIN place b ON b.id = bc.id
+     WHERE trim(coalesce(p.comment, '')) = '' AND trim(coalesce(b.comment, '')) = ''
+)
+SELECT aid, bid FROM (
+    SELECT c.aid, c.bid,
+           row_number() OVER (PARTITION BY c.aid
+                              ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
+                                       (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id) AS rn
+      FROM cand c JOIN place b ON b.id = c.bid)
+ WHERE rn = 1;
+CREATE INDEX ix_x_place_best ON x_place_best (aid);
 CREATE TEMP TABLE x_place AS
 SELECT a.id, a.clean,
-       -- По чистому названию — только пункты без комментария: «Старово
-       -- (Нерехтский)» и «Старово» — разные деревни (ревьюер 20.10.2026).
-       (SELECT b.id FROM place b JOIN x_place0 bc ON bc.id = b.id
-         WHERE b.name_norm = p.name_norm
-            OR (bc.clean = a.clean AND trim(coalesce(p.comment, '')) = '' AND trim(coalesce(b.comment, '')) = '')
-         ORDER BY (b.full_location IS NULL OR trim(b.full_location) = ''),
-                  (b.np_type IS NULL OR trim(b.np_type) = ''), (b.origin = 'archive'), b.id LIMIT 1) AS best_id,
+       (SELECT xb.bid FROM x_place_best xb WHERE xb.aid = a.id) AS best_id,
        CASE WHEN a.clean <> a.n AND substr(p.short_location, 1, length(trim(coalesce(p.np_type, '') || ' ' || a.n))) = trim(coalesce(p.np_type, '') || ' ' || a.n)
             THEN trim(coalesce(p.np_type, '') || ' ' || a.clean) || substr(p.short_location, length(trim(coalesce(p.np_type, '') || ' ' || a.n)) + 1)
             ELSE p.short_location END AS short_loc,
@@ -1295,15 +1323,31 @@ SELECT e.id, e.section, e.page, e.no_male, e.no_female,
   FROM entry e JOIN mk_case c ON c.id = e.case_id;
 
 -- Причт по колонкам: 1 — священник, 2 — дьякон, 3 — псаломщик (и дьячок,
--- пономарь). Второй с тем же званием — в свободную колонку.
+-- пономарь). Второй с тем же званием — в свободную колонку. Исповедовавший
+-- (пометка «исповедовал»), если есть и другой с тем же званием, — колонка 0:
+-- он идёт только в колонку «исповедовал» листа СМЕРТЬ, а не в свободную
+-- колонку дьякона (долг п. 78, ревьюер 21.10.2026: настоящий дьячок
+-- сдвигался в колонку псаломщика).
 CREATE TEMP TABLE x_clergy AS
-WITH c AS (
-    SELECT entry_id, id, sort_order, clergy_cat AS cat, rank, fio_book AS fio, note_clean,
-           row_number() OVER (PARTITION BY entry_id, clergy_cat ORDER BY sort_order, id) AS rn
-      FROM x_person WHERE role_code LIKE 'clergy%' AND iof_b <> ''
+WITH c0 AS (
+    -- Исповедь — только у смертей (ревьюер 21.10.2026: у рождений и браков
+    -- колонки «исповедовал» нет, и такой человек пропал бы из выгрузки).
+    SELECT x.entry_id, x.id, x.sort_order, x.clergy_cat AS cat, x.rank, x.fio_book AS fio, x.note_clean,
+           e.section = 3 AND coalesce(x.note_clean, '') LIKE '%сповед%' AS confessor
+      FROM x_person x JOIN entry e ON e.id = x.entry_id
+     WHERE x.role_code LIKE 'clergy%' AND x.iof_b <> ''
+),
+c AS (
+    SELECT c0.*,
+           row_number() OVER (PARTITION BY entry_id, cat ORDER BY confessor, sort_order, id) AS rn,
+           -- Колонка 0 — у одного исповедовавшего записи: двое дали бы две
+           -- строки смерти (ревьюер 21.10.2026).
+           row_number() OVER (PARTITION BY entry_id, confessor ORDER BY sort_order, id) AS cn
+      FROM c0
 ),
 firsts AS (SELECT entry_id, cat AS slot FROM c WHERE rn = 1),
-extra AS (SELECT c.*, row_number() OVER (PARTITION BY entry_id ORDER BY sort_order, id) AS xn FROM c WHERE rn > 1),
+extra AS (SELECT c.*, row_number() OVER (PARTITION BY entry_id ORDER BY sort_order, id) AS xn
+            FROM c WHERE rn > 1 AND NOT (confessor AND cn = 1)),
 free AS (
     SELECT e.entry_id, s.slot, row_number() OVER (PARTITION BY e.entry_id ORDER BY s.slot) AS fn
       FROM (SELECT DISTINCT entry_id FROM extra) e
@@ -1313,7 +1357,9 @@ free AS (
 SELECT entry_id, cat AS slot, rank, fio, note_clean FROM c WHERE rn = 1
 UNION ALL
 SELECT x.entry_id, f.slot, x.rank, x.fio, x.note_clean
-  FROM extra x JOIN free f ON f.entry_id = x.entry_id AND f.fn = x.xn;
+  FROM extra x JOIN free f ON f.entry_id = x.entry_id AND f.fn = x.xn
+UNION ALL
+SELECT entry_id, 0, rank, fio, note_clean FROM c WHERE rn > 1 AND confessor AND cn = 1;
 CREATE INDEX ix_x_clergy ON x_clergy (entry_id, slot);
 
 -- Поручители по сторонам: блоки 1–3 — по жениху, 4–6 — по невесте (как в

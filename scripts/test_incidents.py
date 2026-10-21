@@ -1705,7 +1705,8 @@ def incident_20261020_otvet_na_sborku_19_10():
           and 'conn.execute(&statement("spouse_unremember")?, pair)' in records
           and "drop_orphan_lookups(conn, &forgotten)?;" in records)
     check("выгрузка: тёзка с комментарием не склеивается с одноимённой деревней (ревьюер 20.10.2026)",
-          "OR (bc.clean = a.clean AND trim(coalesce(p.comment, '')) = '' AND trim(coalesce(b.comment, '')) = '')" in sql
+          # С 21.10.2026 кандидаты — двумя поисками (x_place_best), условие то же.
+          "JOIN x_place0 bc ON bc.clean = a.clean JOIN place b ON b.id = bc.id\n     WHERE trim(coalesce(p.comment, '')) = '' AND trim(coalesce(b.comment, '')) = ''" in sql
           and "тёзка с комментарием — своё полное место" in read("db/test_export.py"))
     check("регрессы памяти — в тестах крейта", "fn edit_forgets_typos()" in search and "fn masked_words_stay_out_of_memory()" in search
           and "fn person_key_folds_patronymic_spellings()" in search)

@@ -24,6 +24,8 @@ use crate::statement;
 use crate::text::{normalize, normalize_name, normalize_words};
 
 mod family;
+/// Словарь отчеств (`patronymics`): имя → мужское и женское.
+pub use family::Patronymics;
 use family::Person;
 
 /// Что набрано на экране «Поиск».
@@ -635,11 +637,34 @@ impl Index {
     /// п. 1.6).
     pub fn died_of(&self, iof: &str, place: Option<&str>) -> Option<i64> {
         let list = self.by_book.get(&(normalize_words(iof), normalize(place.unwrap_or(""))))?;
+        Self::died_in(&self.persons, list)
+    }
+
+    fn died_in(persons: &[Person], list: &[usize]) -> Option<i64> {
         let mut year = None;
         for &n in list {
-            year = Some(year.unwrap_or(i64::MIN).max(self.persons[n].died?));
+            year = Some(year.unwrap_or(i64::MIN).max(persons[n].died?));
         }
         year
+    }
+
+    /// Только годы смерти для подсказки — без всей памяти поиска (долг п. 68,
+    /// ревьюер 17.10.2026: память держалась с начала набора, на 100 тысячах
+    /// упоминаний — десятки МБ). Тот же ответ, что `died_of`.
+    pub fn deaths(&self) -> Deaths {
+        Deaths(self.by_book.iter()
+            .filter_map(|(k, list)| Self::died_in(&self.persons, list).map(|y| (k.clone(), y)))
+            .collect())
+    }
+}
+
+/// Годы смерти по ИОФ (как в книге) и НП — для «†» в подсказке (`Index::deaths`).
+#[derive(Default)]
+pub struct Deaths(HashMap<(String, String), i64>);
+
+impl Deaths {
+    pub fn of(&self, iof: &str, place: Option<&str>) -> Option<i64> {
+        self.0.get(&(normalize_words(iof), normalize(place.unwrap_or("")))).copied()
     }
 }
 
@@ -649,6 +674,32 @@ impl Index {
 /// Нечего дописать (нет отца, имя не прочитано) — None.
 pub fn child_full_iof(conn: &Connection, child: &str, gender: Option<&str>, father: &str, father_name_surname: bool)
     -> Result<Option<String>, String>
+{
+    child_full_iof_in(conn, None, child, gender, father, father_name_surname)
+}
+
+/// Отчества словаря: имя (ключ сверки) → мужское и женское. `only` — одно
+/// имя; без него — весь словарь, для списка, где младенцев много (ревьюер
+/// 20.10.2026: словарь читался заново на каждого).
+pub fn patronymics(conn: &Connection, only: Option<&str>) -> Result<Patronymics, String> {
+    let mut dict = family::Patronymics::new();
+    let mut stmt = conn.prepare(&statement("search_patronymics")?).map_err(|e| e.to_string())?;
+    let found = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
+        .map_err(|e| e.to_string())?;
+    for row in found {
+        let (name, m, f) = row.map_err(|e| e.to_string())?;
+        let key = normalize_name(&name);
+        if only.is_none_or(|w| w == key) {
+            dict.insert(key, (m.unwrap_or_default(), f.unwrap_or_default()));
+        }
+    }
+    Ok(dict)
+}
+
+/// `child_full_iof` со словарём отчеств, прочитанным заранее (`patronymics`).
+pub fn child_full_iof_in(conn: &Connection, dict: Option<&Patronymics>, child: &str, gender: Option<&str>,
+                         father: &str, father_name_surname: bool) -> Result<Option<String>, String>
 {
     let child = child.trim();
     if child.is_empty() || child.starts_with(crate::records::NO_NAME) || father.trim().is_empty() {
@@ -661,20 +712,10 @@ pub fn child_full_iof(conn: &Connection, child: &str, gender: Option<&str>, fath
     };
     let female = gender.or(kid.gender.as_deref()) == Some("Ж");
     let first = kid.first_name_modern.or(kid.first_name).unwrap_or_else(|| child.to_string());
-    let mut dict = family::Patronymics::new();
-    {
-        let mut stmt = conn.prepare(&statement("search_patronymics")?).map_err(|e| e.to_string())?;
-        let want = normalize_name(&dad_first);
-        let found = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
-            .map_err(|e| e.to_string())?;
-        for row in found {
-            let (name, m, f) = row.map_err(|e| e.to_string())?;
-            if normalize_name(&name) == want {
-                dict.insert(want.clone(), (m.unwrap_or_default(), f.unwrap_or_default()));
-            }
-        }
-    }
+    let dict = match dict {
+        Some(d) => std::borrow::Cow::Borrowed(d),
+        None => std::borrow::Cow::Owned(patronymics(conn, Some(&normalize_name(&dad_first)))?),
+    };
     let patr = family::patronymic(&dict, &dad_first, female);
     let surname = dad.surname.filter(|s| !s.trim().is_empty()).map(|s| family::gendered(&s, female));
     if patr.is_none() && surname.is_none() {
@@ -1128,6 +1169,11 @@ mod tests {
         assert_eq!(index.died_of("Петр Семенов", Some("Фетинино")), Some(1896), "подсказка узнаёт умершего");
         assert_eq!(index.died_of("Иоаннъ Капитоновъ", Some("Фетинино")), None, "живой — нет");
         assert_eq!(index.died_of("Петр Семенов", Some("Воспица")), None, "в другом пункте — не он");
+        // Подсказке хватает годов смерти без всей памяти (долг п. 68) — тот же ответ.
+        let deaths = index.deaths();
+        for (iof, place) in [("Петр Семенов", "Фетинино"), ("Иоаннъ Капитоновъ", "Фетинино"), ("Петр Семенов", "Воспица")] {
+            assert_eq!(deaths.of(iof, Some(place)), index.died_of(iof, Some(place)), "{iof}, {place}");
+        }
 
         // Николай: два рождения — не сливаем.
         let nik = find("николай семенович");
@@ -1138,6 +1184,12 @@ mod tests {
         assert_eq!(full("Мария", Some("Ж"), "Семёнъ Иванов Кулаевъ").as_deref(), Some("Мария Семеновна Кулаева"));
         assert_eq!(full("Пётр", Some("М"), "Иоаннъ Капитоновъ").as_deref(), Some("Петр Иванович"), "имя — современное, как в словаре");
         assert_eq!((full("", None, "Иван"), full("Петр", None, ""), full("***", None, "Иван")), (None, None, None), "нечего показать");
+        // Список смертей читает словарь отчеств один раз (ревьюер 20.10.2026) —
+        // ответ тот же.
+        let dict = patronymics(&conn, None).unwrap();
+        for (child, sex, father) in [("Мария", Some("Ж"), "Семёнъ Иванов Кулаевъ"), ("Пётр", Some("М"), "Иоаннъ Капитоновъ")] {
+            assert_eq!(child_full_iof_in(&conn, Some(&dict), child, sex, father, false).unwrap(), full(child, sex, father));
+        }
         // Своё рождение выключается ролью, как другие.
         let no_birth = find_in(&index, &Filter { query: "петр семенович".into(), skip: vec!["child".into()], ..all() }).persons;
         assert_eq!(no_birth[0].mentions, 3);
@@ -1203,6 +1255,10 @@ mod tests {
         //    в Ушакове ей не прикрепляется.
         birth(1860, vec![kid("Ольга", "Ж"), man("father", "Петр", ("Иванов", "Иванович"), "", "Ушаково")]);
         birth(1889, vec![kid("Яков", "М"), man("father", "Лука", ilin, "", "Ушаково"), woman("mother", "Ольга", ("Петрова", "Петровна"), "", "Ушаково")]);
+        // Долг п. 69, невеста: Анна Фомина без фамилии венчается в Ушакове, где
+        // родилась тёзка — рождение только «возможно».
+        birth(1862, vec![kid("Анна", "Ж"), man("father", "Фома", ("Иванов", "Иванович"), "", "Ушаково")]);
+        wedding(1884, man("groom", "Савва", ilin, "", "Ушаково"), woman("bride", "Анна", ("Фомина", "Фоминична"), "", "Ушаково"));
 
         // Ревьюер 17.10.2026: жена — «Васса» и «Василиса» (варианты одного
         // имени в словаре) — один муж, не два.
@@ -1368,6 +1424,10 @@ mod tests {
         let olga = find("ольга петровна");
         let mum = olga.iter().find(|h| h.mentions == 1 && h.born.is_none()).unwrap();
         assert_eq!(open(mum).possible.len(), 1, "долг п. 69: только «возможно»");
+        let anna = find("анна фоминична");
+        let bride = anna.iter().find(|h| h.mentions == 1 && h.born.is_none());
+        assert!(bride.is_some_and(|b| open(b).possible.len() == 1), "долг п. 69: невеста без фамилии — рождение только «возможно»: {:?}",
+                anna.iter().map(|h| (h.iof.clone(), h.mentions, h.born.clone())).collect::<Vec<_>>());
         drop(conn);
         let _ = std::fs::remove_file(path);
     }
@@ -1428,7 +1488,8 @@ mod tests {
     }
 
     /// НП родственникам жениха и невесты — при сохранении (п. 2.4): только
-    /// пустой НП и только у названного человека.
+    /// пустой НП и только у человека с именем или родством (долг п. 73: «отец»
+    /// без имени — тоже).
     #[test]
     fn relatives_get_place_of_groom_and_bride() {
         let Some((path, conn)) = fresh("relplace") else { return };
@@ -1444,14 +1505,16 @@ mod tests {
             rel("bride_relative", 25, "Пётр", "Фетинино"),
             rel("bride_parent", 26, "Анна", ""),
             rel("groom_relative", 16, "", ""),
+            PersonInput { kinship: None, ..rel("groom_relative", 17, "", "") },
         ])).unwrap();
         let places: Vec<(String, Option<String>)> = conn.prepare(
             "SELECT m.role_code, p.name FROM person_mention m LEFT JOIN place p ON p.id = m.place_id WHERE m.entry_id = ?1 ORDER BY m.sort_order")
             .unwrap().query_map([saved.id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
         let want = |v: &str| Some(v.to_string());
-        assert_eq!(places, vec![("groom".into(), want("Малово")), ("groom_relative".into(), want("Малово")), ("groom_relative".into(), None),
+        assert_eq!(places, vec![("groom".into(), want("Малово")), ("groom_relative".into(), want("Малово")),
+                                ("groom_relative".into(), want("Малово")), ("groom_relative".into(), None),
                                 ("bride".into(), want("Воспица")), ("bride_relative".into(), want("Фетинино")), ("bride_parent".into(), want("Воспица"))],
-                   "пустой НП — от жениха и невесты, набранный — как есть, безымянный — пусто");
+                   "пустой НП — от жениха и невесты, набранный — как есть, безымянный с родством — тоже, совсем пустой — пусто");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

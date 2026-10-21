@@ -543,7 +543,8 @@ DROP TABLE IF EXISTS temp.m_unused;
 -- режиме автоматически присваивать им НП жениха и невесты соответственно…
 -- чтобы в выгрузки Familio и Excel эти люди попадали с заполненным НП»).
 -- Новые записи заполняет сохранение (records::save_entry_in_tx); здесь —
--- набранные раньше. Только пустой НП и только человек с именем или фамилией.
+-- набранные раньше. Только пустой НП и только человек с именем, фамилией или
+-- родством (долг п. 73, 21.10.2026: родственник одним родством «отец»).
 UPDATE person_mention
    SET place_id = (SELECT g.place_id FROM person_mention g
                     WHERE g.entry_id = person_mention.entry_id
@@ -553,7 +554,8 @@ UPDATE person_mention
  WHERE place_id IS NULL
    AND (role_code LIKE 'groom_relative%' OR role_code LIKE 'groom_parent%'
         OR role_code LIKE 'bride_relative%' OR role_code LIKE 'bride_parent%')
-   AND (nullif(trim(first_name), '') IS NOT NULL OR nullif(trim(surname), '') IS NOT NULL);
+   AND (nullif(trim(first_name), '') IS NOT NULL OR nullif(trim(surname), '') IS NOT NULL
+        OR nullif(trim(kinship), '') IS NOT NULL);
 
 -- Отпечаток поставки обновляем принудительно: по нему определяется, нужно ли
 -- обновление в следующий раз. Ещё принудительно — счётчик починки выше.

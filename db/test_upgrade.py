@@ -243,8 +243,8 @@ def build_old_database(path: Path) -> None:
                     # памяти без пункта отметка не переходит (долг п. 65).
                     ("clergy1", 200, "Иван", None, "Петров", "Кнышевка")])
     # Родственники жениха и невесты без НП (Роман 16.10.2026, ответ 8):
-    # обновление даёт им НП жениха и невесты; родственник с НП и безымянный —
-    # как были.
+    # обновление даёт им НП жениха и невесты, безымянному с родством тоже
+    # (долг п. 73); родственник с НП — как был.
     db.executemany("INSERT OR IGNORE INTO role (code, title, section, sort_order) VALUES (?,?,2,?)",
                    [("groom", "жених", 10), ("bride", "невеста", 20), ("groom_relative", "родственник жениха", 15),
                     ("bride_relative", "родственник невесты", 25)])
@@ -392,10 +392,12 @@ def main() -> int:
         check("«ИФ»: память персон получила отметку по сохранённым упоминаниям",
               one("SELECT group_concat(iof || '=' || name_surname, ', ') FROM "
                   "(SELECT iof, name_surname FROM person_index ORDER BY iof)") == "Иван Петров=0, Пётр Сидоров=1")
-        check("родственник жениха без НП получил НП жениха; у невесты без НП — пусто; безымянный — как был",
+        # Долг п. 73 (21.10.2026): безымянный родственник с родством («брат») —
+        # тоже с НП жениха.
+        check("родственник жениха без НП получил НП жениха, и безымянный с родством тоже; у невесты без НП — пусто",
               one("SELECT group_concat(role_code || '=' || coalesce((SELECT name FROM place WHERE id = place_id), '-'), ', ') FROM "
                   "(SELECT role_code, place_id FROM person_mention WHERE entry_id = 900 ORDER BY sort_order)")
-              == "groom=Кнышевка, groom_relative=Кнышевка, groom_relative=-, bride=-, bride_relative=-")
+              == "groom=Кнышевка, groom_relative=Кнышевка, groom_relative=Кнышевка, bride=-, bride_relative=-")
         check("«ИФ»: причт, сохранённый фамилией, — с отметкой",
               one("SELECT group_concat(name_surname) FROM clergy_index WHERE iof='Иоанн Скворцов'") == "1")
         check("дубли причта без звания слиты, частоты сложены",

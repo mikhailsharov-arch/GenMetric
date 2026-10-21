@@ -648,6 +648,11 @@ mod tests {
         assert_eq!(imported_from(&dir, "1890.xlsx", fam[1].1.len() as i64).unwrap(), None, "часть имени — не имя");
         let row = list(&dir).unwrap().into_iter().find(|r| r.id == fam_id).unwrap();
         assert_eq!(row.source_name.as_deref(), Some("familio.xlsx, familio-1890.xlsx"));
+        // Повторный импорт тех же файлов — «заменить тот приход» (долг п. 81).
+        let (again_id, _) = create_with(&dir, &seed, "Никольское (из Familio)", Some((&source, 1)), Some(fam_id),
+                                        |conn| crate::import_familio::import_into(conn, &files)).unwrap();
+        assert_eq!(imported_from(&dir, "familio.xlsx", fam[0].1.len() as i64).unwrap().map(|x| x.0), Some(again_id));
+        assert!(list(&dir).unwrap().iter().all(|r| r.id != fam_id), "прежний приход ушёл из перечня");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -23,7 +23,7 @@ use crate::records::{surname_pair, NO_NAME};
 use crate::text::{normalize, normalize_name};
 
 /// Отчества по имени отца: нормализованное имя → (мужское, женское).
-pub(super) type Patronymics = HashMap<String, (String, String)>;
+pub type Patronymics = HashMap<String, (String, String)>;
 
 /// Персона поиска: одно досье.
 pub(super) struct Person {
@@ -841,6 +841,12 @@ pub(super) fn build(rows: &mut [Row]) -> (Vec<Person>, Vec<Option<usize>>) {
         let Some(list) = by_io.get(&(origin.first_n.clone(), origin.patr_n.clone(), origin.place_norm.clone())) else { continue };
         let sur = if origin.role == "bride" { origin.sur_base.as_str() }
                   else { mine.iter().map(|&i| rows[i].sur_base.as_str()).find(|s| !s.is_empty()).unwrap_or("") };
+        // Невеста без фамилии — тоже только «возможно» (долг п. 69): в своей
+        // деревне у неё могут быть тёзки по имени и отчеству, а сверить
+        // фамилию с рождением нечем.
+        if sur.is_empty() && female(&persons[g], rows) {
+            only_maybe.insert(g);
+        }
         for &b in list {
             let br = &rows[persons[b].rows[0]];
             let score = surname_score(sur, &br.sur_base);

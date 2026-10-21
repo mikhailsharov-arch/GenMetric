@@ -336,9 +336,23 @@ def main() -> int:
         check("AL причина", v("AL") == "понос")
         check("AM/AN исповедовал — у кого «исповед» в примечании",
               [v("AM"), v("AN")] == ["священник", "Александр Рождественский"], str([v("AM"), v("AN")]))
-        check("AQ/AR погребение — священник", [v("AQ"), v("AR")] == ["священник", "Александр Рождественский"])
-        check("второй священник — в свободную колонку (дьякона)",
-              v("AU") == "священник Воскресенской церкви" and v("AV") == "Иоанн Смирнов", str([v("AU"), v("AV")]))
+        # Долг п. 78 (21.10.2026): исповедовавший при другом священнике —
+        # только в AM/AN; погребал другой (так пишет и импорт Familio), в
+        # колонку дьякона исповедовавший не идёт.
+        check("AQ/AR погребение — другой священник, без пометки «исповедовал»",
+              [v("AQ"), v("AR")] == ["священник Воскресенской церкви", "Иоанн Смирнов"], str([v("AQ"), v("AR")]))
+        check("исповедовавший — не в колонке дьякона", v("AU") is None and v("AV") is None, str([v("AU"), v("AV")]))
+        # Ревьюер 21.10.2026: двое с пометкой «исповедовал» — одна строка смерти.
+        did = db.execute("SELECT entry_id FROM person_mention WHERE role_code = 'clergy2' AND first_name = 'Иоанн'").fetchone()[0]
+        db.execute("UPDATE person_mention SET note = 'исповедовал' WHERE entry_id = ? AND role_code = 'clergy2'", (did,))
+        third = db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, surname, rank, gender) "
+                           "VALUES (?, 'clergy3', 115, 'Петр', 'Лентовский', 'священник', 'М')", (did,)).lastrowid
+        db.executescript(sql["export_prepare"])
+        n_deaths = len(rows(db, sql, "familio_death"))
+        check("трое священников, двое исповедовали — строк смерти столько же", n_deaths == len(deaths), f"{n_deaths} ≠ {len(deaths)}")
+        db.execute("DELETE FROM person_mention WHERE id = ?", (third,))
+        db.execute("UPDATE person_mention SET note = NULL WHERE entry_id = ? AND role_code = 'clergy2'", (did,))
+        db.executescript(sql["export_prepare"])
         check("AZ пометки: примечание причта", v("AZ") == "Александр Рождественский: исповедовал", str(v("AZ")))
         check("BA комментарий: «Анна» не отличается, отец — в старой форме", v("BA") == "Имена в МК: Иван Петров",
               str(v("BA")))

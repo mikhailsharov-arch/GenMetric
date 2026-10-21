@@ -340,6 +340,14 @@ export function useEntryScan(editing: boolean, year: number | null,
   // сканов… номера страниц в форме тоже начали автоматически
   // пролистываться»). Первое нажатие клавиши в форме снимает заморозку.
   const frozen = useRef(false);
+  // Заморозку видно у поля «Стр.» (долг п. 76, ревьюер 19.10.2026: «на
+  // экране не видна») — стилем по атрибутам формы, без состояния React:
+  // перерисовка формы на каждое нажатие ломала смену года (стенд s64,
+  // 21.10.2026). data-scan-follow — страница шла бы за сканом: новая запись
+  // и открыта папка года формы.
+  useEffect(() => {
+    root?.current?.setAttribute("data-scan-follow", !editing && open ? "1" : "0");
+  }, [root, editing, open]);
   useEffect(() => {
     const el = root?.current;
     if (!el) return;

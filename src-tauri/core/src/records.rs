@@ -758,7 +758,10 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
             let side = if person.role_code.starts_with("groom_relative") || person.role_code.starts_with("groom_parent") { &groom_place }
                        else if person.role_code.starts_with("bride_relative") || person.role_code.starts_with("bride_parent") { &bride_place }
                        else { &None };
-            let named = [&person.first_name, &person.surname].iter().any(|v| v.as_deref().is_some_and(|v| !v.trim().is_empty()));
+            // И родственник одним родством, без имени («отец» — у всех записей
+            // Романа): в Excel его НП стоял пустым (долг п. 73, проверяющий 17.10).
+            let named = [&person.first_name, &person.surname, &person.kinship].iter()
+                .any(|v| v.as_deref().is_some_and(|v| !v.trim().is_empty()));
             let filled;
             let person = if named && side.is_some() && person.place.as_deref().map_or(true, |p| p.trim().is_empty()) {
                 filled = PersonInput { place: side.clone(), ..person.clone() };

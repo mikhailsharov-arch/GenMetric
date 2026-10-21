@@ -50,6 +50,9 @@ struct App {
     /// Упоминания открытого прихода для экрана «Поиск» и счётчик изменений
     /// соединения, при котором они прочитаны (search.rs, `Index`).
     search: Mutex<Option<(i64, Arc<genmetric_core::search::Index>)>>,
+    /// Годы смерти для «†» в подсказке — отдельно от памяти поиска: она
+    /// держится только пока открыт экран «Поиск» (долг п. 68).
+    died: Mutex<Option<(i64, Arc<genmetric_core::search::Deaths>)>>,
     /// Память поиска перестраивается в фоне для подсказки (`refresh_search_soon`).
     search_busy: std::sync::atomic::AtomicBool,
     /// Ширина окна до включения блока скана — к ней окно возвращается, когда
@@ -172,6 +175,14 @@ fn lock_conn<'a>(app: &'a App) -> MutexGuard<'a, Option<Connection>> {
 
 /// Память экрана «Поиск» больше не годится: открыт другой приход или файл.
 fn drop_search(app: &App) {
+    *app.search.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *app.died.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Экран «Поиск» закрыт — его память больше не нужна (долг п. 68): подсказке
+/// хватает годов смерти (`App::died`).
+#[tauri::command]
+fn search_release(app: State<App>) {
     *app.search.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
@@ -870,13 +881,13 @@ fn suggest_person(handle: tauri::AppHandle, app: State<App>, prefix: String, lim
     // занимает доли секунды, а подсказка идёт на каждую букву: устаревшую
     // память берём как есть (в ней нет только последних сохранений), а
     // свежую строим в фоне.
-    let cached = app.search.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let cached = app.died.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if cached.as_ref().map_or(true, |(at, _)| *at != now) {
         refresh_search_soon(&handle, now);
     }
-    if let Some((_, index)) = cached {
+    if let Some((_, died)) = cached {
         for hint in out.iter_mut() {
-            hint.died = index.died_of(&hint.iof, hint.place.as_deref());
+            hint.died = died.of(&hint.iof, hint.place.as_deref());
         }
         // Роман 16.10.2026: «оставлять, но показывать в самом конце
         // выпадающего списка с пометкой „† год смерти“». В поле «Умерший» —
@@ -916,8 +927,10 @@ fn refresh_search_soon(handle: &tauri::AppHandle, now: i64) {
                 // Замки — по одному, не вложенно: смена прихода берёт их в
                 // своём порядке.
                 let same = *app.db_path.lock().unwrap_or_else(|e| e.into_inner()) == path;
+                // Хранятся только годы смерти; сама память поиска —
+                // выбрасывается (долг п. 68).
                 if same {
-                    *app.search.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, Arc::new(index)));
+                    *app.died.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, Arc::new(index.deaths())));
                 }
             }
             Ok(Err(e)) => write_log(&app.log_path, &format!("Память поиска для подсказки (умершие с «†»): {e}")),
@@ -1650,6 +1663,8 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
         // Одна семья — много младенцев: полное ИОФ считается один раз на
         // имя, пол и отца (ревьюер 20.10.2026: словарь читался на строку).
         let mut known: std::collections::HashMap<(String, Option<String>, String), Option<String>> = std::collections::HashMap::new();
+        // Словарь отчеств — один раз на список, по первому младенцу.
+        let mut dict: Option<genmetric_core::search::Patronymics> = None;
         for row in rows {
             let (mut brief, gender, father) = row.map_err(|e| e.to_string())?;
             // Младенец одним именем — полным ИОФ по отцу, тем же правилом, что
@@ -1660,7 +1675,11 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
                     let full = match known.get(&key) {
                         Some(v) => v.clone(),
                         None => {
-                            let v = genmetric_core::search::child_full_iof(conn, dead, gender.as_deref(), father, false).ok().flatten();
+                            if dict.is_none() {
+                                dict = genmetric_core::search::patronymics(conn, None).ok();
+                            }
+                            let v = genmetric_core::search::child_full_iof_in(conn, dict.as_ref(), dead, gender.as_deref(), father, false)
+                                .ok().flatten();
                             known.insert(key, v.clone());
                             v
                         }
@@ -1849,6 +1868,13 @@ fn scan_remember(app: State<App>, year: Option<i64>, file: String) -> Result<(),
         let after = genmetric_core::search::changes(conn)?;
         let mut cache = app.search.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((at, _)) = cache.as_mut() {
+            if *at == before {
+                *at = after;
+            }
+        }
+        drop(cache);
+        let mut died = app.died.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, _)) = died.as_mut() {
             if *at == before {
                 *at = after;
             }
@@ -2154,7 +2180,8 @@ async fn familio_add(app: State<'_, App>, file_name: String) -> Result<FamilioSe
 
 /// Импорт выбранных файлов Familio в один новый приход — и он же открыт.
 #[tauri::command]
-async fn familio_run(app: State<'_, App>, window: tauri::Window, name: String) -> Result<ImportDone, String> {
+async fn familio_run(app: State<'_, App>, window: tauri::Window, name: String,
+                     replace: Option<i64>) -> Result<ImportDone, String> {
     let fail = |e: String| {
         let msg = format!("Импорт Familio: {e}");
         write_log(&app.log_path, &msg);
@@ -2172,9 +2199,25 @@ async fn familio_run(app: State<'_, App>, window: tauri::Window, name: String) -
         let list: Vec<(String, i64)> = files.iter().map(|(n, b)| (n.clone(), b.len() as i64)).collect();
         (parish::sources_text(&list), list.iter().map(|x| x.1).sum())
     };
-    let made = parish::create_with(&app.data_dir, &bundled, &name, Some((&source, size)), None,
+    // «Заменить тот приход» — как у импорта Excel (долг п. 81): открытый
+    // заменяемый приход отпускаем, при неудаче — открываем обратно.
+    let current = app.parish.lock().map(|p| p.0).unwrap_or(1);
+    let was_open = replace == Some(current);
+    if was_open {
+        *lock_conn(&app) = None;
+        drop_search(&app);
+    }
+    let made = parish::create_with(&app.data_dir, &bundled, &name, Some((&source, size)), replace,
                                    |conn| genmetric_core::import_familio::import_into(conn, &files));
-    let (id, report) = made.map_err(fail)?;
+    let (id, report) = match made {
+        Ok(v) => v,
+        Err(e) => {
+            if was_open {
+                *lock_conn(&app) = parish::open(&app.data_dir, &bundled, current).ok().map(|o| o.conn);
+            }
+            return Err(fail(e));
+        }
+    };
     write_log(&app.log_path, &format!(
         "Импорт Familio ({} файл.): рождений {}, браков {}, смертей {}; имён не сверено {}",
         files.len(), report.births, report.marriages, report.deaths, report.unknown_names));
@@ -2241,6 +2284,7 @@ fn main() {
                 import_file: Mutex::new(Vec::new()),
                 familio_files: Mutex::new(Vec::new()),
                 search: Mutex::new(None),
+                died: Mutex::new(None),
                 search_busy: std::sync::atomic::AtomicBool::new(false),
                 narrow_width: Mutex::new(None),
                 data_dir,
@@ -2338,6 +2382,7 @@ fn main() {
             import_inspect,
             import_run,
             familio_reset,
+            search_release,
             familio_add,
             familio_run,
             export::export_years,

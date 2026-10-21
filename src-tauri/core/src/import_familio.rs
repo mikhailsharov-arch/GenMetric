@@ -433,9 +433,14 @@ impl Familio<'_> {
         // Имени из словаря нет, но слов три и больше и последнее — отчество:
         // порядок шаблона Familio «Фамилия Имя Отчество», имя — перед
         // отчеством («Усанов Евфросинья Ивановна» — имя в редком написании).
-        if at.is_none() && words.len() >= 3 && strong_patronymic(words[words.len() - 1])
-            && !strong_patronymic(words[words.len() - 2]) {
-            at = Some(words.len() - 2);
+        // Ровно три слова и последнее похоже на отчество («Иванова Мароа
+        // Михайлова», «Воробьева Мароа(?) Иосиина» — долг п. 79) — тоже
+        // порядок шаблона: первое слово — фамилия.
+        let last = words.len().wrapping_sub(1);
+        if at.is_none() && words.len() >= 3
+            && (strong_patronymic(words[last]) || (words.len() == 3 && looks_like_patronymic(&clean(words[last]))))
+            && !strong_patronymic(words[last - 1]) {
+            at = Some(last - 1);
         }
         let (before, from) = match at {
             Some(i) => (&words[..i], &words[i..]),
@@ -1178,6 +1183,24 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
             report.notes.push(format!("{}: {text}", at(file, "location", r)));
         }
     }
+    // Пункты записей без карточки — на сверку, по одному на пункт (долг п. 80):
+    // без типа и уезда пункт не найти на Familio и не отличить от тёзки.
+    let bare: Vec<(String, i64, i64)> = {
+        let mut st = conn.prepare(&statement("place_without_card")?).map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    for (place, entry, n) in &bare {
+        conn.execute(&review_add, rusqlite::named_params! {
+            ":kind": "note",
+            ":text": format!("пункт «{place}» без карточки (нет ни типа, ни уезда, ни губернии), упоминаний {n} — заполните карточку у поля НП"),
+            ":sheet": Option::<String>::None, ":row": Option::<i64>::None, ":entry_id": entry,
+        }).map_err(|e| e.to_string())?;
+    }
+    if !bare.is_empty() {
+        report.notes.push(format!("пунктов без карточки: {} — на сверке ({})", bare.len(),
+                                  bare.iter().take(10).map(|b| b.0.as_str()).collect::<Vec<_>>().join(", ")));
+    }
     if kin_of_godparents > 0 {
         report.notes.push(format!(
             "родственников восприемников и родителей: {kin_of_godparents} — в форме для них места нет, они в примечании записи"));
@@ -1320,7 +1343,7 @@ mod tests {
     fn birth(year: &str, child: &str, father: &str, surname: &str) -> (&'static str, Vec<(u32, &'static str)>) {
         let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
         ("РОЖДЕНИЕ", vec![(1, "1"), (2, "ГАХК"), (3, "56"), (5, "12"), (7, "Тестово"), (9, "Никольская"), (11, "1"), (12, "муж"),
-                          (13, "3"), (14, "5"), (15, leak(year)), (18, leak(year)), (19, leak(child)), (22, "крестьянин"),
+                          (13, "3"), (14, "5"), (15, leak(year)), (18, leak(year)), (19, leak(child)), (20, "Заречье"), (22, "крестьянин"),
                           (23, leak(surname)), (25, leak(father)), (26, "Петрович"), (35, "Боровков Иван Федотович")])
     }
 
@@ -1349,6 +1372,8 @@ mod tests {
         assert_eq!(split("Мухин Степан", false), "Мухин/Степан/");
         assert_eq!(split("Ильина Анастасия Ивановна", false), "Ильина/Анастасия/Ивановна", "фамилия, похожая на имя");
         assert_eq!(split("Игнатьевич", false), "//Игнатьевич");
+        assert_eq!(split("Иванова Мароа Михайлова", false), "Иванова/Мароа/Михайлова", "долг п. 79");
+        assert_eq!(split("Воробьева Мароа(?) Иосиина", false), "Воробьева/Мароа(?)/Иосиина", "долг п. 79");
         drop(fam);
         drop(conn);
         let _ = std::fs::remove_file(path);
@@ -1427,6 +1452,8 @@ mod tests {
         assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'note' AND text LIKE '%нет года%' AND sheet = 'РОЖДЕНИЕ | b.xlsx' AND row = 6"), 1);
         assert_eq!(text("SELECT surname FROM person_mention WHERE role_code = 'godparent1' LIMIT 1"), "Боровков");
         assert_eq!(text("SELECT patronymic_modern FROM person_mention WHERE role_code = 'father' LIMIT 1"), "Петрович");
+        // Долг п. 80: пункта «Заречье» на листе location нет — один раз на сверке.
+        assert_eq!(num("SELECT count(*) FROM review_item WHERE text LIKE 'пункт «Заречье» без карточки%' AND entry_id IS NOT NULL"), 1);
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

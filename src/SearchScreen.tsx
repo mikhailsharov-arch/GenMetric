@@ -128,6 +128,14 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
     : filter.year_from !== null && filter.year_to !== null && filter.year_from > filter.year_to
       ? "Год «от» больше года «до» — так никого не найдётся." : "";
 
+  // Ушли с экрана — его память в программе больше не нужна (долг п. 68):
+  // подсказке хватает годов смерти. Вернутся — прочитается заново.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (wasActive.current && !active) invoke("search_release").catch((e) => report("Память экрана «Поиск» не отпущена", e));
+    wasActive.current = active;
+  }, [active]);
+
   // Открыли из формы с персоной под курсором — её ИОФ и НП в поля.
   useEffect(() => {
     if (!request) return;
