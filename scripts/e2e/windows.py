@@ -47,7 +47,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from selenium import webdriver
-from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
+from selenium.common.exceptions import (ElementClickInterceptedException, NoSuchElementException, StaleElementReferenceException,
                                         TimeoutException, WebDriverException)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
@@ -88,6 +88,22 @@ def shown(driver, xpath):
 def field(driver, label, scope="//"):
     """Поле формы по подписи: <div class="field"><label>НП</label>…<input>."""
     return shown(driver, f"{scope}div[contains(@class,'field')][./label[normalize-space()='{label}']]//input")
+
+
+def tab(driver, name):
+    """Вкладка верхней строки. Сборка 21.10.2026 (6396107): на раннере клик в
+    «Дело» дважды подряд перехватила соседняя вкладка («element click
+    intercepted … at point (110, 20)», снимок окна 470×681 при ширине 1008);
+    на прежней сборке тот же шаг проходил, код вкладок не менялся. Вкладка —
+    средство, а не предмет проверки: при перехвате — щелчок скриптом, и об
+    этом строка в журнале."""
+    el = driver.find_element(By.XPATH, f"//nav//button[normalize-space()='{name}']")
+    driver.execute_script("window.scrollTo(0, 0);")
+    try:
+        el.click()
+    except ElementClickInterceptedException as e:
+        print(f"  [инфо]   вкладку «{name}» закрыл другой элемент — щелчок скриптом: {str(e).splitlines()[0][:200]}")
+        driver.execute_script("arguments[0].click();", el)
 
 
 def click(driver, xpath):
@@ -265,7 +281,7 @@ def run(driver, wait, archive):
     check("полосы ошибок нет", not errorbar, " | ".join(errorbar))
 
     print("\n4. Подсказка видит архив")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
     father = "//section[.//h2[normalize-space()='Отец']]//"
     iof = field(driver, "ИОФ", father)
@@ -716,12 +732,12 @@ def run(driver, wait, archive):
               error_details(driver))
     if search_shown():
         # Не оставлять следующим шагам чужой экран.
-        driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+        tab(driver, 'Рождения')
         time.sleep(0.5)
 
     # Кнопка на «Деле» — главный вход (ответ заказчика 4Б): открывает экран,
     # «Закрыть» возвращает на «Дело».
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     wait_for(lambda: bool(driver.execute_script(
         "const b = document.querySelector('[data-find-person]'); return !!b && b.offsetParent !== null;")))
     driver.execute_script("const b = document.querySelector('[data-find-person]'); b.scrollIntoView({block: 'center'}); b.click();")
@@ -729,7 +745,7 @@ def run(driver, wait, archive):
     if search_shown():
         driver.execute_script("document.querySelector('[data-search-close]').click();")
         check("«Закрыть» возвращает на «Дело»", wait_for(lambda: not search_shown()), error_details(driver))
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     time.sleep(0.5)
 
     print("\n5е. Сканы рядом с формой — картинка из папки на диске в настоящем WebView2")
@@ -763,7 +779,7 @@ def run(driver, wait, archive):
 
     width_before = driver.execute_script("return window.innerWidth;")
     driver.execute_script("window.__pickScanDir = () => arguments[0];", str(scans))
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     wait_for(lambda: bool(driver.execute_script(
         "const b = document.querySelector('[data-scan-pick]'); return !!b && b.offsetParent !== null;")))
     driver.execute_script("const b = document.querySelector('[data-scan-pick]'); b.scrollIntoView({block: 'center'}); b.click();")
@@ -786,7 +802,7 @@ def run(driver, wait, archive):
     check("«→» — следующий разворот «лист 2.JPG», и он показан",
           wait_for(lambda: scan_attr("data-scan-loaded") == "лист 2.JPG", 20), str(scan_attr("data-scan-loaded")))
     # Щелчок в скане не уводит курсор из поля формы; Alt+PageDown листает из поля.
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     time.sleep(0.5)
     child_field = field(driver, "Ребёнок")
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].focus();", child_field)
@@ -871,7 +887,7 @@ def run(driver, wait, archive):
     print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")
     # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его
     # явно не выключили (Роман 07.10.2026).
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     time.sleep(0.5)
     on = driver.execute_script("return document.documentElement.classList.contains('onecol')")
     pressed = shown(driver, "//button[@data-onecol]").get_attribute("aria-pressed")
@@ -964,7 +980,7 @@ def resumed(driver, wait):
     check("выключенное «всегда в столбик» пережило перезапуск",
           not driver.execute_script("return document.documentElement.classList.contains('onecol')"),
           error_details(driver))
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
     time.sleep(1)
     # Счёт ставится сам, по полу (Роман 08.10.2026): последняя запись —
@@ -1183,7 +1199,7 @@ def resumed(driver, wait):
     check("набрали отца — у матери «законная жена его»", rank == "законная жена его", f"«{rank}»")
 
     print("\n11. Браки (заказчик 25.09.2026)")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Браки']").click()
+    tab(driver, 'Браки')
     m = "//div[contains(@class,'marriage')]//"
     wait.until(EC.visibility_of_element_located((By.XPATH, m + "section[.//h2[normalize-space()='Жених']]")))
     groom = m + "section[.//h2[normalize-space()='Жених']]//"
@@ -1219,7 +1235,7 @@ def resumed(driver, wait):
     edit_and_save(driver, wait, m, ".marriage", 5, "№ 5 · ")
 
     print("\n12. Смерти (27.09.2026)")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Смерти']").click()
+    tab(driver, 'Смерти')
     d = "//div[contains(@class,'death')]//"
     wait.until(EC.visibility_of_element_located((By.XPATH, d + "section[.//h2[normalize-space()='Умерший']]")))
     dead = d + "section[.//h2[normalize-space()='Умерший']]//"
@@ -1279,7 +1295,7 @@ def resumed(driver, wait):
         By.XPATH, dead + "div[contains(@class,'field')][./label[normalize-space()='ИОФ']]")))
 
     print("\n14. Выгрузка в Familio и в Excel (Роман 30.09.2026)")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     click(driver, "//button[normalize-space()='Выгрузить в Familio…']")
     modal = "//div[@data-modal='familio']"
     wait.until(EC.visibility_of_element_located((By.XPATH, modal)))
@@ -1341,7 +1357,7 @@ def feed_file(driver, path):
 
 def open_parishes(driver, wait):
     """Окно «Приходы» с экрана «Дело»."""
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     # Строка прихода — с классом main: с 08.10.2026 на «Деле» есть и другая
     # строка того же вида, «Всегда в столбик».
     click(driver, "//div[contains(@class,'parishrow') and contains(@class,'main')]//button")
@@ -1380,7 +1396,7 @@ def parishes(driver, wait):
     """Приходы и импорт из Excel (спека 2026-10-02): каждый приход — свой файл."""
     print("\n15. Приходы: новый приход, записи не смешиваются")
     # С набранным в форме приход сменить нельзя — проверяем отказ, затем чистим.
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     fill(driver, "Ребёнок", "Мария", "//div[contains(@class,'birth')]//")
     open_parishes(driver, wait)
     click(driver, PARISH + "//button[normalize-space()='Новый приход…']")
@@ -1410,7 +1426,7 @@ def parishes(driver, wait):
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
     village_card(driver, wait, "Николо-Макарово")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     b = "//div[contains(@class,'birth')]//"
     year = field(driver, "Год", b).get_attribute("value")
     check("в новом приходе форма пустая — год не подставлен", year == "", f"«{year}»")
@@ -1432,7 +1448,7 @@ def parishes(driver, wait):
           "Набрано: 1 — за 1890 год" in block, error_details(driver) + " | " + hints[:120].replace("\n", " | "))
     # Свободный порядок на экране «Дело» (Роман 03.10.2026): поправил дело,
     # поставил новый год, сохранил — и набирает; прошлый год не тронут.
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     fill(driver, "Дело", "77")
     fill(driver, "Год книги", "1891")
     click(driver, "//button[normalize-space()='Сохранить дело']")
@@ -1447,7 +1463,7 @@ def parishes(driver, wait):
     head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
     check("новому году заведено своё дело: «Дело за 1891 год», в списке и 1890",
           "Дело за 1891 год" in head and "1890" in head, head.replace("\n", " | ") + " | " + error_details(driver))
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     year = field(driver, "Год", b).get_attribute("value")
     check("формы встали на новый год", year == "1891", f"«{year}»")
     # Спека 2026-10-20-dosye-i-dovodka, п. 2 (Роман 20.10.2026): год меняют
@@ -1472,7 +1488,7 @@ def parishes(driver, wait):
     page = field(driver, "Стр.", b).get_attribute("value")
     check("кнопка «+» года: 1891 с чистого листа (страница пуста)", year == "1891" and page == "",
           f"год «{year}», стр. «{page}» | " + error_details(driver))
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     # Год без правки реквизитов и уход из поля — открывает дело этого года.
     fill(driver, "Год книги", "1890")
     field(driver, "Фонд").click()
@@ -1488,7 +1504,7 @@ def parishes(driver, wait):
           listing.replace("\n", " | ")[:300])
     click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
     reloaded(driver, wait, "Борисоглебское")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     try:
         wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".birth"), "Набрано: 4"))
     except TimeoutException:
@@ -1576,13 +1592,13 @@ def parishes(driver, wait):
         check("окно сверки имени закрыто", not driver.find_elements(By.CSS_SELECTOR, ".modal"))
         click(driver, "//div[contains(@class,'birth')]//div[contains(@class,'editbar')]//button[normalize-space()='Отменить']")
         time.sleep(0.5)
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Дело']").click()
+    tab(driver, 'Дело')
     head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
     check("дело — на год: открыт последний год, в списке оба",
           "Дело за 1890 год" in head and "1889" in head, head.replace("\n", " | "))
     delo = field(driver, "Дело").get_attribute("value")
     check("у 1890 года своё дело — 12", delo == "12", f"«{delo}»")
-    driver.find_element(By.XPATH, "//nav//button[normalize-space()='Рождения']").click()
+    tab(driver, 'Рождения')
     try:
         wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".birth"), "Набрано: 3"))
     except TimeoutException:
