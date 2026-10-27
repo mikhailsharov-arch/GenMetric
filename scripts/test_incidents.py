@@ -1181,7 +1181,9 @@ def incident_20261009_otvet_na_sborku_08_10():
     main_rs = read("src-tauri/src/main.rs")
     check("команда принимает НП мужа и отдаёт его запросу",
           "fn suggest_spouse(app: State<App>, husband: String, place: Option<String>)" in main_rs
-          and '":husband_norm": normalize(&husband), ":place": place' in main_rs)
+          # С 27.10.2026 запрос зовётся и для мужа в другом написании (п. 91).
+          and '":husband_norm": husband_norm, ":place": place' in main_rs
+          and "lookup(&normalize(&husband))?" in main_rs)
 
     db.executemany("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?,?,?,?,?,?)",
                    [("А Ф З", "а ф з", "", "псаломщик", "М", 4), ("А Ф З", "а ф з", "Борисоглебское", "псаломщик", "М", 1),
@@ -1413,8 +1415,9 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
     """
     birth, death = read("src/BirthForm.tsx"), read("src/DeathForm.tsx")
     check("фамилия матери: пока дописанное не дошло до блока, правка блока с прежним текстом его не стирает",
-          "surnamePin.current = { from: text, to: full };" in birth
-          and "pin && next.iof.trim() === pin.from ? { ...next, iof: pin.to, parsed: null } : next" in birth
+          # С 27.10.2026 привязка несёт и отметку «ИФ» (мать одним именем из подсказки).
+          "surnamePin.current = { from: text, to: full, nameSurname: asSurname };" in birth
+          and "? { ...next, iof: pin.to, parsed: null, nameSurname: pin.nameSurname || next.nameSurname } : next" in birth
           and "onChange={setMotherFromBlock}" in birth and "onChange={setMother}\n" not in birth
           and "useEffect(() => { surnamePin.current = null; }, [motherRaw.iof]);" in birth)
     names, iof = read("src/names.ts"), read("src/IofField.tsx")

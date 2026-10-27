@@ -4,7 +4,7 @@ import Suggest from "./Suggest";
 import { report } from "./errors";
 import { ScanLink } from "./scan";
 import { focusNextField } from "./focus";
-import { dateOf, describe, diedMark, eventKind, family, marriageLine, nameless, personTail, type DossierEvent, type Mention, type Part } from "./dossier";
+import { dateOf, describe, diedMark, eventKind, family, familyTimeline, marriageLine, nameless, personTail, type DossierEvent, type Mention, type Part } from "./dossier";
 
 /**
  * Экран «Поиск»: персона по приходу и её досье (спека
@@ -133,6 +133,8 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
   const wasActive = useRef(active);
   useEffect(() => {
     if (wasActive.current && !active) invoke("search_release").catch((e) => report("Память экрана «Поиск» не отпущена", e));
+    // Открыли — память можно хранить, пока экран открыт (долг п. 84).
+    if (!wasActive.current && active) invoke("search_open").catch((e) => report("Экран «Поиск» не открылся", e));
     wasActive.current = active;
   }, [active]);
 
@@ -457,19 +459,11 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                     {fam.parents.mother && <>; мать — {who(fam.parents.mother, dossier.place)}</>}
                   </p>
                 )}
-                {fam.marriages.map(({ event, spouse }) => {
-                  const line = marriageLine(event);
-                  return (
-                    <p key={`m${event.entry_id}`} data-marriage>
-                      <span className="when">{when(event)}</span> брак{line.mine && ` (${line.mine})`}:{" "}
-                      {spouse ? who(spouse, dossier.place) : line.missing}
-                      {spouse && line.spouseNote && <span className="sub"> · {line.spouseNote}</span>}
-                      {line.relatives.length > 0 && <span className="sub"> · {parts(line.relatives, dossier.place)}</span>}
-                    </p>
-                  );
-                })}
-                {fam.spouses.map((g, i) => (
-                  <div key={i} className="children">
+                {familyTimeline(fam).map((item, i) => {
+                  if (item.kind === "children") {
+                    const g = item.group;
+                    return (
+                  <div key={`c${i}`} className="children">
                     <p>
                       {g.children[0]?.event.me.role_code === "mother" ? "Отец детей" : "Мать детей"} — {g.spouse ? who(g.spouse, dossier.place)
                                         : g.children[0]?.event.me.role_code === "mother" ? "не записан" : "не записана"}. Детей: {g.children.length}.
@@ -488,7 +482,19 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                       ))}
                     </ul>
                   </div>
-                ))}
+                    );
+                  }
+                  const { event, spouse } = item.marriage;
+                  const line = marriageLine(event);
+                  return (
+                    <p key={`m${event.entry_id}`} data-marriage>
+                      <span className="when">{when(event)}</span> брак{line.mine && ` (${line.mine})`}:{" "}
+                      {spouse ? who(spouse, dossier.place) : line.missing}
+                      {spouse && line.spouseNote && <span className="sub"> · {line.spouseNote}</span>}
+                      {line.relatives.length > 0 && <span className="sub"> · {parts(line.relatives, dossier.place)}</span>}
+                    </p>
+                  );
+                })}
               </div>
             )}
 

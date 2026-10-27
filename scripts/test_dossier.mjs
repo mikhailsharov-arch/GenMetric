@@ -3,7 +3,7 @@
  * Проверка слов досье — src/dossier.ts (Роман 09.10.2026: «хронологическое
  * „досье“ человека»). Запуск: node --experimental-strip-types scripts/test_dossier.mjs
  */
-import { ageWords, dateOf, describe, diedMark, eventKind, family, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
+import { ageWords, dateOf, describe, diedMark, eventKind, family, familyTimeline, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -83,6 +83,19 @@ check("дети — по жёнам: одна жена в двух запися�
   fam.spouses.map((g) => `${g.spouse?.iof ?? "—"}:${g.children.map((c) => c.child?.iof).join(",")}`).join(" | "));
 check("у ребёнка — его восприемники", fam.spouses[0].children[0].godparents.map((g) => g.iof).join() === "Пётр Сидоров Орлов");
 check("чужое рождение, где он восприемник, в семью не идёт", fam.spouses.flatMap((g) => g.children).length === 4);
+// Роман 26.10.2026 (Петр Михайлов): ребёнок первой жены 1886 года — выше
+// третьего брака 1888 года; брак того же года, что первые дети, — перед ними.
+{
+  const tl = familyTimeline(family([
+    ev(2, m("groom", "Петр Михайлов"), [m("bride", "Фавста Яковлева", { iof_modern: "Фавста Яковлевна" })], { entry_id: 10, year: 1888 }),
+    ev(1, m("father", "Петр Михайлов"), [m("child", "Александр", { gender: "М" }), m("mother", "Ольга Тихонова", { iof_modern: "Ольга Тихоновна" })], { entry_id: 11, year: 1886 }),
+    ev(1, m("father", "Петр Михайлов"), [m("child", "Мария", { gender: "Ж" }), m("mother", "Фавста Яковлева", { iof_modern: "Фавста Яковлевна" })], { entry_id: 12, year: 1891 }),
+    ev(2, m("groom", "Петр Михайлов"), [m("bride", "Ольга Тихонова", { iof_modern: "Ольга Тихоновна" })], { entry_id: 13, year: 1886 }),
+  ]));
+  const order = tl.map((x) => x.kind === "marriage" ? `брак ${x.year} ${x.marriage.spouse?.iof}` : `дети ${x.year} ${x.group.spouse?.iof}`).join(" | ");
+  check("«Семья» по годам: брак 1886, дети 1886, брак 1888, дети 1891", order
+    === "брак 1886 Ольга Тихонова | дети 1886 Ольга Тихонова | брак 1888 Фавста Яковлева | дети 1891 Фавста Яковлева", order);
+}
 check("у того, кто не был ни супругом, ни родителем, семьи нет", family([ev(1, god, [girl, father])]).marriages.length === 0 && family([ev(1, god, [girl, father])]).spouses.length === 0);
 
 console.log("\nБрак в блоке «Семья»\n");

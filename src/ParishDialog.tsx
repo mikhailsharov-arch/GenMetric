@@ -309,7 +309,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
           </>
         )}
         <p className="hint">
-          Фонд, опись и дело каждого года — на экране «Дело» (список годов в заголовке).
+          Архив, фонд, опись и дело — на экране «Дело» (список годов в заголовке); дело — по реквизитам строк файла.
           Формы продолжат с последней записи; выгрузки — весь приход.
         </p>
         <div className="modalbar">
@@ -455,9 +455,9 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
       {mode === "familio" && fam.length > 0 && (
         <>
           <p className="hint">
-            Файлы шаблона Familio лягут в один новый приход — в открытый ничего не добавится. Записи разных
-            файлов делятся на дела по годам; одинаковые записи из разных файлов перенесутся обе и попадут в
-            список на сверку. Написание — как в файле.
+            Файлы шаблона Familio лягут в один новый приход — в открытый ничего не добавится. Дело — по
+            реквизитам строки (архив, фонд, опись, дело), как у волонтёра; без номера дела — по году.
+            Одинаковые записи из разных файлов перенесутся обе и попадут в список на сверку. Написание — как в файле.
           </p>
           <ul className="importnotes" data-familio-seen>
             {fam.map((f) => (
@@ -465,7 +465,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                 <b>{f.file_name}</b>: рождений {f.births}, браков {f.marriages}, смертей {f.deaths};
                 годы {yearsText(f.years)}{f.village ? `; ${f.village}` : ""}{f.church ? `, церковь ${f.church}` : ""}
                 {f.indexer ? `; индексация: ${f.indexer}` : ""}.
-                {f.already_id !== null && (
+                {/* Один раз: при «заменить приход» об этом говорит блок выбора ниже (Роман 26.10.2026). */}
+                {f.already_id !== null && !again && (
                   <div className="reviewbusy">Этот файл уже импортирован — приход «{f.already_name}».</div>
                 )}
                 {f.odd_years.length > 0 && (
@@ -507,7 +508,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
           {villages.length > 1 && (
             <p className="reviewbusy" data-familio-villages>
               В файлах разные населённые пункты: {villages.join(", ")}. Если это разные приходы, импортируйте их
-              по отдельности: записи одного года из разных файлов лягут в одно дело с реквизитами первого файла.
+              по отдельности: иначе они окажутся в одном приходе.
             </p>
           )}
           {fam.length > 1 && (

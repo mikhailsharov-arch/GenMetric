@@ -196,6 +196,19 @@ fn is_record(row: &Row, cols: &Cols) -> bool {
     cols.to_file.keys().any(|t| !is_frame(*t, cols.titles.get(t).map(String::as_str).unwrap_or("")) && raw(row, cols, *t).is_some())
 }
 
+/// Дело строки: архив, фонд, опись и дело (Роман 26.10.2026: «одни и те же
+/// архивные реквизиты… = одно цельное дело»); строка без номера дела — дело
+/// своего года; без того и другого — `None` (первое дело).
+fn case_key(row: &Row, cols: &Cols, year: Option<i64>) -> Option<String> {
+    let parts: Vec<String> = [2u32, 3, 4, 5].iter().map(|t| raw(row, cols, *t).map(|v| normalize(&v)).unwrap_or_default()).collect();
+    // Без номера дела — дело своего года: один архив дела не задаёт.
+    if !parts[3].is_empty() {
+        Some(format!("дело|{}", parts.join("|")))
+    } else {
+        year.map(|y| format!("год|{y:06}"))
+    }
+}
+
 /// Год книги: у рождений и смертей — год обряда (крещения, погребения), как
 /// в форме; нет его — год события. У браков — год венчания.
 fn book_year(section: usize, row: &Row, cols: &Cols) -> Option<i64> {
@@ -437,8 +450,12 @@ impl Familio<'_> {
         // Михайлова», «Воробьева Мароа(?) Иосиина» — долг п. 79) — тоже
         // порядок шаблона: первое слово — фамилия.
         let last = words.len().wrapping_sub(1);
+        // Но «Ефим Артемов Сидоров» (имя вне словаря, старое отчество в середине)
+        // — порядок «Имя Отчество Фамилия»: середина похожа на отчество, значит
+        // фамилии впереди нет (долг п. 82, ревьюер 21.10.2026).
         if at.is_none() && words.len() >= 3
-            && (strong_patronymic(words[last]) || (words.len() == 3 && looks_like_patronymic(&clean(words[last]))))
+            && (strong_patronymic(words[last])
+                || (words.len() == 3 && looks_like_patronymic(&clean(words[last])) && !looks_like_patronymic(&clean(words[1]))))
             && !strong_patronymic(words[last - 1]) {
             at = Some(last - 1);
         }
@@ -680,8 +697,13 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
         }
     }
 
-    // Дела по годам книги: реквизиты — первое непустое значение года.
-    let mut cases: BTreeMap<i64, Case> = BTreeMap::new();
+    // Дела — по реквизитам строки (Роман 26.10.2026: «одни и те же архивные
+    // реквизиты, указанные волонтером со скана = одно цельное дело в
+    // программе, даже если внутри него встречаются события за разные годы»);
+    // год дела — год большинства его записей. Строка без реквизитов — в дело
+    // своего года, как раньше.
+    let mut cases: BTreeMap<String, Case> = BTreeMap::new();
+    let mut case_years: BTreeMap<String, BTreeMap<i64, usize>> = BTreeMap::new();
     let mut year_counts: BTreeMap<i64, usize> = BTreeMap::new();
     // Индексатор — у файла, давшего записи года; файлов несколько — через
     // запятую (ревьюер 21.10.2026: по приходу присылают файлы разных волонтёров).
@@ -693,13 +715,17 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
                 if !is_record(row, cols) {
                     continue;
                 }
-                let Some(year) = book_year(i, row, cols) else { continue };
-                *year_counts.entry(year).or_default() += 1;
-                let who = indexers.entry(year).or_default();
-                if !book.indexer.trim().is_empty() && !who.iter().any(|w| w == book.indexer.trim()) {
-                    who.push(book.indexer.trim().to_string());
+                let year = book_year(i, row, cols);
+                let Some(key) = case_key(row, cols, year) else { continue };
+                if let Some(year) = year {
+                    *year_counts.entry(year).or_default() += 1;
+                    *case_years.entry(key.clone()).or_default().entry(year).or_default() += 1;
+                    let who = indexers.entry(year).or_default();
+                    if !book.indexer.trim().is_empty() && !who.iter().any(|w| w == book.indexer.trim()) {
+                        who.push(book.indexer.trim().to_string());
+                    }
                 }
-                let case = cases.entry(year).or_insert_with(|| Case { year: Some(year), ..Default::default() });
+                let case = cases.entry(key).or_default();
                 let fill = |slot: &mut Option<String>, v: Option<String>| {
                     if slot.is_none() {
                         *slot = v;
@@ -724,13 +750,20 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
     // Год без записей с годом — одно дело без года не заводится: такие
     // записи ложатся в первое дело (как у импорта индексатора).
     if cases.is_empty() {
-        cases.insert(0, Case::default());
+        cases.insert(String::new(), Case::default());
     }
+    for (key, case) in cases.iter_mut() {
+        case.year = case_years.get(key).and_then(|ys| ys.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(y, _)| *y));
+    }
+    // Номера дел — по году, затем по реквизитам.
+    let mut order: Vec<String> = cases.keys().cloned().collect();
+    order.sort_by_key(|k| (cases[k].year.unwrap_or(i64::MAX), k.clone()));
     let parish_of = cases.values().find(|c| c.village.is_some() || c.church.is_some()).cloned().unwrap_or_default();
     let upsert = statement("case_upsert")?;
     let mut parish_key = String::new();
     let mut first_case = 0;
-    for (n, case) in cases.values_mut().enumerate() {
+    for (n, key) in order.iter().enumerate() {
+        let case = cases.get_mut(key).expect("ключ из того же перечня");
         if case.village.is_none() && case.church.is_none() {
             case.church = parish_of.church.clone();
             case.village = parish_of.village.clone();
@@ -751,7 +784,7 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
             ":indexer": case.indexer,
         }).map_err(|e| e.to_string())?;
     }
-    report.years = cases.keys().copied().filter(|y| *y > 0).collect();
+    report.years = year_counts.keys().copied().collect();
     let odd = odd_years(&year_counts);
     let usual = years_span(&year_counts, &odd);
 
@@ -1068,22 +1101,10 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
                 }
                 notes.append(&mut fam.orphans);
                 let year = book_year(i, row, cols);
-                // Дело записи — дело её года; реквизиты строки, отличные от
-                // дела года (декабрьские записи в книге следующего года, другая
-                // книга того же года), — в примечание и на сверку, а не молча
-                // (проверяющий 21.10.2026: Багаево 1916 — 48 записей).
-                if let Some(case) = year.and_then(|y| cases.get(&y)) {
-                    let mine = [g(2), g(3), g(4), g(5)];
-                    let theirs = [&case.archive, &case.fond, &case.opis, &case.delo];
-                    if mine.iter().zip(theirs.iter()).any(|(a, b)| a.is_some() && a.as_deref() != b.as_deref()) {
-                        let show = |v: [Option<&str>; 4]| format!("{} ф. {} оп. {} д. {}", v[0].unwrap_or("—"), v[1].unwrap_or("—"),
-                                                                 v[2].unwrap_or("—"), v[3].unwrap_or("—"));
-                        let file_case = show([mine[0].as_deref(), mine[1].as_deref(), mine[2].as_deref(), mine[3].as_deref()]);
-                        notes.push(format!("в файле: {file_case}"));
-                        report.notes.push(format!("{here}: в строке {file_case}, а у дела {} года — {}; запись отнесена к делу года, реквизиты строки — в примечании",
-                                                  case.year.unwrap_or_default(),
-                                                  show([theirs[0].as_deref(), theirs[1].as_deref(), theirs[2].as_deref(), theirs[3].as_deref()])));
-                    }
+                // Дело записи — дело её реквизитов (Роман 26.10.2026), и
+                // декабрьская запись остаётся в своей книге.
+                let row_case = case_key(row, cols, year).and_then(|k| cases.get(&k));
+                if let Some(case) = row_case {
                     if let Some(v) = g(7).filter(|v| case.village.as_deref().is_some_and(|c| normalize(c) != normalize(v))) {
                         notes.push(format!("Н.П. события: {v}"));
                     }
@@ -1119,7 +1140,7 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
                         }
                     }
                 }
-                let case_id = year.and_then(|y| cases.get(&y)).map(|c| c.id).unwrap_or(first_case);
+                let case_id = row_case.map(|c| c.id).unwrap_or(first_case);
                 let entry = EntryInput {
                     id: None,
                     case_id,
@@ -1140,6 +1161,12 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
                 };
                 let key = twin_key(section, year, ed, em, &entry.persons);
                 let saved = save_entry_in_tx(conn, &entry, &parish_key).map_err(|e| format!("{here}: {e}"))?;
+                // Сохранение привязывает запись к делу её года; дело импорта —
+                // по реквизитам строки (п. 88), его и ставим.
+                if row_case.is_some() {
+                    conn.execute(&statement("entry_set_case")?, rusqlite::named_params! { ":id": saved.id, ":case_id": case_id })
+                        .map_err(|e| e.to_string())?;
+                }
                 if let Some(key) = key {
                     match twins.get(&key) {
                         Some((fi0, f0, s0, r0, id0)) if *fi0 != fi => {
@@ -1175,6 +1202,11 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
             }
         }
     }
+
+    // Дела, которые сохранение завело под год записи, а импорт её переставил, —
+    // пустые: убрать.
+    conn.execute(&statement("case_drop_empty_after")?, rusqlite::named_params! { ":last": order.len() as i64 })
+        .map_err(|e| e.to_string())?;
 
     // Пункты листов location всех файлов.
     for (file, book) in &books {
@@ -1374,6 +1406,7 @@ mod tests {
         assert_eq!(split("Игнатьевич", false), "//Игнатьевич");
         assert_eq!(split("Иванова Мароа Михайлова", false), "Иванова/Мароа/Михайлова", "долг п. 79");
         assert_eq!(split("Воробьева Мароа(?) Иосиина", false), "Воробьева/Мароа(?)/Иосиина", "долг п. 79");
+        assert_eq!(split("Евфимиан Артемов Сидоров", false), "Сидоров/Евфимиан/Артемов", "долг п. 82: имя вне словаря, «Имя Отчество Фамилия»");
         drop(fam);
         drop(conn);
         let _ = std::fs::remove_file(path);
@@ -1443,7 +1476,7 @@ mod tests {
         assert_eq!(rep.years, vec![1889, 1890]);
         let num = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         let text = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
-        assert_eq!(num("SELECT count(*) FROM mk_case"), 2, "дела по годам, один приход");
+        assert_eq!(num("SELECT count(*) FROM mk_case"), 1, "одни реквизиты (ГАХК, ф. 56, д. 12) в обоих файлах — одно дело (Роман 26.10.2026)");
         assert_eq!(num("SELECT count(DISTINCT parish_key) FROM mk_case"), 1);
         assert_eq!(num("SELECT count(*) FROM review_item WHERE kind = 'duplicate'"), 2, "дубль — обе записи на сверке");
         assert_eq!(text("SELECT group_concat(sheet || ' ' || row, '; ') FROM (SELECT * FROM review_item WHERE kind = 'duplicate' ORDER BY sheet)"),
@@ -1480,9 +1513,11 @@ mod tests {
                    "исповедовал; ", "тот же священник — один, с пометкой");
         let note = text("SELECT note FROM person_mention WHERE role_code = 'deceased' AND entry_id = 2");
         assert!(note.contains("церковь другого прихода (погребение): Спасская, Старое Тестово"), "{note}");
-        assert!(note.contains("в файле: ГА ф. 56 оп. — д. 13"), "{note}");
         assert_eq!(text("SELECT CAST(age_months AS TEXT) || '/' || age_text FROM person_mention WHERE role_code = 'deceased' AND entry_id = 1"), "6/0,5");
-        assert_eq!(text("SELECT CAST(count(*) AS TEXT) FROM review_item WHERE kind = 'note' AND text LIKE '%а у дела 1889 года%' AND row = 5"), "1");
+        // Роман 26.10.2026: одни реквизиты — одно дело; запись того же года с
+        // другим делом — в своём деле, а не в деле года.
+        assert_eq!(text("SELECT group_concat(c.delo || ':' || c.year, ' ') FROM (SELECT c.* FROM entry e JOIN mk_case c ON c.id = e.case_id ORDER BY e.id) c"),
+                   "12:1889 13:1889");
         drop(conn);
         let _ = std::fs::remove_file(path);
         // Нет блока «кто исповедывал» (колонки 39–42): погребавший — в своих колонках.
@@ -1494,6 +1529,46 @@ mod tests {
         }
         let cols = map_columns(&template, &cut);
         assert_eq!((cols.to_file.get(&44), cols.to_file.get(&40)), (Some(&40), None));
+    }
+
+    /// Роман 26.10.2026: «декабрьская запись 1890 года физически находится в
+    /// книге „дело 7“ — она должна остаться именно в „деле 7“». Год дела — год
+    /// большинства записей; правка записи без смены года дело не меняет.
+    #[test]
+    fn december_stays_in_its_book() {
+        let Some(seed) = seed() else { return };
+        let row = |delo: &'static str, year: &'static str, child: &'static str| ("РОЖДЕНИЕ", vec![
+            (1, "1"), (2, "ГА"), (3, "56"), (5, delo), (7, "Тестово"), (9, "Никольская"), (11, "1"), (12, "муж"),
+            (15, year), (18, year), (19, child), (23, "Петров"), (25, "Кузьма"), (26, "Петрович")]);
+        let bytes = file(&[row("7", "1890", "Нил"), row("7", "1891", "Ия"), row("7", "1891", "Иов"), row("15", "1890", "Лука")]);
+        let (path, conn) = fresh("december", &seed);
+        import(&conn, &[("d.xlsx".into(), bytes)]);
+        let text = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(text("SELECT group_concat(delo || ':' || year, ' ') FROM (SELECT * FROM mk_case ORDER BY id)"), "15:1890 7:1891",
+                   "два дела по реквизитам, год — год большинства записей");
+        let in_case = |child: &str| -> String { text(&format!(
+            "SELECT c.delo FROM person_mention p JOIN entry e ON e.id = p.entry_id JOIN mk_case c ON c.id = e.case_id \
+              WHERE p.role_code = 'child' AND p.first_name = '{child}'")) };
+        assert_eq!((in_case("Нил"), in_case("Лука")), ("7".to_string(), "15".to_string()), "декабрь 1890 — в деле 7, а не в деле своего года");
+        // Правка «Нила» без смены года — дело 7 остаётся.
+        let id: i64 = conn.query_row("SELECT entry_id FROM person_mention WHERE first_name = 'Нил'", [], |r| r.get(0)).unwrap();
+        let e: (Option<i64>, Option<i64>) = conn.query_row("SELECT event_year, rite_year FROM entry WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let entry = EntryInput {
+            id: Some(id), case_id: 1, section: 1, page: Some("5".into()), no_male: Some(1), no_female: None,
+            event_day: None, event_month: None, event_year: e.0, rite_day: None, rite_month: None, rite_year: e.1,
+            note: None, uncertain: None, scan_file: None,
+            persons: vec![fam_child(&conn)],
+        };
+        crate::records::save_entry(&conn, &entry).unwrap();
+        assert_eq!(in_case("Нил"), "7", "правка без смены года дело не меняет");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn fam_child(conn: &Connection) -> PersonInput {
+        let mut fam = Familio { imp: Importer { conn, unknown: BTreeMap::new(), unknown_total: 0, unknown_patr: BTreeMap::new(),
+                                                unknown_patr_total: 0, pending: Vec::new() }, is_name: HashMap::new(), orphans: Vec::new() };
+        fam.person("child", 10, Names { first: Some("Нил".into()), ..Default::default() }, Some("М".into()), None, None, None).unwrap().unwrap()
     }
 
     /// Фикстуры сквозной проверки (scripts/e2e/windows.py, шаг 16а): наша

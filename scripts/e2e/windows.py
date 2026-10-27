@@ -1688,6 +1688,66 @@ def parishes(driver, wait):
         listed = driver.find_element(By.XPATH, PARISH).text
         check("в перечне приходов — оба файла источника", "из familio.xlsx, familio-1890.xlsx" in listed,
               listed.replace("\n", " | ")[:400])
+        # Долг п. 86 (21.10.2026): повторный импорт тех же файлов — «заменить
+        # приход» настоящим IPC; прежний приход уходит из перечня.
+        fam_input = driver.find_element(By.CSS_SELECTOR, "input[data-familio-file]")
+        driver.execute_script("arguments[0].hidden = false;", fam_input)
+        fam_input.send_keys("\n".join(str(f) for f in fam_files))
+        try:
+            WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-familio-again]")))
+            offered = True
+        except TimeoutException:
+            offered = False
+        again_text = driver.find_element(By.XPATH, PARISH).text
+        check("те же файлы второй раз — окно предлагает «заменить приход», «уже импортирован» — один раз",
+              offered and again_text.count("уже импортирован") == 1 and "заменить приход" in again_text,
+              again_text.replace("\n", " | ")[:400] + " | " + error_details(driver))
+        if offered:
+            click(driver, "//div[@data-familio-again]//label[contains(., 'заменить приход')]")
+            click(driver, PARISH + "//button[normalize-space()='Импортировать']")
+            try:
+                WebDriverWait(driver, 180).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-import-done]")))
+            except TimeoutException:
+                pass
+            done = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-import-done]")]
+            check("замена прошла: тот же приход, 7 рождений", bool(done) and "Никольское (из Familio)" in done[0]
+                  and "рождений 7" in done[0], (done[0] if done else "итога нет") + " | " + error_details(driver))
+            if done:
+                click(driver, PARISH + "//button[normalize-space()='Перейти в приход']")
+                reloaded(driver, wait, "Никольское (из Familio)")
+                for _ in range(2):
+                    modals = driver.find_elements(By.CSS_SELECTOR, ".modal")
+                    if not modals:
+                        break
+                    modals[0].send_keys(Keys.ESCAPE)
+                    time.sleep(0.5)
+                open_parishes(driver, wait)
+                rows_now = driver.execute_script(
+                    "return [...document.querySelectorAll('table.parishes b')].map((b) => b.textContent);") or []
+                check("в перечне — один «Никольское (из Familio)», прежний заменён",
+                      sum(1 for r in rows_now if r == "Никольское (из Familio)") == 1, " | ".join(rows_now))
+        # Долг п. 86: память «Поиска» отпускается и читается заново настоящим
+        # Rust; имя отца — в современной форме (Роман 26.10.2026).
+        mem = driver.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "const call = window.__TAURI_INTERNALS__.invoke;"
+            "const filter = {query: 'тест', place: null, own: true, part: true, clergy: true, skip: [], year_from: null, year_to: null};"
+            "(async () => {"
+            "  await call('search_open');"
+            "  const a = await call('search_persons', {filter});"
+            "  await call('search_release');"
+            "  const b = await call('search_persons', {filter});"
+            "  const p = await call('parse_iof', {text: 'Яков Кузьмич Гузанов'});"
+            "  return {a: a.total, b: b.total, father: p.father_name};"
+            "})().then(done, (e) => done({error: String(e)}));")
+        check("память «Поиска»: отпущена и прочитана заново — тот же ответ; «отец: Кузьма», не «Казьма»",
+              "error" not in mem and mem.get("a") == mem.get("b") and mem.get("father") == "Кузьма", str(mem)[:300])
+        if not driver.find_elements(By.XPATH, PARISH):
+            open_parishes(driver, wait)
+        # Замена не прошла — окно ещё в виде Familio: назад к перечню, иначе
+        # следующий щелчок упал бы исключением вместо понятной проверки (ревьюер 27.10.2026).
+        if driver.find_elements(By.CSS_SELECTOR, "[data-familio-seen]"):
+            click(driver, PARISH + "//button[normalize-space()='Назад']")
         click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
         reloaded(driver, wait, "Борисоглебское")
 

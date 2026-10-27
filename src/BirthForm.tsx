@@ -493,8 +493,10 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
     if (!needsFathersSurname(p)) return;
     surnameDoneFor.current = text;
     const full = `${text} ${feminineSurname(fathers)}`;
-    surnamePin.current = { from: text, to: full };
-    setMother((m) => (m.iof.trim() === text ? { ...m, iof: full, parsed: null } : m));
+    const asSurname = soleName(p);
+    surnamePin.current = { from: text, to: full, nameSurname: asSurname };
+    setMother((m) => (m.iof.trim() === text
+      ? { ...m, iof: full, parsed: null, nameSurname: asSurname || m.nameSurname } : m));
   }
   // Дописанную фамилию стирал сам блок матери (Роман 12.10.2026: «выбираю
   // словарное отчество из выпадающего списка… фамилия мужа не подтягивается»).
@@ -503,15 +505,23 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   // когда фамилия уже дописана, но блок её ещё не видел — и кладёт в форму
   // прежний текст. Пока форма с фамилией не перерисована, правка блока с
   // прежним текстом фамилию не трогает.
-  const surnamePin = useRef<{ from: string; to: string } | null>(null);
+  // Отметку «ИФ», поставленную с фамилией (мать одним именем), правка блока
+  // с прежним текстом тоже не снимает (проверяющий 27.10.2026: имя, выбранное
+  // из подсказки, получало фамилию отца в отчество).
+  const surnamePin = useRef<{ from: string; to: string; nameSurname: boolean } | null>(null);
   function setMotherFromBlock(next: Person) {
     const pin = surnamePin.current;
-    setMother(pin && next.iof.trim() === pin.from ? { ...next, iof: pin.to, parsed: null } : next);
+    setMother(pin && next.iof.trim() === pin.from
+      ? { ...next, iof: pin.to, parsed: null, nameSurname: pin.nameSurname || next.nameSurname } : next);
   }
   useEffect(() => { surnamePin.current = null; }, [motherRaw.iof]);
-  /** Только «имя отчество»: без отчества фамилия встала бы на его место. */
+  /** «Имя отчество» или одно имя (Роман 26.10.2026: «если у матери в записи не
+   *  указано отчество, алгоритм автоподстановки фамилии перестает работать»).
+   *  Без отчества фамилия встала бы на его место — поэтому матери ставится
+   *  отметка «ИФ» (`soleName`): второе слово — фамилия. */
   const needsFathersSurname = (p: Parsed | null) =>
-    !!p && p.known_name && !!p.patronymic && !p.surname && !p.patr_unknown;
+    !!p && p.known_name && !p.name_missing && !p.surname && !p.patr_unknown;
+  const soleName = (p: Parsed | null) => !!p && !p.patronymic;
 
   // --- «Незаконнорожденный» (Роман 06.10.2026) ---
   // Флажок у ребёнка пишет пометку в примечание записи (у ребёнка своего
@@ -648,7 +658,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
           && surnameDoneFor.current !== mother.iof.trim()) {
         const full = `${mother.iof.trim()} ${feminineSurname(fathers)}`;
         surnameDoneFor.current = mother.iof.trim();
-        mother = { ...mother, iof: full, parsed: await invoke<Parsed>("parse_iof", { text: full }) };
+        const asSurname = soleName(mother.parsed) || !!mother.nameSurname;
+        mother = { ...mother, iof: full, nameSurname: asSurname,
+                   parsed: await invoke<Parsed>("parse_iof", { text: full, nameSurname: asSurname }) };
         setMother(mother);
       }
       const childMask = maskFragment(child);

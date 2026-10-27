@@ -1627,15 +1627,26 @@ mod tests {
         conn.execute_batch("COMMIT").unwrap();
         let n: i64 = conn.query_row("SELECT count(*) FROM person_mention", [], |r| r.get(0)).unwrap();
         assert!(n >= 100_000, "{n}");
-        let started = std::time::Instant::now();
-        let found = find(&conn, &Filter { query: "иван кап".into(), ..all() }).unwrap();
-        let d = dossier(&conn, &found.persons[0].key, "Фетинино", &all()).unwrap();
-        let took = started.elapsed();
-        assert_eq!((found.total, d.mentions), (2, 5));
-        eprintln!("поиск и досье на {n} упоминаниях: {took:?}");
+        // Лучший из трёх замеров: на загруженном Mac одиночный прогон давал
+        // 2 с при обычных 0,6 с (проверяющий 21.10.2026, долг п. 85) — тест
+        // ловит поломку на порядок (квадрат), а не шум машины.
+        let mut took = std::time::Duration::MAX;
+        let mut last = None;
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let found = find(&conn, &Filter { query: "иван кап".into(), ..all() }).unwrap();
+            let d = dossier(&conn, &found.persons[0].key, "Фетинино", &all()).unwrap();
+            took = took.min(started.elapsed());
+            last = Some((found.total, d.mentions));
+        }
+        assert_eq!(last, Some((2, 5)));
+        eprintln!("поиск и досье на {n} упоминаниях, лучший из трёх: {took:?}");
         // Замер 09.10.2026 на Mac: 0,6 с в собранной программе (поиск и досье
         // вместе, по 0,3 с), около 3 с без оптимизации.
-        let limit = if cfg!(debug_assertions) { 60.0 } else { 1.5 };
+        // 3 с: на загруженном Mac лучший из трёх — до 2,05 с (проверяющий
+        // 27.10.2026); ложная тревога хуже отсутствия проверки, а квадрат даёт
+        // десятки секунд.
+        let limit = if cfg!(debug_assertions) { 60.0 } else { 3.0 };
         assert!(took.as_secs_f64() < limit, "поиск и досье на {n} упоминаниях заняли {took:?}");
         let many = find(&conn, &Filter { query: "имя".into(), ..all() }).unwrap();
         assert!(many.total > PERSON_LIMIT && many.persons.len() == PERSON_LIMIT, "{} / {}", many.total, many.persons.len());

@@ -263,5 +263,30 @@ export function family(events: DossierEvent[]): Family {
   return { parents, marriages, spouses };
 }
 
+/**
+ * Браки и дети в блоке «Семья» — одной лентой по годам (Роман 26.10.2026:
+ * «записи внутри блока „Семья“ должны выстраиваться в строгой хронологической
+ * последовательности… независимо от того, к какому браку они относятся»).
+ * Дети одной матери — группой с первым годом её детей; брак того же года —
+ * перед детьми.
+ */
+export type FamilyItem =
+  | { kind: "marriage"; year: number | null; marriage: Family["marriages"][number] }
+  | { kind: "children"; year: number | null; group: Family["spouses"][number] };
+
+export function familyTimeline(fam: Family): FamilyItem[] {
+  const items: FamilyItem[] = [
+    ...fam.marriages.map((m) => ({ kind: "marriage" as const, year: m.event.year ?? null, marriage: m })),
+    ...fam.spouses.map((g) => ({
+      kind: "children" as const,
+      year: g.children.reduce<number | null>((y, c) => (c.event.year == null ? y : y == null ? c.event.year : Math.min(y, c.event.year)), null),
+      group: g,
+    })),
+  ];
+  const at = (y: number | null) => (y == null ? Number.MAX_SAFE_INTEGER : y);
+  // sort устойчив: при равных годах брак (он раньше в списке) идёт первым.
+  return items.sort((a, b) => at(a.year) - at(b.year) || (a.kind === b.kind ? 0 : a.kind === "marriage" ? -1 : 1));
+}
+
 /** «† 1887» — у умершего; пусто — у живого или неизвестного. */
 export const diedMark = (died: number | null | undefined) => (died ? `† ${died}` : "");

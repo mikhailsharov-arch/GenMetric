@@ -678,7 +678,11 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 .refused { margin: 0 0 0.5em; padding: 0.4em 0.6em; background: #fff7e0; border: 0.0625em solid #e6c766; border-radius: 0.4em; font-size: 0.85rem; }
 .importagain { margin: 0.4em 0; font-size: 0.88rem; }
 .importagain p { margin: 0 0 0.3em; }
-.importagain label { display: block; margin: 0.2em 0; line-height: 1.35; }
+/* Кнопка выбора — слева, на одной строке с текстом (Роман 26.10.2026: над
+   текстом и по центру «теряется визуальная связь»). Общее правило полей
+   растягивает input на всю ширину — здесь ширина своя. */
+.importagain label { display: flex; align-items: flex-start; gap: 0.5em; margin: 0.25em 0; line-height: 1.35; text-align: left; }
+.importagain label input[type="radio"] { flex: none; width: auto; margin: 0.2em 0 0; }
 .importnotes { margin: 0 0 0.5em 1.1em; padding: 0; font-size: 0.8rem; max-height: 9em; overflow-y: auto; }
 .modal:focus { outline: none; }
 .parishrow, .facts.parishes td, .modal p { overflow-wrap: anywhere; }

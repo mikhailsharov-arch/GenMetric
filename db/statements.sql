@@ -56,8 +56,27 @@ SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya, year, i
 SELECT c.year, (SELECT count(*) FROM entry e WHERE e.case_id = c.id) AS entries
   FROM mk_case c WHERE c.year IS NOT NULL ORDER BY c.year;
 
+-- @entry_set_case
+-- Импорт: дело записи — по реквизитам её строки (Роман 26.10.2026), а не дело
+-- года, которое поставило сохранение.
+UPDATE entry SET case_id = :case_id WHERE id = :id;
+
+-- @case_drop_empty_after
+-- Импорт: дела, заведённые сохранением под год записи сверх дел импорта
+-- (номера больше :last), без единой записи — убрать.
+DELETE FROM mk_case WHERE id > :last AND NOT EXISTS (SELECT 1 FROM entry e WHERE e.case_id = mk_case.id);
+
 -- @case_for_year
 SELECT id FROM mk_case WHERE year = :year ORDER BY id LIMIT 1;
+
+-- @case_by_entries_of_year
+-- Год без своего дела, но с записями в деле другого года (дело по
+-- реквизитам, 27.10.2026): дело, где записей этого года больше всего.
+SELECT case_id FROM entry
+ WHERE coalesce(rite_year, event_year) = :year
+ GROUP BY case_id
+ ORDER BY count(*) DESC, case_id
+ LIMIT 1;
 
 -- @case_adopt_year
 -- Дело без года (первое дело новой базы: год набирают на форме, не в деле)
@@ -1074,6 +1093,15 @@ SELECT wife_iof, wife_place, wife_rank, uses
              ELSE coalesce(wife_place, '') IN ('', :place) END)
  ORDER BY (coalesce(wife_place, '') = coalesce(:place, '')) DESC, uses DESC
  LIMIT 1;
+
+-- @spouse_husbands_like
+-- Мужья в памяти пар по образцу (records::spouse_husband_alias): той же
+-- фамилии — «% дудин»; самые частые первыми.
+SELECT husband_norm FROM spouse_index
+ WHERE husband_norm LIKE :pattern
+ GROUP BY husband_norm
+ ORDER BY sum(uses) DESC, husband_norm
+ LIMIT 50;
 
 -- @person_name_surname
 -- Отметка «ИФ» человека из памяти персон — как сохранили последний раз, свой

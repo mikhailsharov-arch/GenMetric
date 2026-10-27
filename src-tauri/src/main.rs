@@ -55,6 +55,9 @@ struct App {
     died: Mutex<Option<(i64, Arc<genmetric_core::search::Deaths>)>>,
     /// Память поиска перестраивается в фоне для подсказки (`refresh_search_soon`).
     search_busy: std::sync::atomic::AtomicBool,
+    /// Экран «Поиск» открыт: только тогда память поиска хранится (долг п. 84 —
+    /// запрос, пришедший после ухода с экрана, клал её обратно).
+    search_live: std::sync::atomic::AtomicBool,
     /// Ширина окна до включения блока скана — к ней окно возвращается, когда
     /// блок скрывают: ширина и положение левого края (в физических точках).
     narrow_width: Mutex<Option<(u32, i32)>>,
@@ -183,7 +186,14 @@ fn drop_search(app: &App) {
 /// хватает годов смерти (`App::died`).
 #[tauri::command]
 fn search_release(app: State<App>) {
+    app.search_live.store(false, std::sync::atomic::Ordering::SeqCst);
     *app.search.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Экран «Поиск» открыт — память поиска можно хранить.
+#[tauri::command]
+fn search_open(app: State<App>) {
+    app.search_live.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Оборачивает работу с базой: логирует неудачу и возвращает её наверх.
@@ -1171,13 +1181,22 @@ fn suggest_spouse(app: State<App>, husband: String, place: Option<String>) -> Re
     // НП мужа — чтобы не подставить жену его тёзки из другой деревни.
     let place = place.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     with_conn(&app, "Поиск жены", |conn| {
-        let wife = conn.query_row(
+        let lookup = |husband_norm: &str| conn.query_row(
             &statement("spouse_lookup")?,
-            rusqlite::named_params! { ":husband_norm": normalize(&husband), ":place": place },
+            rusqlite::named_params! { ":husband_norm": husband_norm, ":place": place },
             |r| Ok(SpouseHint { iof: r.get(0)?, place: r.get(1)?, rank: r.get(2)?, name_surname: false }),
         )
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string());
+        // Точного мужа нет — тот же муж в другом написании («Давыдов» и
+        // «Давидов», Роман 26.10.2026).
+        let wife = match lookup(&normalize(&husband))? {
+            Some(w) => Some(w),
+            None => match genmetric_core::records::spouse_husband_alias(conn, &husband)? {
+                Some(alias) => lookup(&alias)?,
+                None => None,
+            },
+        };
         let Some(mut wife) = wife else { return Ok(None) };
         wife.name_surname = conn.query_row(&statement("person_name_surname")?,
                                            rusqlite::named_params! { ":iof": wife.iof, ":place": wife.place },
@@ -1200,7 +1219,10 @@ fn search_index(app: &State<App>, what: &str) -> Result<Arc<genmetric_core::sear
             }
         }
         let index = Arc::new(genmetric_core::search::Index::load(conn)?);
-        *cache = Some((now, index.clone()));
+        // Экран уже закрыт (запрос пришёл после ухода) — ответить, но не хранить.
+        if app.search_live.load(std::sync::atomic::Ordering::SeqCst) {
+            *cache = Some((now, index.clone()));
+        }
         Ok(index)
     })
 }
@@ -1663,8 +1685,11 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
         // Одна семья — много младенцев: полное ИОФ считается один раз на
         // имя, пол и отца (ревьюер 20.10.2026: словарь читался на строку).
         let mut known: std::collections::HashMap<(String, Option<String>, String), Option<String>> = std::collections::HashMap::new();
-        // Словарь отчеств — один раз на список, по первому младенцу.
+        // Словарь отчеств — один раз на список, по первому младенцу. Не
+        // прочитался — второй раз не пробуем: каждый младенец тогда читает своё
+        // имя сам, как до 21.10 (долг п. 83).
         let mut dict: Option<genmetric_core::search::Patronymics> = None;
+        let mut dict_tried = false;
         for row in rows {
             let (mut brief, gender, father) = row.map_err(|e| e.to_string())?;
             // Младенец одним именем — полным ИОФ по отцу, тем же правилом, что
@@ -1675,7 +1700,8 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
                     let full = match known.get(&key) {
                         Some(v) => v.clone(),
                         None => {
-                            if dict.is_none() {
+                            if !dict_tried {
+                                dict_tried = true;
                                 dict = genmetric_core::search::patronymics(conn, None).ok();
                             }
                             let v = genmetric_core::search::child_full_iof_in(conn, dict.as_ref(), dead, gender.as_deref(), father, false)
@@ -2286,6 +2312,7 @@ fn main() {
                 search: Mutex::new(None),
                 died: Mutex::new(None),
                 search_busy: std::sync::atomic::AtomicBool::new(false),
+                search_live: std::sync::atomic::AtomicBool::new(false),
                 narrow_width: Mutex::new(None),
                 data_dir,
                 bundled,
@@ -2383,6 +2410,7 @@ fn main() {
             import_run,
             familio_reset,
             search_release,
+            search_open,
             familio_add,
             familio_run,
             export::export_years,

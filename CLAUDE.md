@@ -36,7 +36,7 @@
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 44, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель)
     node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 75, ошибок 0» (месяц сам: по дню обряда, первая цифра дня, смена года)
-    node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 42, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
+    node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 149, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
     python3 scripts/test_incidents.py                           # → «Итог: успешно 401, ошибок 0»
@@ -53,7 +53,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 43 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 45 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),

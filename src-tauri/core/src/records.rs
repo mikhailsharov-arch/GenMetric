@@ -172,6 +172,41 @@ pub fn looks_like_patronymic(word: &str) -> bool {
         .iter().any(|e| w.ends_with(e))
 }
 
+/// Тот же муж в памяти пар, записанный иначе: «Григорий Давыдов Дудин» и
+/// «Григорий Давидов Дудин» (Роман 26.10.2026: «программа видит имя в
+/// справочнике… но перестает видеть эту персону с женой»). Ключ — имя по
+/// основе словаря, имя отца по отчеству (тоже основа) и фамилия; кандидаты —
+/// строки памяти с той же фамилией (без фамилии — с теми же первыми буквами
+/// имени). Самая частая подходящая строка — её `husband_norm`; точное
+/// совпадение ищет `spouse_lookup` раньше и сюда не доходит.
+pub fn spouse_husband_alias(conn: &Connection, husband: &str) -> Result<Option<String>, String> {
+    let key = |p: &ParsedIof| -> String {
+        let first = p.first_name_modern.clone().or(p.first_name.clone()).unwrap_or_default();
+        let father = p.father_name.clone().or(p.patronymic.clone()).unwrap_or_default();
+        [first, father, p.surname.clone().unwrap_or_default()].iter()
+            .map(|w| normalize_name(w)).collect::<Vec<_>>().join("|")
+    };
+    let mine = parse_iof_in(conn, husband)?;
+    if mine.first_name.is_none() {
+        return Ok(None);
+    }
+    let want = key(&mine);
+    let pattern = match mine.surname.as_deref().map(normalize).filter(|v| !v.is_empty()) {
+        Some(sur) => format!("% {sur}"),
+        None => format!("{}%", normalize(husband).chars().take(3).collect::<String>()),
+    };
+    let mut stmt = conn.prepare(&statement("spouse_husbands_like")?).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::named_params! { ":pattern": pattern }, |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let stored = row.map_err(|e| e.to_string())?;
+        if stored != normalize(husband) && key(&parse_iof_in(conn, &stored)?) == want {
+            return Ok(Some(stored));
+        }
+    }
+    Ok(None)
+}
+
 /// Один человек в подсказке персон: ИОФ в современном написании (имя и
 /// отчество из словаря, фамилия как есть), без регистра и конечного «ъ».
 /// «Ксения Александрова» и «Ксения Александровна» — один ключ (Роман
@@ -290,7 +325,9 @@ pub fn parse_iof_with(conn: &Connection, text: &str, name_surname: bool) -> Resu
         }
         let patr: Option<(String, String, String)> = conn
             .query_row(
-                "SELECT d.name,
+                // Имя отца — основа словаря («Кузьма», не вариант «Казьма»):
+                // строка «отец:» под полем — современная форма (Роман 26.10.2026).
+                "SELECT coalesce(nullif(d.base_name, ''), d.name),
                         CASE WHEN f.kind LIKE '%_m' THEN d.patr_m ELSE d.patr_f END,
                         CASE WHEN f.kind LIKE '%_m' THEN 'М' ELSE 'Ж' END
                    FROM name_form f JOIN name_dict d ON d.id = f.name_id
@@ -644,6 +681,15 @@ pub fn case_for_year(conn: &Connection, year: i64) -> Result<(i64, bool), String
     if let Some(id) = get(conn)? {
         return Ok((id, false));
     }
+    // Своего дела у года нет, но записи года уже лежат в деле с реквизитами
+    // (импорт: «одни реквизиты — одно дело», Кондратьевка 1913 — в деле
+    // 1914): новая запись — туда же, а не в копию с теми же реквизитами
+    // (ревьюер 27.10.2026).
+    let by_entries: Option<i64> = conn.query_row(&statement("case_by_entries_of_year")?, rusqlite::named_params! { ":year": year },
+                                                 |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+    if let Some(id) = by_entries {
+        return Ok((id, false));
+    }
     let adopted = conn.execute(&statement("case_adopt_year")?, rusqlite::named_params! { ":year": year })
         .map_err(|e| e.to_string())?;
     if adopted > 0 {
@@ -689,7 +735,18 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
         // Запись привязывается к делу своего года книги (год обряда, у браков
         // — год венчания), а не к тому, что прислала форма: дело — на год.
         let mut fallback: Option<Option<i64>> = None;
-        let (case_id, new_case_year) = match entry.rite_year.or(entry.event_year) {
+        // Правка записи без смены года — дело прежнее: импорт кладёт запись в
+        // дело её реквизитов, и декабрьская запись живёт в книге следующего
+        // года (Роман 26.10.2026: «одни и те же архивные реквизиты… = одно
+        // цельное дело»). Правка не должна уводить её в дело года.
+        let year_now = entry.rite_year.or(entry.event_year);
+        let stored: Option<(i64, Option<i64>)> = match entry.id {
+            Some(id) => conn.query_row("SELECT case_id, coalesce(rite_year, event_year) FROM entry WHERE id = ?1", [id],
+                                       |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?,
+            None => None,
+        };
+        let (case_id, new_case_year) = match year_now {
+            Some(year) if stored.is_some_and(|(_, y)| y == Some(year)) => (stored.map(|s| s.0).unwrap_or(entry.case_id), None),
             Some(year) => {
                 let (id, created) = case_for_year(conn, year)?;
                 (id, created.then_some(year))
@@ -1235,6 +1292,14 @@ mod tests {
         assert_eq!(spelled("SELECT wife_place FROM spouse_index WHERE wife_iof = 'Дарья Петрова'"), "Воспица");
         assert_eq!(wife(Some("Воспица")).as_deref(), Some("Олимпиада Иванова"), "прежние пары не задеты");
 
+        // Роман 26.10.2026: «Давид» и «Давыд» — один муж; жена находится и
+        // при другом написании отчества, тёзка с другим отцом — нет.
+        save_entry(&conn, &birth(vec![person("father", "Григорий", "Давидов", Some("Дудин"), Some("Малово"), "М"),
+                                      person("mother", "Анна", "Петрова", Some("Дудина"), Some("Малово"), "Ж")])).unwrap();
+        assert_eq!(spouse_husband_alias(&conn, "Григорий Давыдов Дудин").unwrap().as_deref(), Some(normalize("Григорий Давидов Дудин").as_str()));
+        assert_eq!(spouse_husband_alias(&conn, "Григорий Иванов Дудин").unwrap(), None, "другой отец — другой человек");
+        assert_eq!(spouse_husband_alias(&conn, "Григорий Давидов Дудин").unwrap(), None, "точное — не сюда");
+
         // Подсказка: строка без НП спрятана, когда у того же ИОФ есть строка с НП.
         for (place, rank) in [("", "псаломщик"), ("Борисоглебское", "псаломщик"), ("", "дьячок")] {
             conn.execute("INSERT INTO person_index (iof, iof_norm, place, rank, gender, uses) VALUES (?1, ?2, ?3, ?4, 'М', 3)",
@@ -1324,6 +1389,11 @@ mod tests {
             assert_eq!((p.first_name.as_deref(), p.first_name_modern.as_deref()), (Some("***"), None), "{stub}");
             assert_eq!((p.patronymic.as_deref(), p.surname.as_deref(), p.gender.as_deref()),
                        (Some("Иванова"), Some("Петрова"), Some("Ж")), "{stub}");
+        }
+        // Роман 26.10.2026: «для отчества „Кузьмич“ система пишет отец: Казьма,
+        // а для „Ефимович“ — отец: Евфим» — имя отца в современной форме.
+        for (iof, father) in [("Яков Кузьмич Гузанов", "Кузьма"), ("Василий Ефимович Гузанов", "Ефим"), ("Наталия Андреевна", "Андрей")] {
+            assert_eq!(parse_iof_in(&conn, iof).unwrap().father_name.as_deref(), Some(father), "{iof}");
         }
         let plain = parse_iof_in(&conn, "Мария Иванова").unwrap();
         assert!(plain.known_name && !plain.name_missing);
