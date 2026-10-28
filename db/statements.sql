@@ -52,9 +52,16 @@ SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya, year, i
 
 -- @case_years
 -- Годы, у которых есть дело, и сколько записей в каждом — для выбора года
--- на экране «Дело» (поправить реквизиты прошлого года).
-SELECT c.year, (SELECT count(*) FROM entry e WHERE e.case_id = c.id) AS entries
-  FROM mk_case c WHERE c.year IS NOT NULL ORDER BY c.year;
+-- на экране «Дело» (поправить реквизиты прошлого года). Строка — дело, а не
+-- год: после импорта у года бывает два дела с разными номерами (п. 94).
+SELECT c.year, (SELECT count(*) FROM entry e WHERE e.case_id = c.id) AS entries,
+       c.id, nullif(trim(c.delo), '') AS delo
+  FROM mk_case c WHERE c.year IS NOT NULL ORDER BY c.year, c.id;
+
+-- @case_by_id
+-- Дело, выбранное в списке экрана «Дело» (у года их может быть два, п. 94).
+SELECT id, archive, fond, opis, delo, church, village, uyezd, guberniya, year, indexer
+  FROM mk_case WHERE id = :id;
 
 -- @entry_set_case
 -- Импорт: дело записи — по реквизитам её строки (Роман 26.10.2026), а не дело
@@ -80,9 +87,22 @@ SELECT case_id FROM entry
 
 -- @case_adopt_year
 -- Дело без года (первое дело новой базы: год набирают на форме, не в деле)
--- становится делом первого встреченного года.
+-- становится делом первого встреченного года. Дело с номером — только
+-- пустое: дело импорта, ни одна строка которого не дала года, держит свои
+-- записи без года и чужой год не получает (п. 95, ревьюер 27.10.2026).
+-- Дело без номера (новая база, первая запись сохранена без года) год
+-- получает, как раньше (ревьюер 28.10.2026).
 UPDATE mk_case SET year = :year
- WHERE id = (SELECT id FROM mk_case WHERE year IS NULL ORDER BY id LIMIT 1);
+ WHERE id = (SELECT id FROM mk_case c WHERE c.year IS NULL
+               AND (coalesce(trim(c.delo), '') = ''
+                    OR NOT EXISTS (SELECT 1 FROM entry e WHERE e.case_id = c.id))
+             ORDER BY c.id LIMIT 1);
+
+-- @case_clear_year
+-- Импорт: дело без единой строки с годом остаётся без года, даже если
+-- сохранение записи другого года успело дать ему год (`case_adopt_year`
+-- видит его пустым, пока записи импорта не легли в свои дела; п. 95).
+UPDATE mk_case SET year = NULL WHERE id = :id;
 
 -- @case_copy_for_year
 -- Новый год книги — новое дело копией того, с которым работали: приход тот

@@ -17,6 +17,8 @@ use tauri::{Manager, State};
 
 mod export;
 
+mod windows;
+
 use genmetric_core::parish;
 use genmetric_core::records::{extend_lookup, parse_iof_with, save_case, save_entry, Case, CaseSaved, EntryInput, ParsedIof, Saved};
 use genmetric_core::statement;
@@ -688,17 +690,20 @@ struct EntryBrief {
 }
 
 /// Дело года (year) или текущее — дело последней записи. Дело — на год
-/// книги (спека 2026-10-02, п. 3); экран «Дело» остаётся одной формой.
+/// книги (спека 2026-10-02, п. 3); экран «Дело» остаётся одной формой. id —
+/// дело, выбранное в списке: у года после импорта их бывает два (п. 94).
 #[tauri::command]
-fn case_load(app: State<App>, year: Option<i64>) -> Result<Option<Case>, String> {
+fn case_load(app: State<App>, year: Option<i64>, id: Option<i64>) -> Result<Option<Case>, String> {
     with_conn(&app, "Чтение дела", |conn| {
-        conn.query_row(&statement("case_current")?, rusqlite::named_params! { ":year": year },
-            |r| Ok(Case {
-                id: r.get(0)?, archive: r.get(1)?, fond: r.get(2)?, opis: r.get(3)?,
-                delo: r.get(4)?, church: r.get(5)?, village: r.get(6)?, uyezd: r.get(7)?,
-                guberniya: r.get(8)?, year: r.get(9)?, indexer: r.get(10)?,
-            }),
-        )
+        let row = |r: &rusqlite::Row| Ok(Case {
+            id: r.get(0)?, archive: r.get(1)?, fond: r.get(2)?, opis: r.get(3)?,
+            delo: r.get(4)?, church: r.get(5)?, village: r.get(6)?, uyezd: r.get(7)?,
+            guberniya: r.get(8)?, year: r.get(9)?, indexer: r.get(10)?,
+        });
+        match id {
+            Some(id) => conn.query_row(&statement("case_by_id")?, rusqlite::named_params! { ":id": id }, row),
+            None => conn.query_row(&statement("case_current")?, rusqlite::named_params! { ":year": year }, row),
+        }
         .optional()
         .map_err(|e| e.to_string())
     })
@@ -775,6 +780,9 @@ fn case_open_year(app: State<App>, year: i64) -> Result<OpenedYear, String> {
 struct CaseYear {
     year: i64,
     entries: i64,
+    /// Дело, а не год: у года после импорта бывает два дела (п. 94).
+    id: i64,
+    delo: Option<String>,
 }
 
 /// Годы, у которых есть дело, — для выбора года на экране «Дело».
@@ -782,7 +790,7 @@ struct CaseYear {
 fn case_years(app: State<App>) -> Result<Vec<CaseYear>, String> {
     with_conn(&app, "Годы дел", |conn| {
         let mut stmt = conn.prepare(&statement("case_years")?).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(CaseYear { year: r.get(0)?, entries: r.get(1)? }))
+        let rows = stmt.query_map([], |r| Ok(CaseYear { year: r.get(0)?, entries: r.get(1)?, id: r.get(2)?, delo: r.get(3)? }))
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     })
@@ -2302,6 +2310,7 @@ fn main() {
 
             let log_for_window = log_path.clone();
             let title = window_title(&current.1);
+            app.manage(windows::Windows::load(&data_dir));
             app.manage(App {
                 conn: Mutex::new(conn),
                 db_path: Mutex::new(db_path),
@@ -2337,16 +2346,21 @@ fn main() {
             #[allow(unused_mut)]
             let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?;
             #[cfg(windows)]
-            if let Ok(port) = std::env::var("GENMETRIC_E2E_DEBUG_PORT") {
-                // Первая часть — то, что wry передаёт по умолчанию; при своих
-                // аргументах её нужно повторить (см. документацию метода).
-                builder = builder.additional_browser_args(&format!(
-                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-                     --remote-debugging-port={port}"
-                ));
+            if let Some(args) = windows::e2e_browser_args() {
+                builder = builder.additional_browser_args(&args);
             }
             let win = builder.build()?;
             let _ = win.set_title(&title);
+            // Окно встаёт, где его оставили (бэклог З3.2): место, размер,
+            // развёрнутое — развёрнутым. Места нет или монитор отключён — как
+            // раньше, по высоте экрана.
+            let placed = windows::restore(&win, windows::MAIN).unwrap_or_else(|e| {
+                write_log(&log_for_window, &format!("Окно не поставлено на прежнее место: {e}"));
+                false
+            });
+            if placed {
+                return Ok(());
+            }
             // Высота окна — по рабочей области экрана (без панели задач):
             // Роман 24.09.2026, «программа при открытии становилась по высоте
             // экрана пользователя». Ширина прежняя. Любая ошибка здесь не
@@ -2402,6 +2416,8 @@ fn main() {
             scan_pick_dir,
             scan_remember,
             scan_window,
+            windows::scan_detach,
+            windows::scan_focus_main,
             parish_list,
             parish_open,
             parish_create,
@@ -2419,6 +2435,14 @@ fn main() {
             export::reveal_path,
             export::open_familio
         ])
-        .run(tauri::generate_context!())
-        .expect("не удалось запустить GenMetric");
+        .on_window_event(windows::on_event)
+        .build(tauri::generate_context!())
+        .expect("не удалось запустить GenMetric")
+        .run(|app, event| {
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => windows::on_exit_requested(app),
+                tauri::RunEvent::Exit => windows::on_exit(app),
+                _ => {}
+            }
+        });
 }

@@ -39,6 +39,7 @@ Microsoft) и проходим путь Романа руками робота.
 выкладывает артефактом.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -882,6 +883,60 @@ def run(driver, wait, archive):
           wait_for(lambda: scan_attr("data-scan-count") is None)
           and wait_for(lambda: driver.execute_script("return window.innerWidth;") <= width_before + 2, 5),
           f"ширина {driver.execute_script('return window.innerWidth;')}, была {width_before}")
+
+    print("\n5е2. Скан отдельным окном (спека 2026-10-27-skan-oknom-i-dela)")
+    # Второе окно Tauri — второй WebView2 того же окружения (с тем же портом
+    # отладки): оно видно здесь отдельной вкладкой. Картинку показывает тот же
+    # протокол asset, что разрешён окну программы.
+    main_handle = driver.current_window_handle
+    tab(driver, 'Дело')
+    wait_for(lambda: bool(driver.execute_script(
+        "const b = document.querySelector('[data-scan-window]'); return !!b && b.offsetParent !== null;")))
+    driver.execute_script("const b = document.querySelector('[data-scan-window]'); b.scrollIntoView({block: 'center'}); b.click();")
+    check("«Скан отдельным окном» создаёт второе окно", wait_for(lambda: len(driver.window_handles) >= 2, 20),
+          f"{driver.window_handles} | {error_details(driver)}")
+    others = [h for h in driver.window_handles if h != main_handle]
+    if others:
+        driver.switch_to.window(others[0])
+        shown = lambda: driver.execute_script(
+            "const p = document.querySelector('[data-scan]'); return p ? p.getAttribute('data-scan-loaded') : null;")
+        check("окно скана показывает картинку с диска", wait_for(lambda: bool(shown()), 20),
+              f"{shown()!r}, беда: {driver.execute_script('const p = document.querySelector(\'[data-scan]\'); return p ? p.getAttribute(\'data-scan-problem\') : null;')!r}")
+        first = shown()
+        driver.execute_script("document.querySelector('[data-scan-next]').click();")
+        check("кнопка «→» в окне скана листает (через окно программы)", wait_for(lambda: shown() not in (None, first), 20),
+              f"{first!r} → {shown()!r}")
+        now = shown()
+        driver.switch_to.window(main_handle)
+        check("окно программы знает, что показано в окне скана",
+              wait_for(lambda: driver.execute_script("return document.body.dataset.scanRemote || null;") == now, 10),
+              f"{driver.execute_script('return document.body.dataset.scanRemote || null;')!r}, в окне скана {now!r}")
+        check("блока скана в окне программы нет", scan_attr("data-scan-count") is None)
+        # Буквы, набранные в окне скана, — в поле формы окна программы:
+        # окно программы встаёт наверх через Rust (`scan_focus_main`), фокус
+        # WebView2 возвращается странице (ревьюер 28.10.2026).
+        tab(driver, 'Рождения')
+        typed = field(driver, "ИОФ", "//section[.//h2[normalize-space()='Отец']]//")
+        typed.click()
+        ActionChains(driver).key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).send_keys(Keys.DELETE).perform()
+        driver.switch_to.window(others[0])
+        ActionChains(driver).send_keys("Ab").perform()
+        driver.switch_to.window(main_handle)
+        check("буквы из окна скана — в поле ИОФ отца окна программы, по порядку",
+              wait_for(lambda: typed.get_attribute("value") == "Ab", 10),
+              f"«{typed.get_attribute('value')}» | {error_details(driver)}")
+        driver.execute_script("arguments[0].focus();", typed)
+        ActionChains(driver).key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).send_keys(Keys.DELETE).perform()
+        tab(driver, 'Дело')
+        driver.execute_script("document.querySelector('[data-scan-window]').click();")
+        check("«Спрятать окно скана» закрывает второе окно", wait_for(lambda: len(driver.window_handles) == 1, 20),
+              str(driver.window_handles))
+        driver.switch_to.window(main_handle)
+    geo = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "genmetric-окна.json"
+    saved_geo = json.loads(geo.read_text(encoding="utf-8")) if geo.exists() else {}
+    check("место окон запомнено в genmetric-окна.json (окно программы и окно скана)",
+          "main" in saved_geo and "scan" in saved_geo, f"{geo}: {saved_geo}")
+    tab(driver, 'Рождения')
     shutil.rmtree(scans.parent, ignore_errors=True)
 
     print("\n5а. «Всегда в столбик» — на «Деле», изначально включено; общая настройка")

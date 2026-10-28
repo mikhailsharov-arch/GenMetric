@@ -451,11 +451,16 @@ impl Familio<'_> {
         // порядок шаблона: первое слово — фамилия.
         let last = words.len().wrapping_sub(1);
         // Но «Ефим Артемов Сидоров» (имя вне словаря, старое отчество в середине)
-        // — порядок «Имя Отчество Фамилия»: середина похожа на отчество, значит
-        // фамилии впереди нет (долг п. 82, ревьюер 21.10.2026).
+        // — порядок «Имя Отчество Фамилия»: середина — отчество, значит
+        // фамилии впереди нет (долг п. 82, ревьюер 21.10.2026). Середина —
+        // отчество по словарю отчеств, а не по окончанию: «Петрова Улияна
+        // Иванова» — «Улияна» оканчивается на «-на», но это имя (п. 96).
+        let middle_patr = |s: &mut Self| -> Result<bool, String> {
+            Ok(looks_like_patronymic(&clean(words[1])) && s.is_patronymic(words[1])?)
+        };
         if at.is_none() && words.len() >= 3
             && (strong_patronymic(words[last])
-                || (words.len() == 3 && looks_like_patronymic(&clean(words[last])) && !looks_like_patronymic(&clean(words[1]))))
+                || (words.len() == 3 && looks_like_patronymic(&clean(words[last])) && !middle_patr(self)?))
             && !strong_patronymic(words[last - 1]) {
             at = Some(last - 1);
         }
@@ -1203,6 +1208,12 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
         }
     }
 
+    // Дело без единой строки с годом — без года, даже если сохранение записи
+    // другого года успело его «удочерить» (п. 95).
+    for case in cases.values().filter(|c| c.year.is_none()) {
+        conn.execute(&statement("case_clear_year")?, rusqlite::named_params! { ":id": case.id })
+            .map_err(|e| e.to_string())?;
+    }
     // Дела, которые сохранение завело под год записи, а импорт её переставил, —
     // пустые: убрать.
     conn.execute(&statement("case_drop_empty_after")?, rusqlite::named_params! { ":last": order.len() as i64 })
@@ -1407,6 +1418,8 @@ mod tests {
         assert_eq!(split("Иванова Мароа Михайлова", false), "Иванова/Мароа/Михайлова", "долг п. 79");
         assert_eq!(split("Воробьева Мароа(?) Иосиина", false), "Воробьева/Мароа(?)/Иосиина", "долг п. 79");
         assert_eq!(split("Евфимиан Артемов Сидоров", false), "Сидоров/Евфимиан/Артемов", "долг п. 82: имя вне словаря, «Имя Отчество Фамилия»");
+        assert_eq!(split("Петрова Улияна Иванова", false), "Петрова/Улияна/Иванова", "п. 96: середина на «-на» вне словаря отчеств — имя");
+        assert_eq!(split("Евфимиан Артемьев Сидоров", false), "Сидоров/Евфимиан/Артемьев", "п. 96: середина из словаря отчеств — отчество");
         drop(fam);
         drop(conn);
         let _ = std::fs::remove_file(path);

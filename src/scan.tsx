@@ -1,7 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { report, warn } from "./errors";
+import ErrorBar from "./ErrorBar";
+import { focusNextField } from "./focus";
 import { panStep } from "./page";
+import { listen, send, type ScanAct, type ScanSync, type ScanView } from "./scanlink";
 
 /**
  * Сканы рядом с формой (спека 2026-10-10-skany-ryadom-s-formoj).
@@ -22,9 +25,13 @@ import { panStep } from "./page";
 type ScanFiles = { dir: string | null; files: string[]; sep: string; missing: string | null; open: string | null };
 
 type Scan = {
-  /** Блок скана показан. */
+  /** Скан показан: блоком рядом с формой или отдельным окном. */
   on: boolean;
   setOn: (on: boolean) => void;
+  /** Скан — отдельным окном (спека 2026-10-27-skan-oknom-i-dela), а не блоком. */
+  detached: boolean;
+  /** Показать скан блоком рядом с формой или отдельным окном. */
+  showIn: (mode: "block" | "window") => void;
   /** Год дела, чья папка открыта. */
   year: number | null;
   dir: string | null;
@@ -105,15 +112,19 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
     setIndex(Math.max(0, next.open ? next.files.indexOf(next.open) : 0));
   }, []);
 
-  // Вид окна — общий для приходов: включён ли блок и ширина колонки формы.
+  // Вид окна — общий для приходов: показан ли скан, блоком или окном, и
+  // ширина колонки формы.
   useEffect(() => {
     if (!ready) return;
-    invoke<string | null>("get_setting", { key: "ui_scan_on" })
-      // Изначально включён (Роман 19.10.2026: «основной режим работы для
-      // большинства пользователей с одним монитором»); выключенный руками —
-      // «0» — остаётся выключенным.
-      .then((v) => { if (v !== "0") setOnState(true); })
-      .catch((e) => report("Не удалось прочитать, показан ли блок скана", e));
+    // Оба значения сразу: иначе окно на миг расширилось бы под блок, который
+    // тут же уходит в отдельное окно.
+    Promise.all([invoke<string | null>("get_setting", { key: "ui_scan_on" }),
+                 invoke<string | null>("get_setting", { key: "ui_scan_detached" })])
+      // Изначально включён блоком (Роман 19.10.2026: «основной режим работы
+      // для большинства пользователей с одним монитором»); выключенный руками
+      // — «0» — остаётся выключенным. Окном — если так и вышли (Роман 20.10).
+      .then(([v, d]) => { setDetachedState(d === "1"); if (v !== "0") setOnState(true); })
+      .catch((e) => report("Не удалось прочитать, показан ли скан", e));
     invoke<string | null>("get_setting", { key: "ui_scan_keep_place" })
       .then((v) => { if (v === "1") setKeepPlaceState(true); })
       .catch((e) => report("Не удалось прочитать, как вести скан при перелистывании", e));
@@ -149,18 +160,57 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   }, [year, ready, apply]);
 
   // Окно: блок включён — узкое окно расширяется, выключен — возвращается.
+  // Скан отдельным окном — блока нет, окно программы как без скана.
+  const [detached, setDetachedState] = useState(false);
+  const block = on && !detached;
   const windowSeq = useRef(false);
   useEffect(() => {
-    if (!ready || (!on && !windowSeq.current)) return;
+    if (!ready || (!block && !windowSeq.current)) return;
     windowSeq.current = true;
-    invoke("scan_window", { on }).catch((e) => report("Не удалось изменить ширину окна", e));
-  }, [on, ready]);
+    invoke("scan_window", { on: block }).catch((e) => report("Не удалось изменить ширину окна", e));
+  }, [block, ready]);
 
   const setOn = useCallback((value: boolean) => {
     setOnState(value);
     invoke("set_setting", { key: "ui_scan_on", value: value ? "1" : "0" })
       .catch((e) => report("Вид окна изменён, но не сохранён", e));
   }, []);
+
+  const showIn = useCallback((mode: "block" | "window") => {
+    const value = mode === "window";
+    setDetachedState(value);
+    invoke("set_setting", { key: "ui_scan_detached", value: value ? "1" : "0" })
+      .catch((e) => report("Вид скана изменён, но не сохранён", e));
+    setOn(true);
+  }, [setOn]);
+
+  // Окно скана открывает и закрывает Rust; закрытое крестиком (Rust шлёт
+  // `scan-closed`) прячет скан, а не возвращает его в блок (Роман 19.10.2026).
+  const windowOpen = useRef(false);
+  const closedByHand = useRef(false);
+  useEffect(() => {
+    if (!ready) return;
+    const want = on && detached;
+    if (want === windowOpen.current) return;
+    windowOpen.current = want;
+    if (!want) {
+      remoteView.loaded = null;
+      document.body.dataset.scanRemote = "";
+      if (closedByHand.current) { closedByHand.current = false; return; }
+    }
+    invoke("scan_detach", { open: want })
+      .catch((e) => report(want ? "Не удалось открыть окно скана" : "Не удалось закрыть окно скана", e));
+  }, [on, detached, ready]);
+  useEffect(() => listen("scan-closed", () => {
+    if (windowOpen.current) closedByHand.current = true;
+    setOn(false);
+  }), [setOn]);
+  // Что видно в окне скана: для Alt+стрелок из формы.
+  useEffect(() => listen<ScanView>("scan-view", (v) => {
+    remoteView.loaded = v.loaded;
+    remoteView.fits = v.fits;
+    document.body.dataset.scanRemote = v.loaded ?? "";
+  }), []);
 
   const dirRef = useRef(state.dir);
   dirRef.current = state.dir;
@@ -229,6 +279,15 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   const at = Math.min(index, Math.max(0, count - 1));
   const file = count > 0 && !state.missing ? state.files[at] : null;
 
+  // Окну скана — всё, что показать, при каждой перемене.
+  const sync: ScanSync = { on, year, dir: state.dir, sep: state.sep, files: state.files, missing: state.missing,
+                           index: at, away, keepPlace };
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+  useEffect(() => {
+    if (on && detached) send("scan", "scan-sync", syncRef.current);
+  }, [on, detached, year, state, at, away, keepPlace]);
+
   // Открытый разворот запоминается — кроме показа записи на правке.
   const remembered = useRef<string | null>(null);
   useEffect(() => {
@@ -250,7 +309,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       setIndex(i);
     };
     return {
-      on, setOn, year, dir: state.dir, files: state.files, missing: state.missing, index: at, file, away,
+      on, setOn, detached, showIn, year, dir: state.dir, files: state.files, missing: state.missing, index: at, file, away,
       url: (name) => convertFileSrc(`${state.dir ?? ""}${state.sep}${name}`),
       step: (by) => {
         // Листают после ссылки «скан» — значит, работают уже здесь: место
@@ -309,9 +368,104 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
           .catch((e) => report("Ширина колонки формы не сохранена", e));
       },
     };
-  }, [on, setOn, year, state, at, file, count, pickDir, askDir, formWidth, away, keepPlace]);
+  }, [on, setOn, detached, showIn, year, state, at, file, count, pickDir, askDir, formWidth, away, keepPlace]);
+
+  // Действия человека в окне скана — те же, что кнопками блока.
+  const scanRef = useRef(scan);
+  scanRef.current = scan;
+  useEffect(() => listen<ScanAct>("scan-act", (a) => {
+    const s = scanRef.current;
+    switch (a.kind) {
+      case "ready": send("scan", "scan-sync", syncRef.current); break;
+      case "step": s.step(a.by); break;
+      case "goto": s.goTo(a.index); break;
+      case "keep": s.setKeepPlace(a.on); break;
+      case "pick": s.pickDir(); break;
+      case "back": s.back(); break;
+      case "hide": s.setOn(false); break;
+      case "type": typeFromScan(a.text); break;
+      case "key": typeFromScan(a); break;
+    }
+  }), []);
+
+  // Пока очередь букв из окна скана не пуста, нажатия в самом окне программы
+  // встают в ту же очередь: окно уже наверху, а буква из окна скана ещё не
+  // вставлена — иначе «вИ» вместо «Ив» (ревьюер 28.10.2026).
+  useEffect(() => {
+    if (!detached) return;
+    const on = (e: KeyboardEvent) => {
+      if (!e.isTrusted || typingPending === 0 || e.altKey) return;
+      const item = keyItem(e);
+      if (!item) return;
+      e.preventDefault();
+      e.stopPropagation();
+      typeFromScan(item);
+    };
+    document.addEventListener("keydown", on, true);
+    return () => document.removeEventListener("keydown", on, true);
+  }, [detached]);
 
   return <ScanContext.Provider value={scan}>{children}</ScanContext.Provider>;
+}
+
+/** Что видно в окне скана (его сообщение `scan-view`). */
+const remoteView: ScanView = { loaded: null, fits: true };
+
+/**
+ * Набранное в окне скана — в поле формы, где стоял курсор (Роман 19.10.2026,
+ * ответ 1.4: «курсор сам возвращается в форму… и буквы идут туда»). Окно
+ * программы встаёт наверх; нажатия идут очередью — ни одно не теряется и не
+ * задваивается. Вставка — `insertText`: поле получает обычное событие ввода.
+ */
+let typing: Promise<void> = Promise.resolve();
+let typingPending = 0;
+type Typed = string | Extract<ScanAct, { kind: "key" }>;
+
+/** Нажатие, которое окно скана отдаёт форме: буква, Backspace — текстом;
+ *  Enter, Tab, Esc (и с Ctrl, Cmd, Shift) — клавишей. Остальное — нет. */
+function keyItem(e: KeyboardEvent): Typed | null {
+  if (e.key === "Enter" || e.key === "Tab" || e.key === "Escape") {
+    return { kind: "key", key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey };
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  return e.key.length === 1 ? e.key : e.key === "Backspace" ? "\b" : null;
+}
+
+function typeFromScan(item: Typed) {
+  typingPending += 1;
+  typing = typing.then(async () => {
+    if (!document.hasFocus()) {
+      await invoke("scan_focus_main").catch((e) => report("Окно программы не встало наверх", e));
+      await new Promise<void>((done) => {
+        if (document.hasFocus()) { done(); return; }
+        const timer = window.setTimeout(done, 400);
+        window.addEventListener("focus", () => { window.clearTimeout(timer); done(); }, { once: true });
+      });
+    }
+    const el = document.activeElement;
+    if (typeof item !== "string") {
+      // Клавиша — тем же обработчикам, что слушают её в поле: Enter и
+      // Ctrl+Enter (сохранить), Esc. Tab, которого никто не перехватил, —
+      // к следующему полю, как своим ходом.
+      const target = el instanceof HTMLElement && el !== document.body ? el : document.body;
+      const ev = new KeyboardEvent("keydown", { key: item.key, code: item.key, ctrlKey: item.ctrl, metaKey: item.meta,
+                                                shiftKey: item.shift, bubbles: true, cancelable: true });
+      const free = target.dispatchEvent(ev);
+      if (free && item.key === "Tab" && target !== document.body) focusNextField(target, item.shift ? -1 : 1);
+      return;
+    }
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || el.readOnly || el.disabled) {
+      // Курсор не в текстовом поле (перечень, кнопка, нигде) — буква не
+      // пропадает молча (проверяющий 28.10.2026).
+      warn("Буква из окна скана не набрана", "Курсор формы стоит не в поле для текста — щёлкните в нужное поле.");
+      return;
+    }
+    el.focus();
+    for (const ch of item) {
+      if (ch === "\b") document.execCommand("delete");
+      else document.execCommand("insertText", false, ch);
+    }
+  }).finally(() => { typingPending -= 1; });
 }
 
 /**
@@ -476,9 +630,11 @@ function toTop(v: Viewer, osd: Osd) {
   v.viewport.panBy(v.viewport.deltaPointsFromPixels(new osd.Point(0, top)), true);
 }
 
-/** Блок скана: справа от формы. */
-export function ScanPane() {
+/** Блок скана: справа от формы или во всё окно скана (`windowed`). */
+export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onView?: (v: ScanView) => void } = {}) {
   const scan = useScan();
+  const onViewRef = useRef(onView);
+  onViewRef.current = onView;
   const box = useRef<HTMLDivElement>(null);
   const viewer = useRef<Viewer | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -536,14 +692,17 @@ export function ScanPane() {
         if (!pane) return;
         const c = v.viewport.getCenter(true);
         pane.dataset.scanView = `${v.viewport.getZoom(true).toFixed(3)} ${c.x.toFixed(3)} ${c.y.toFixed(3)} ${v.viewport.getRotation()}`;
+        onViewRef.current?.({ loaded: scan.files[v.currentPage()] ?? null, fits: fitsWidth() });
       });
       v.addHandler("open", () => {
         setProblem(null);
         setLoaded(scan.files[v.currentPage()] ?? null);
         // Первый разворот открывается целиком; следующие — с верха листа.
         if (opened++ > 0 && !keepRef.current) toTop(v, OpenSeadragon);
+        onViewRef.current?.({ loaded: scan.files[v.currentPage()] ?? null, fits: fitsWidth() });
       });
       v.addHandler("open-failed", () => {
+        onViewRef.current?.({ loaded: null, fits: true });
         setLoaded(null);
         setProblem(`Файл «${scan.files[want.current] ?? ""}» не открылся: его нет на месте или это не картинка JPG или PNG.`);
       });
@@ -649,8 +808,15 @@ export function ScanPane() {
           </button>
           <button type="button" className="toggle small" data-scan-dir {...keep} onClick={scan.pickDir}
                   title={scan.dir ? `Папка: ${scan.dir}` : "Выбрать папку со сканами дела"}><span className="long">папка…</span><span className="short" aria-hidden>📁</span></button>
+          {!windowed && (
+            <button type="button" className="toggle small" data-scan-detach {...keep} onClick={() => scan.showIn("window")}
+                    title="Скан отдельным окном — например, на второй монитор; форма займёт всё окно программы">
+              <span className="long">окном</span><span className="short" aria-hidden>⧉</span>
+            </button>
+          )}
           <button type="button" className="toggle small" data-scan-hide {...keep} onClick={() => scan.setOn(false)}
-                  title="Убрать скан; вернуть — кнопкой на экране «Дело»"><span className="long">скрыть</span><span className="short" aria-hidden>✕</span></button>
+                  title={windowed ? "Спрятать скан (как крестик окна); вернуть — кнопкой на экране «Дело»"
+                    : "Убрать скан; вернуть — кнопкой на экране «Дело»"}><span className="long">скрыть</span><span className="short" aria-hidden>✕</span></button>
         </span>
       </div>
       {empty ? (
@@ -711,13 +877,23 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
   stepRef.current = scan.step;
   const onRef = useRef(scan.on);
   onRef.current = scan.on;
+  const detachedRef = useRef(scan.detached);
+  detachedRef.current = scan.detached;
+  const scanCountRef = useRef(scan.files.length);
+  scanCountRef.current = scan.files.length;
   useEffect(() => {
     // Удержание стрелки: с какого момента и какой клавишей — для разгона.
     const held = { key: "", since: 0 };
     const on = (e: KeyboardEvent) => {
       // Только пока есть что двигать и листать: блок включён, а папки нет —
-      // клавиши остаются полям.
-      if (!e.altKey || e.ctrlKey || e.metaKey || !onRef.current || !live.viewer) return;
+      // клавиши остаются полям. Скан отдельным окном — лист двигается там
+      // (`scan-pan`), видно ли что-то — говорит само окно скана.
+      const remote = detachedRef.current;
+      // Листать окно скана можно и с битого файла: открыт он или нет,
+      // знает окно скана, а файлы — здесь (ревьюер 28.10.2026).
+      const paging = e.key === "PageDown" || e.key === "PageUp";
+      const shown = remote ? (remoteView.loaded || (paging && scanCountRef.current > 0)) : live.viewer;
+      if (!e.altKey || e.ctrlKey || e.metaKey || !onRef.current || !shown) return;
       // Alt+стрелки двигают увеличенный лист (Роман 12.10.2026: «не снимать
       // руки с клавиатуры при чтении документа»). Стрелка — куда идёт
       // взгляд: Alt+↓ показывает то, что ниже. Числовое поле при видимом
@@ -726,7 +902,7 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
       // Alt+↓ в поле с перечнем («Причина», «Родство», архив) открывает
       // перечень — это остаётся полю (ревьюер 13.10.2026).
       if (pan && e.key === "ArrowDown" && (e.target as HTMLElement | null)?.matches?.("[data-browse], select")) return;
-      if (pan && pan[0] !== 0 && fitsWidth()) return;
+      if (pan && pan[0] !== 0 && (remote ? remoteView.fits : fitsWidth())) return;
       if (pan) {
         e.preventDefault();
         e.stopPropagation();
@@ -735,7 +911,8 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
         const repeat = e.repeat && held.key === e.key;
         if (!repeat) { held.key = e.key; held.since = performance.now(); }
         const step = panStep(repeat, performance.now() - held.since);
-        panView(pan[0] * step, pan[1] * step, repeat);
+        if (remote) send("scan", "scan-pan", { dx: pan[0] * step, dy: pan[1] * step, now: repeat });
+        else panView(pan[0] * step, pan[1] * step, repeat);
         return;
       }
       if (e.key !== "PageDown" && e.key !== "PageUp") return;
@@ -746,22 +923,23 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
     document.addEventListener("keydown", on, true);
     return () => document.removeEventListener("keydown", on, true);
   }, []);
+  const block = scan.on && !scan.detached;
   // Окно с вопросом (сверка имени, карточка пункта) при включённом скане
   // занимает только колонку формы: скан рядом остаётся виден и доступен мыши
   // — сверять имя по скану и есть главный случай (проверяющий 10.10.2026).
   // Окна живут в body, поэтому ширина колонки передаётся ему.
   useEffect(() => {
-    document.body.classList.toggle("withscan", scan.on);
-    if (scan.on) document.body.style.setProperty("--formw", `${scan.formWidth}px`);
+    document.body.classList.toggle("withscan", block);
+    if (block) document.body.style.setProperty("--formw", `${scan.formWidth}px`);
     else document.body.style.removeProperty("--formw");
     return () => { document.body.classList.remove("withscan"); document.body.style.removeProperty("--formw"); };
-  }, [scan.on, scan.formWidth]);
+  }, [block, scan.formWidth]);
   return (
-    <div className={scan.on ? "shell withscan" : "shell"}
-         style={scan.on ? ({ "--formw": `${scan.formWidth}px` } as React.CSSProperties) : undefined}>
+    <div className={block ? "shell withscan" : "shell"}
+         style={block ? ({ "--formw": `${scan.formWidth}px` } as React.CSSProperties) : undefined}>
       {/* Колонка программы — контейнер для правил раскладки по ширине. */}
       <div className="appcol">{children}</div>
-      {scan.on && <><ScanSplitter /><ScanPane /></>}
+      {block && <><ScanSplitter /><ScanPane /></>}
     </div>
   );
 }
@@ -771,8 +949,15 @@ export function ScanCaseBlock() {
   const scan = useScan();
   return (
     <div className="findblock scanblock">
-      <button type="button" className="toggle" data-scan-toggle onClick={() => scan.setOn(!scan.on)}>
-        {scan.on ? "Скрыть скан" : "Показать скан рядом с формой"}
+      <button type="button" className="toggle" data-scan-toggle
+              onClick={() => (scan.on && !scan.detached ? scan.setOn(false) : scan.showIn("block"))}>
+        {scan.on && !scan.detached ? "Скрыть скан" : "Показать скан рядом с формой"}
+      </button>{" "}
+      {/* Отдельным окном — на второй монитор (Роман 19.10.2026: «критически
+          важно»); закрытое окно прячет скан, вернуть — этой кнопкой. */}
+      <button type="button" className="toggle" data-scan-window
+              onClick={() => (scan.on && scan.detached ? scan.setOn(false) : scan.showIn("window"))}>
+        {scan.on && scan.detached ? "Спрятать окно скана" : "Скан отдельным окном"}
       </button>{" "}
       <button type="button" className="toggle" data-scan-pick onClick={scan.pickDir}>
         {scan.dir ? "Сменить папку сканов…" : "Папка сканов дела…"}
@@ -781,9 +966,81 @@ export function ScanCaseBlock() {
         {scan.dir
           ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, файлов: ${scan.files.length}`}. </>
           : "Сканы дела — файлы JPG или PNG в одной папке. Папку можно и перетащить мышью на окно программы. "}
-        Листать, не уходя из поля: Alt+PageDown и Alt+PageUp; двигать лист — Alt+стрелки. Запись запоминает
-        разворот, с которого набрана.
+        Листать, не уходя из поля: Alt+PageDown и Alt+PageUp; двигать лист — Alt+стрелки (и когда скан в
+        отдельном окне). Запись запоминает разворот, с которого набрана.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Окно скана (спека 2026-10-27-skan-oknom-i-dela): тот же блок во всё окно.
+ * Что показать, решает окно программы (`scan-sync`); кнопки и клавиши здесь
+ * шлют ему действия. Буква, набранная здесь, уходит в поле формы.
+ */
+export function ScanWindow() {
+  const [sync, setSync] = useState<ScanSync | null>(null);
+  useEffect(() => {
+    document.title = "GenMetric — скан";
+    const off = listen<ScanSync>("scan-sync", setSync);
+    send("main", "scan-act", { kind: "ready" } satisfies ScanAct);
+    return off;
+  }, []);
+  useEffect(() => listen<{ dx: number; dy: number; now: boolean }>("scan-pan", (p) => panView(p.dx, p.dy, p.now)), []);
+  useEffect(() => {
+    const act = (a: ScanAct) => send("main", "scan-act", a);
+    const held = { key: "", since: 0 };
+    const on = (e: KeyboardEvent) => {
+      // Номер разворота набирают здесь же.
+      if ((e.target as HTMLElement | null)?.matches?.("[data-scan-no]")) return;
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const pan = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key];
+        if (pan && live.viewer) {
+          e.preventDefault();
+          const repeat = e.repeat && held.key === e.key;
+          if (!repeat) { held.key = e.key; held.since = performance.now(); }
+          const step = panStep(repeat, performance.now() - held.since);
+          panView(pan[0] * step, pan[1] * step, repeat);
+        } else if (e.key === "PageDown" || e.key === "PageUp") {
+          e.preventDefault();
+          act({ kind: "step", by: e.key === "PageDown" ? 1 : -1 });
+        }
+        return;
+      }
+      if (e.altKey) return;
+      const item = keyItem(e);
+      if (item === null) return;
+      e.preventDefault();
+      act(typeof item === "string" ? { kind: "type", text: item } : item);
+    };
+    document.addEventListener("keydown", on, true);
+    return () => document.removeEventListener("keydown", on, true);
+  }, []);
+  const scan = useMemo<Scan | null>(() => {
+    if (!sync) return null;
+    const act = (a: ScanAct) => send("main", "scan-act", a);
+    const count = sync.files.length;
+    const index = Math.min(sync.index, Math.max(0, count - 1));
+    return {
+      on: sync.on, setOn: (v) => { if (!v) act({ kind: "hide" }); }, detached: true, showIn: () => undefined,
+      year: sync.year, dir: sync.dir, files: sync.files, missing: sync.missing, index,
+      file: count > 0 && !sync.missing ? sync.files[index] : null,
+      url: (name) => convertFileSrc(`${sync.dir ?? ""}${sync.sep}${name}`),
+      step: (by) => act({ kind: "step", by }), goTo: (i) => act({ kind: "goto", index: i }),
+      show: () => "ok", pickDir: () => act({ kind: "pick" }), askDir: () => undefined, current: () => null,
+      peek: () => undefined, back: () => act({ kind: "back" }), away: sync.away, onTurn: () => () => undefined,
+      keepPlace: sync.keepPlace, setKeepPlace: (v) => act({ kind: "keep", on: v }),
+      formWidth: FORM_WIDTH, setFormWidth: () => undefined,
+    };
+  }, [sync]);
+  return (
+    <div className="scanwin" data-scan-window-page>
+      <ErrorBar />
+      {scan ? (
+        <ScanContext.Provider value={scan}>
+          <ScanPane windowed onView={(v) => send("main", "scan-view", v)} />
+        </ScanContext.Provider>
+      ) : <p className="scanwait">Окно скана ждёт программу…</p>}
     </div>
   );
 }

@@ -54,7 +54,8 @@ const EMPTY: Case = {
 };
 
 
-type CaseYear = { year: number; entries: number };
+/** Строка — дело, а не год: у года после импорта бывает два дела (п. 94). */
+type CaseYear = { year: number; entries: number; id: number; delo: string | null };
 
 type CaseSaved = { id: number; status: "saved" | "created" | "exists"; existing: string | null };
 
@@ -98,12 +99,13 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
 
   /** Первое чтение дела после запуска (или смены прихода). */
   const startup = useRef(true);
-  /** year = null — дело, с которым сейчас работают (год последней записи). */
-  function load(year: number | null) {
+  /** year = null — дело, с которым сейчас работают (год последней записи);
+   *  id — дело, выбранное в списке (у года их бывает два, п. 94). */
+  function load(year: number | null, id: number | null = null) {
     // Годы читаются один раз; ошибка — одним сообщением.
     const yearsRead = invoke<CaseYear[]>("case_years")
       .catch((e) => { report("Не удалось прочитать годы дел", e); return null; });
-    invoke<Case | null>("case_load", { year })
+    invoke<Case | null>("case_load", { year, id })
       .then(async (loaded) => {
         if (!loaded) return;
         setC(loaded);
@@ -144,7 +146,9 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
   useEffect(() => { if (showYear && !editedRef.current) load(showYear.year); }, [showYear?.n]);
 
   const emptyYear = loadedYear !== null && years.length > 1
-    && years.find((y) => y.year === loadedYear)?.entries === 0;
+    && years.find((y) => y.id === c.id)?.entries === 0;
+  /** Год, у которого несколько дел: в списке рядом с годом — номер дела. */
+  const twoCases = (year: number) => years.filter((y) => y.year === year).length > 1;
 
   /** Убрать дело года без записей: опечатка года или год, из которого ушла
    *  последняя запись. */
@@ -163,12 +167,13 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
     }
   }
 
-  function pickYear(year: number) {
+  function pickYear(id: number) {
+    const year = years.find((y) => y.id === id)?.year ?? null;
     if (edited || (yearChanged && c.year !== year)) {
       warn("Сначала сохраните дело", "реквизиты этого года поправлены, но не сохранены — при смене года они пропали бы");
       return;
     }
-    load(year);
+    load(year, id);
   }
 
   const set = (k: keyof Case) => (v: string) => {
@@ -296,7 +301,7 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
       // оставляет окно на текущем деле, как раньше (ревьюер 16.10.2026).
       const all = await invoke<CaseYear[]>("case_years").catch((e) => { report("Не удалось прочитать годы дел", e); return null; });
       if (all) setYears(all);
-      const entries = all?.find((y) => y.year === next.year)?.entries;
+      const entries = all?.find((y) => y.id === r.id)?.entries;
       // Окно — на год без записей (новый или пересохранённый пустой); форма с
       // чистого листа — только когда год сменили или завели дело.
       const empty = next.year !== null && entries === 0;
@@ -374,10 +379,12 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
       <h2 className="caseyear">
         {loadedYear !== null ? `Дело за ${loadedYear} год` : "Дело"}
         {years.length > 1 && (
-          <select value={loadedYear ?? ""} title="Реквизиты дела другого года"
+          <select value={c.id} title="Реквизиты дела другого года"
                   onChange={(e) => pickYear(Number(e.target.value))}>
             {years.map((y) => (
-              <option key={y.year} value={y.year}>{y.year} — записей: {y.entries}</option>
+              <option key={y.id} value={y.id}>
+                {y.year}{twoCases(y.year) ? ` · Д.${y.delo ?? "—"}` : ""} — записей: {y.entries}
+              </option>
             ))}
           </select>
         )}

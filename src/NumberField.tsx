@@ -114,7 +114,11 @@ export default function NumberField({
             }
             onChange(raw === "" ? null : Number(raw));
           }}
-          onBlur={() => {
+          onBlur={(e) => {
+            // Потеря фокуса окном программы (щелчок в окне скана) — не уход
+            // из поля: человек вернётся и допишет (спека
+            // 2026-10-27-skan-oknom-i-dela; так же в IofField).
+            if (e.relatedTarget === null && !document.hasFocus()) return;
             // Ноль — не день и не месяц. При наборе он нужен («05»), а
             // оставшийся при уходе из поля — стирается, и поле мигает.
             if (value === 0 && min >= 1) {

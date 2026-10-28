@@ -1106,3 +1106,8 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
    рядом виден и доступен мыши (сверить имя по скану — главный случай). */
 body.withscan .overlay { right: auto; width: var(--formw); }
 .scanpane { min-width: 12em; }
+
+/* Окно скана (спека 2026-10-27-skan-oknom-i-dela): блок во всё окно. */
+.scanwin { height: 100vh; display: flex; flex-direction: column; }
+.scanwin > .scanpane { flex: 1 1 auto; position: static; height: auto; min-height: 0; }
+.scanwait { margin: auto; color: var(--muted); }

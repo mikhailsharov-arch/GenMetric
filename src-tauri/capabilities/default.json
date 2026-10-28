@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Базовые разрешения главного окна",
-  "windows": ["main"],
+  "description": "Базовые разрешения окна программы и окна скана (только события и своё окно)",
+  "windows": ["main", "scan"],
   "permissions": ["core:default"]
 }

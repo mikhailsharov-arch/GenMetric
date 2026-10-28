@@ -1470,7 +1470,8 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
           "JOIN x_entry x ON x.id = e.id" not in statements
           and statements.count("JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')") == 3)
     check("Alt+стрелки перехватываются только при живом просмотрщике, Alt+↓ в поле с перечнем остаётся полю",
-          "!onRef.current || !live.viewer) return;" in read("src/scan.tsx")
+          "!onRef.current || !shown) return;" in read("src/scan.tsx")
+          and "const shown = remote ? (remoteView.loaded || (paging && scanCountRef.current > 0)) : live.viewer;" in read("src/scan.tsx")
           and '?.matches?.("[data-browse], select")) return;' in read("src/scan.tsx")
           and 'data-browse={browse ? "" : undefined}' in suggest)
     check("месяц после декабря: событие не уходит в ноябрь (pastDecember)",
@@ -1568,7 +1569,9 @@ def incident_20261015_pamyat_if_i_dovodka():
           "PAN_STEP" not in scan and "const step = panStep(repeat, performance.now() - held.since);" in scan
           and "export const PAN_TAP = 0.05;" in read("src/page.ts") and "panStep(" in read("scripts/test_page.mjs"))
     check("Alt+← и Alt+→ остаются полю, когда лист виден по ширине целиком (п. 58)",
-          "if (pan && pan[0] !== 0 && fitsWidth()) return;" in scan)
+          "if (pan && pan[0] !== 0 && (remote ? remoteView.fits : fitsWidth())) return;" in scan
+          # Окно скана (27.10.2026): там же лист двигается своим fitsWidth.
+          and "onViewRef.current?.({ loaded: scan.files[v.currentPage()] ?? null, fits: fitsWidth() });" in scan)
     check("переход в поле номера скана — не уход из поля ИОФ и полей с подсказкой (п. 61)",
           "if (toScanNo(e.relatedTarget)) return;" in read("src/IofField.tsx")
           and "if (toScanNo(e.relatedTarget)) return;" in read("src/Suggest.tsx")
@@ -1713,6 +1716,54 @@ def incident_20261020_otvet_na_sborku_19_10():
           and "тёзка с комментарием — своё полное место" in read("db/test_export.py"))
     check("регрессы памяти — в тестах крейта", "fn edit_forgets_typos()" in search and "fn masked_words_stay_out_of_memory()" in search
           and "fn person_key_folds_patronymic_spellings()" in search)
+
+
+def incident_20261028_mesto_okna_pri_raznom_masshtabe():
+    """
+    28.10.2026, ревьюер перед выкладкой окна скана: место окна хранилось в
+    физических точках, а ставилось «размер, потом место». На мониторах
+    разного масштаба (Windows: ноутбук 150 % и монитор 100 %) окно после
+    переезда пересчитывалось системой и уменьшалось при каждом запуске; на
+    macOS физические точки у каждого монитора свои — окно вставало не туда.
+    Теперь: сначала место, потом размер; на macOS — логические единицы;
+    место ужимается в рабочую область; файл пишется через временный и
+    переименование, ошибка — в журнал. Буквы и клавиши из окна скана —
+    очередью, нажатия в окне программы ждут очереди.
+    """
+    win = read("src-tauri/src/windows.rs")
+    place = win.split("fn place(", 1)[-1].split("\nfn ", 1)[0].split("\npub fn ", 1)[0]
+    mac, other = place.split("#[cfg(not(target_os = \"macos\"))]", 1)
+    check("место окна: сначала set_position, потом set_size (оба варианта)",
+          all(0 <= b.find("set_position") < b.find("set_size") for b in (mac, other)))
+    check("на macOS место — в логических единицах, на Windows — в физических",
+          "Position::Logical" in mac and "Position::Physical" in other
+          and "fn units(scale: f64) -> f64 {\n    scale\n}" in win)
+    check("сохранённое место ужимается в рабочую область монитора",
+          "place(win, &fit(g, screen))?;" in win)
+    check("файл мест окон — через временный и переименование, ошибка — в журнал",
+          "std::fs::rename(&tmp, &self.path)" in win and "crate::write_log(&self.log" in win)
+    check("Cmd+Q: выход отмечен до закрытия окон (ExitRequested)",
+          "tauri::RunEvent::ExitRequested { .. } => windows::on_exit_requested(app)," in read("src-tauri/src/main.rs"))
+    scan = read("src/scan.tsx")
+    check("клавиши окна скана — очередью, нажатия окна программы ждут её",
+          "if (!e.isTrusted || typingPending === 0 || e.altKey) return;" in scan
+          and 'if (e.key === "Enter" || e.key === "Tab" || e.key === "Escape") {' in scan
+          and 'case "key": typeFromScan(a); break;' in scan)
+
+
+def incident_20261027_ui_scan_detached_ne_obshchaya():
+    """
+    27.10.2026, проверка настоящей программы на Mac перед выкладкой: окно
+    скана не открывалось при запуске — новая настройка «скан отдельным
+    окном» (ui_scan_detached) не стояла в перечне общих настроек
+    (parish::COMMON_SETTINGS) и писалась в файл прихода. Стенд этого не видит:
+    в шиме база одна. Теперь каждая настройка ui_scan_*, которую читает или
+    пишет окно, обязана быть общей.
+    """
+    common = read("src-tauri/core/src/parish.rs").split("pub const COMMON_SETTINGS", 1)[-1].split(";", 1)[0]
+    used = set(re.findall(r'key: "(ui_scan_[a-z_]+)"', read("src/scan.tsx")))
+    missing = sorted(k for k in used if f'"{k}"' not in common)
+    check("все настройки ui_scan_* окна — общие (COMMON_SETTINGS)", bool(used) and not missing, f"не общие: {missing}")
 
 
 def incident_20261021_podpis_str_v_e2e():
@@ -1867,6 +1918,8 @@ def incident_20261017_semya_celikom_1():
 
 ИНЦИДЕНТЫ = [
     incident_20261020_otvet_na_sborku_19_10,
+    incident_20261027_ui_scan_detached_ne_obshchaya,
+    incident_20261028_mesto_okna_pri_raznom_masshtabe,
     incident_20261021_podpis_str_v_e2e,
     incident_20261020_mac_povrezhdeno_i_resizeobserver,
     incident_20261019_oshibki_svyazej,

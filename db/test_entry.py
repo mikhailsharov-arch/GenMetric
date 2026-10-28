@@ -85,7 +85,7 @@ def main() -> int:
     for required in ("case_upsert", "entry_insert", "mention_insert", "lookup_extend",
                      "usage_bump", "entry_list", "place_insert",
                      "person_remember", "person_suggest", "person_suggest_infant", "infant_suggest", "birth_father",
-                     "case_current", "case_years", "case_for_year", "case_adopt_year", "case_copy_for_year", "case_spread_parish", "spouse_remember", "spouse_lookup", "spouse_extend",
+                     "case_current", "case_years", "case_by_id", "case_for_year", "case_adopt_year", "case_copy_for_year", "case_spread_parish", "spouse_remember", "spouse_lookup", "spouse_extend",
                      "clergy_remember", "clergy_list", "last_clergy", "entry_get", "mentions_of_entry"):
         check(f"блок {required} на месте", required in sql)
 
@@ -551,8 +551,10 @@ def main() -> int:
                                                   indexer="Роман Чистов"))
         check("церковь расходится на дела всех лет, фонд/опись/дело — нет, заполненный архив не затирается",
               one("SELECT church, delo, archive FROM mk_case WHERE id = 1") == ("Никольская", "18", "ГА Костромской области"))
-        check("годы для экрана «Дело»: с числом записей",
-              (1899, 0) in db.execute(sql["case_years"]).fetchall())
+        check("годы для экрана «Дело»: с числом записей, по делам (номер и «Д.», п. 94)",
+              (1899, 0, new_id) in [r[:3] for r in db.execute(sql["case_years"]).fetchall()])
+        check("дело по номеру (второе дело года, п. 94)",
+              db.execute(sql["case_by_id"], {"id": new_id}).fetchone()[0] == new_id)
         cur = db.execute(sql["case_current"], {"year": None}).fetchone()
         check("текущее дело — дело последней записи", cur[0] == one("SELECT case_id FROM entry ORDER BY id DESC LIMIT 1")[0])
         check("дело по году", db.execute(sql["case_current"], {"year": 1899}).fetchone()[0] == new_id)

@@ -938,6 +938,12 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
         }
     }
 
+    // Дело без единой строки с годом — без года, даже если сохранение записи
+    // другого года успело его «удочерить» (п. 95).
+    for case in cases.values().filter(|c| c.year.is_none()) {
+        conn.execute(&statement("case_clear_year")?, rusqlite::named_params! { ":id": case.id })
+            .map_err(|e| e.to_string())?;
+    }
     conn.execute(&statement("case_drop_empty_after")?, rusqlite::named_params! { ":last": order.len() as i64 })
         .map_err(|e| e.to_string())?;
 
@@ -1339,6 +1345,49 @@ mod tests {
         let (case_id, _) = crate::records::case_for_year(&conn, 1892).unwrap();
         assert_eq!(text(&format!("SELECT coalesce(delo, '-') FROM mk_case WHERE id = {case_id}")), "7");
         assert_eq!(text("SELECT CAST(count(*) AS TEXT) FROM mk_case"), "3", "новое дело не заведено");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Дело с номером, ни одна строка которого не дала года, остаётся без года:
+    /// запись года без своего дела его не «удочеряет» — ни при импорте, ни
+    /// потом при наборе (п. 95, ревьюер 27.10.2026).
+    #[test]
+    fn case_without_year_stays() {
+        let Some(seed) = seed() else { return };
+        let mk = "Церковь: Никольская Село: Никольское Уезд: Тестовский Губерния: Тестовская";
+        let row = |n: &str, fod: &str, year: &str, child: &str| -> Vec<Option<String>> {
+            let mut r = vec![None; 15];
+            let date = |d: &str| if year.is_empty() { String::new() } else { format!("{d}.05.{year}") };
+            for (c, v) in [(1usize, n), (2, "ГА"), (3, fod), (4, mk), (5, year), (7, "5"), (8, "1"),
+                           (10, &date("03")), (11, &date("05")), (12, child), (15, "Кузьма Петров")] {
+                r[c - 1] = Some(v.to_string()).filter(|v| !v.is_empty());
+            }
+            r
+        };
+        let births = vec![row("1", "Ф.1 Оп.2 Д.7", "1890", "Нил"), row("2", "Ф.1 Оп.2 Д.7", "1890", "Ия"),
+                          row("3", "Ф.1 Оп.2 Д.7", "1892", "Фома"), row("4", "Ф.1 Оп.2 Д.20", "", "Лука")];
+        let sheets = ["Рождения", "Браки", "Смерти"].map(|s| crate::xlsx::SheetRows {
+            sheet: s.into(), first_row: 3, rows: if s == "Рождения" { births.clone() } else { vec![] } });
+        let bytes = crate::xlsx::fill_template(crate::export::EXCEL_TEMPLATE, &sheets, &[], &[]).unwrap();
+        let (path, conn) = fresh("no-year", &seed);
+        conn.execute_batch("BEGIN").unwrap();
+        let rep = import_into(&conn, &bytes).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(rep.births, 4, "{rep:?}");
+        let text = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(text("SELECT group_concat(coalesce(delo, '-') || ':' || coalesce(year, '-'), ' ') FROM (SELECT * FROM mk_case ORDER BY id)"),
+                   "7:1890 20:-", "дело 20 — без года: строка 1892 года его не «удочерила»");
+        // Первая запись 1893 года (своего дела нет) — новое дело, а не дело 20.
+        let (case_id, created) = crate::records::case_for_year(&conn, 1893).unwrap();
+        assert!(created, "заведено новое дело");
+        assert_eq!(text("SELECT coalesce(year, '-') FROM mk_case WHERE id = 2"), "-", "дело 20 по-прежнему без года");
+        assert_eq!(case_id, 3, "запись 1893 года — в новое дело");
+        // Дело без номера с записью без года (новая база) год получает, как
+        // раньше, и копии дела не заводится (ревьюер 28.10.2026).
+        conn.execute_batch("UPDATE mk_case SET delo = NULL WHERE id = 2").unwrap();
+        let (case_id, created) = crate::records::case_for_year(&conn, 1894).unwrap();
+        assert!(!created && case_id == 2, "дело без номера получило 1894 год: {case_id} {created}");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

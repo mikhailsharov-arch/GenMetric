@@ -27,7 +27,7 @@
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
     python3 db/test_upgrade.py                                  # → «Итог: успешно 90, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 135, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 137, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 149, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 401, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 408, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -53,7 +53,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 45 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 46 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -544,6 +544,17 @@ genmetric-core --release search_real -- --ignored --nocapture`.
   базу прихода и сам двигает отметку свежести (`App.search`).
 - **`scan_file` в `EntryInput` — три состояния**: поля нет — привязка записи
   остаётся, `null` — снимается, имя — записывается.
+- **Скан отдельным окном** (с 28.10.2026, спека
+  2026-10-27-skan-oknom-i-dela): второе окно Tauri `scan` — та же страница
+  (`src/Root.tsx`, `ScanWindow`); состояние живёт в главном окне, связь —
+  `src/scanlink.ts` (события `scan-sync`, `scan-act`, `scan-view`,
+  `scan-pan`). Окно создаёт и закрывает Rust (`scan_detach` в
+  `src-tauri/src/windows.rs`), без фокуса. Буквы и Enter/Tab/Esc из окна
+  скана — полю формы очередью (`typeFromScan`, окно программы наверх —
+  `scan_focus_main`). Место окон — файл `genmetric-окна.json` папки данных
+  (окна создаются до базы): сначала место, потом размер; на macOS —
+  логические единицы, на Windows — физические (иначе окно «уплывает» на
+  мониторах разного масштаба). Настройка `ui_scan_detached` — общая.
 - Системное окно выбора папки роботу недоступно: стенд и e2e подставляют путь
   через `window.__pickScanDir`. Стенд показывает картинки из `scans/` своего
   сервера (шим, `convertFileSrc`); настоящий протокол проверяет только e2e.

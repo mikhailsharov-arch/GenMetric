@@ -430,8 +430,9 @@ pub fn save_case(conn: &Connection, case: &Case, overwrite: bool) -> Result<Case
         None => None,
     };
     let (id, status) = match (other, case.year, loaded_year) {
-        // У набранного года есть своё дело, и это не открытое.
-        (Some(o), _, _) if o != case.id => {
+        // У набранного года есть своё дело, и это не открытое. Открытое — тоже
+        // дело этого года (у года после импорта их два, п. 94) — правим его.
+        (Some(o), Some(year), was) if o != case.id && was != Some(year) => {
             if !overwrite {
                 let brief: String = conn
                     .query_row(&statement("case_brief")?, rusqlite::named_params! { ":id": o }, |r| r.get(0))
@@ -1210,6 +1211,21 @@ mod tests {
         assert_eq!((fod(1897), fod(1898)), ("11".to_string(), "12".to_string()));
         let forced = save_case(&conn, &case(new.id, Some(1897), "99"), true).unwrap();
         assert_eq!((forced.id, forced.status.as_str(), fod(1897), fod(1898)), (1, "saved", "99".to_string(), "12".to_string()));
+
+        // Второе дело того же года (импорт с разными номерами дел, п. 94):
+        // его реквизиты правятся на месте, без вопроса о первом деле.
+        conn.execute("UPDATE mk_case SET year = 1897 WHERE id = ?1", [new.id]).unwrap();
+        let second = save_case(&conn, &case(new.id, Some(1897), "13"), false).unwrap();
+        assert_eq!((second.id, second.status.as_str()), (new.id, "saved"));
+        let delos: String = conn.query_row("SELECT group_concat(delo, ' ') FROM (SELECT delo FROM mk_case WHERE year = 1897 ORDER BY id)",
+                                           [], |r| r.get(0)).unwrap();
+        assert_eq!(delos, "99 13", "первое дело года не тронуто");
+        // Выбор в списке «Дело» открывает именно это дело (`case_by_id`
+        // исполняет настоящий rusqlite, ревьюер 28.10.2026).
+        let picked: (String, i64) = conn.query_row(&statement("case_by_id").unwrap(), rusqlite::named_params! { ":id": new.id },
+                                                   |r| Ok((r.get(4)?, r.get(9)?))).unwrap();
+        assert_eq!(picked, ("13".to_string(), 1897));
+        conn.execute("UPDATE mk_case SET year = 1898, delo = '12' WHERE id = ?1", [new.id]).unwrap();
 
         // Пустой год уходит, год с записями и последнее дело — нет.
         save_case(&conn, &case(1, Some(1987), "1"), false).unwrap();
