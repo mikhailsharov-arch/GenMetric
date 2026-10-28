@@ -898,15 +898,15 @@ def run(driver, wait, archive):
     others = [h for h in driver.window_handles if h != main_handle]
     if others:
         driver.switch_to.window(others[0])
-        shown = lambda: driver.execute_script(
+        scan_shown = lambda: driver.execute_script(
             "const p = document.querySelector('[data-scan]'); return p ? p.getAttribute('data-scan-loaded') : null;")
-        check("окно скана показывает картинку с диска", wait_for(lambda: bool(shown()), 20),
-              f"{shown()!r}, беда: {driver.execute_script('const p = document.querySelector(\'[data-scan]\'); return p ? p.getAttribute(\'data-scan-problem\') : null;')!r}")
-        first = shown()
+        check("окно скана показывает картинку с диска", wait_for(lambda: bool(scan_shown()), 20),
+              f"{scan_shown()!r}, беда: {driver.execute_script('const p = document.querySelector(\'[data-scan]\'); return p ? p.getAttribute(\'data-scan-problem\') : null;')!r}")
+        first = scan_shown()
         driver.execute_script("document.querySelector('[data-scan-next]').click();")
-        check("кнопка «→» в окне скана листает (через окно программы)", wait_for(lambda: shown() not in (None, first), 20),
-              f"{first!r} → {shown()!r}")
-        now = shown()
+        check("кнопка «→» в окне скана листает (через окно программы)", wait_for(lambda: scan_shown() not in (None, first), 20),
+              f"{first!r} → {scan_shown()!r}")
+        now = scan_shown()
         driver.switch_to.window(main_handle)
         check("окно программы знает, что показано в окне скана",
               wait_for(lambda: driver.execute_script("return document.body.dataset.scanRemote || null;") == now, 10),

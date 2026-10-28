@@ -1751,6 +1751,22 @@ def incident_20261028_mesto_okna_pri_raznom_masshtabe():
           and 'case "key": typeFromScan(a); break;' in scan)
 
 
+def incident_20261028_e2e_peremennaya_perekryla_pomoshchnika():
+    """
+    28.10.2026, сборка bd0b3ff: шаг e2e «скан отдельным окном» завёл в run()
+    переменную shown — и перекрыл помощник модуля shown(driver, xpath).
+    Следующий шаг упал с «takes 0 positional arguments but 2 were given»,
+    сборка не вышла. Локально сценарий не запускается — ловить чтением.
+    """
+    import ast
+    tree = ast.parse(read("scripts/e2e/windows.py"))
+    helpers = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    run_fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run")
+    local = {t.id for n in ast.walk(run_fn) if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    check("в сценарии e2e локальные имена run() не перекрывают его помощники",
+          not (helpers & local), str(sorted(helpers & local)))
+
+
 def incident_20261027_ui_scan_detached_ne_obshchaya():
     """
     27.10.2026, проверка настоящей программы на Mac перед выкладкой: окно
@@ -1920,6 +1936,7 @@ def incident_20261017_semya_celikom_1():
     incident_20261020_otvet_na_sborku_19_10,
     incident_20261027_ui_scan_detached_ne_obshchaya,
     incident_20261028_mesto_okna_pri_raznom_masshtabe,
+    incident_20261028_e2e_peremennaya_perekryla_pomoshchnika,
     incident_20261021_podpis_str_v_e2e,
     incident_20261020_mac_povrezhdeno_i_resizeobserver,
     incident_20261019_oshibki_svyazej,
