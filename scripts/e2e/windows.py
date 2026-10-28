@@ -730,7 +730,10 @@ def run(driver, wait, archive):
               wait_for(lambda: not search_shown()) and driver.execute_script(
                   "const a = document.activeElement; const f = a && a.closest('.field');"
                   "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"),
-              error_details(driver))
+              f"экран «Поиск» открыт: {search_shown()}, курсор: " + str(driver.execute_script(
+                  "const a = document.activeElement; const f = a && a.closest('.field');"
+                  "return [a && a.tagName, f && f.querySelector('label') && f.querySelector('label').textContent.trim(),"
+                  " document.hasFocus()];")) + f" | {error_details(driver)}")
     if search_shown():
         # Не оставлять следующим шагам чужой экран.
         tab(driver, 'Рождения')
@@ -932,6 +935,17 @@ def run(driver, wait, archive):
         check("«Спрятать окно скана» закрывает второе окно", wait_for(lambda: len(driver.window_handles) == 1, 20),
               str(driver.window_handles))
         driver.switch_to.window(main_handle)
+        # Щелчки драйвера фокус системы не двигают: после закрытия окна скана
+        # окно программы на раннере может остаться неактивным, и события
+        # фокуса в нём откладываются. Человек нажимает «Спрятать» в самом окне
+        # программы — оно активно; ставим его наверх тем же путём, что и
+        # программа (`scan_focus_main`).
+        driver.set_script_timeout(20)
+        focus = driver.execute_async_script(
+            "const done = arguments[arguments.length - 1]; const before = document.hasFocus();"
+            "window.__TAURI_INTERNALS__.invoke('scan_focus_main').then("
+            "  () => setTimeout(() => done({before, after: document.hasFocus()}), 500), (e) => done({error: String(e)}));")
+        print(f"  [инфо]   фокус окна программы после окна скана: {focus}")
     geo = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "genmetric-окна.json"
     saved_geo = json.loads(geo.read_text(encoding="utf-8")) if geo.exists() else {}
     check("место окон запомнено в genmetric-окна.json (окно программы и окно скана)",

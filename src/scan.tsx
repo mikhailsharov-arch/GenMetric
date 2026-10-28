@@ -465,7 +465,9 @@ function typeFromScan(item: Typed) {
       if (ch === "\b") document.execCommand("delete");
       else document.execCommand("insertText", false, ch);
     }
-  }).finally(() => { typingPending -= 1; });
+  // Сбой одной вставки — вслух, и очередь идёт дальше: отклонённая цепочка
+  // молча пропустила бы все следующие буквы.
+  }).catch((e) => report("Буква из окна скана не набрана", e)).finally(() => { typingPending -= 1; });
 }
 
 /**
