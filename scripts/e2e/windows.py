@@ -897,7 +897,25 @@ def run(driver, wait, archive):
     driver.execute_script("const b = document.querySelector('[data-scan-window]'); b.scrollIntoView({block: 'center'}); b.click();")
     check("«Скан отдельным окном» создаёт второе окно", wait_for(lambda: len(driver.window_handles) >= 2, 20),
           f"{driver.window_handles} | {error_details(driver)}")
-    others = [h for h in driver.window_handles if h != main_handle]
+    # Окно скана — по содержимому страницы, а не первым чужим окном: у
+    # WebView2 с портом отладки бывают и служебные цели (сборка 41541468999,
+    # 03.11.2026: драйвер встал не туда — блока скана «нет», тот же коммит
+    # на ветке прошёл).
+    def scan_window_handle():
+        for h in [h for h in driver.window_handles if h != main_handle]:
+            try:
+                driver.switch_to.window(h)
+                if driver.execute_script("return !!document.querySelector('[data-scan-window-page]');"):
+                    return h
+            except WebDriverException:
+                pass
+        driver.switch_to.window(main_handle)
+        return None
+    found = []
+    wait_until(lambda: found.append(scan_window_handle()) or found[-1] is not None, 20)
+    print(f"  [инфо]   окна: {driver.window_handles}, окно скана: {found[-1] if found else None}")
+    others = [found[-1]] if found and found[-1] else []
+    check("страница окна скана найдена среди окон WebView2", bool(others), str(driver.window_handles))
     if others:
         driver.switch_to.window(others[0])
         scan_shown = lambda: driver.execute_script(
