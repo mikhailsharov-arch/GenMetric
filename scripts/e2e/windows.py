@@ -1426,6 +1426,19 @@ def feed_file(driver, path):
     file_input.send_keys(str(path))
 
 
+def wait_until(cond, seconds=8):
+    """Ждать условия, а не спать и проверять сразу (п. 108)."""
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            if cond():
+                return True
+        except (NoSuchElementException, StaleElementReferenceException):
+            pass
+        time.sleep(0.2)
+    return bool(cond())
+
+
 def open_parishes(driver, wait):
     """Окно «Приходы» с экрана «Дело»."""
     tab(driver, 'Дело')
@@ -1607,15 +1620,17 @@ def parishes(driver, wait):
     row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово проба']]"
     click(driver, row + "//button[@data-parish-delete-button]")
     click(driver, row + "//button[@data-parish-delete-yes]")
-    time.sleep(1.0)
-    listing = driver.find_element(By.XPATH, PARISH).text
+    # Строки перечня, а не всё окно: название законно стоит в сообщении об удалении.
+    gone = wait_until(lambda: "Николо-Макарово проба" not in driver.find_element(
+        By.XPATH, PARISH + "//table[contains(@class,'parishes')]").text)
+    listing = driver.find_element(By.XPATH, PARISH + "//table[contains(@class,'parishes')]").text
     deleted = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "Удалённые приходы"
     moved = sorted(p.name for p in deleted.glob("*.sqlite")) if deleted.exists() else []
     check("удаление: строки в перечне нет, файл — в «Удалённые приходы»",
-          "Николо-Макарово проба" not in listing and any("удалён" in n for n in moved),
+          gone and any("удалён" in n for n in moved),
           f"{moved} | " + listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
-    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-    time.sleep(0.3)
+    click(driver, PARISH + "//button[starts-with(normalize-space(),'Закрыть')]")
+    wait_until(lambda: not driver.find_elements(By.XPATH, PARISH))
 
     print("\n16. Импорт из Excel-индексатора — настоящим IPC, файл частями")
     fixture = REPO / "db" / "fixtures" / "indexer.xlsx"
