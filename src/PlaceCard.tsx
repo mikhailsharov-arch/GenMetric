@@ -4,7 +4,8 @@ import Modal from "./Modal";
 import Suggest from "./Suggest";
 import { dismissWarn, report, warn } from "./errors";
 import { focusNextField } from "./focus";
-import { capFirst, placeLabel, splitPlaceLabel } from "./names";
+import { capFirst, placeLabel, placeTypeOf, splitPlaceLabel } from "./names";
+import { placeTypes } from "./placetypes";
 
 /**
  * Карточка населённого пункта при первом вводе (Роман, приоритет 2 от
@@ -76,7 +77,11 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   // образцу подсказки: хвост в скобках раскладывается в поле комментария,
   // иначе скобки ушли бы в выгрузку как часть названия (ревьюер 08.10.2026).
   // Скобки — часть названия? Человек сотрёт комментарий и допишет название.
-  const typed = existing ? { name: "", comment: "" } : twin ? { name, comment: "" } : splitPlaceLabel(name);
+  const label = existing ? { name: "", comment: "" } : twin ? { name, comment: "" } : splitPlaceLabel(name);
+  // Тип, набранный приставкой («с.Шишкино»), — в поле «Тип», в названии —
+  // «Шишкино» (Роман 02.11.2026). Тёзке название не меняем.
+  const typedType = !existing && !twin ? placeTypeOf(label.name, placeTypes()) : null;
+  const typed = typedType ? { name: typedType.name, comment: label.comment } : label;
   const [title, setTitle] = useState(existing?.clean ?? existing?.name ?? typed.name);
   const [commentRaw, setComment] = useState(existing?.comment ?? typed.comment);
   // Название — поле и у нового пункта (Роман 16.10.2026: «при первом
@@ -93,7 +98,7 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   // Новый пункт из формы — по последнему пункту, пустое — из дела. Село
   // прихода (карточка с экрана «Дело») — по-прежнему из дела и «с.».
   const prev = !existing && !defaultType ? last : undefined;
-  const [npType, setNpType] = useState(fresh ? defaultType ?? (prev?.np_type || "д.") : existing.np_type ?? "");
+  const [npType, setNpType] = useState(fresh ? typedType?.type ?? defaultType ?? (prev?.np_type || "д.") : existing.np_type ?? "");
   const [guberniya, setGuberniya] = useState(fresh ? prev?.guberniya || defaults.guberniya : existing.guberniya ?? "");
   const [uyezd, setUyezd] = useState(fresh ? prev?.uyezd || defaults.uyezd : existing.uyezd ?? "");
   const [volost, setVolost] = useState(existing && !bare ? existing.volost ?? "" : existing ? "" : lastVolost ?? "");
@@ -132,6 +137,18 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
         warn("Такой пункт уже есть", `«${placeLabel(cleanName, comment)}» уже заведён — впишите другой комментарий`);
         commentField.current?.focus();
         return;
+      }
+      // «с.Шишкино» при уже заведённом «Шишкино»: place_save молча вернул бы
+      // тот пункт, и запись ушла бы к деревне вместо села (ревьюер 02.11.2026).
+      // Тот же тип — это он и есть; другой тип — человек решает сам.
+      if (typedType && !twin) {
+        const known = await invoke<PlaceInfo | null>("place_get", { name: placeLabel(cleanName, comment) });
+        if (known && (known.np_type ?? "") !== npType) {
+          warn("Такой пункт уже есть", `«${placeLabel(cleanName, comment)}» уже заведён с типом «${known.np_type ?? "—"}». `
+            + "Если это он — поправьте тип; если другой пункт — впишите комментарий (чей приход или волость).");
+          commentField.current?.focus();
+          return;
+        }
       }
       if (existing) await invoke("place_update", { id: existing.id, card });
       else await invoke<number>("place_save", { card });

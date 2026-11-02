@@ -726,10 +726,12 @@ def run(driver, wait, archive):
         check("набрали «петр сидоров» — досье с событием «восприемник»",
               got and "восприемник" in text and "Мария" in text, text[:300] or error_details(driver))
         driver.find_element(By.CSS_SELECTOR, "[data-search-query]").send_keys(Keys.ESCAPE)
+        # Курсор возвращается после перерисовки формы — ждём и его, а не
+        # только закрытия экрана: сбой 28.10.2026 (п. 103) был, вероятно, гонкой.
         check("Esc возвращает в форму, в то же поле",
-              wait_for(lambda: not search_shown()) and driver.execute_script(
+              wait_for(lambda: not search_shown() and driver.execute_script(
                   "const a = document.activeElement; const f = a && a.closest('.field');"
-                  "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';"),
+                  "return !!f && f.querySelector('label').textContent.trim() === 'Ребёнок';")),
               f"экран «Поиск» открыт: {search_shown()}, курсор: " + str(driver.execute_script(
                   "const a = document.activeElement; const f = a && a.closest('.field');"
                   "return [a && a.tagName, f && f.querySelector('label') && f.querySelector('label').textContent.trim(),"
@@ -1582,6 +1584,34 @@ def parishes(driver, wait):
     check("в первом приходе — свои четыре рождения 1897 года, «Ксении» из второго нет",
           "Набрано: 4 — за 1897 год" in block and "Ксения" not in block.split("Набрано")[-1],
           block[-300:].replace("\n", " | "))
+
+    print("\n15а. Переименование и удаление прихода (Роман 02.11.2026)")
+    # Удаление переносит файл прихода в «Удалённые приходы»: на Windows
+    # открытый кем-то файл не переносится — это проверяет только настоящая
+    # система. «Николо-Макарово» дальше не нужен.
+    open_parishes(driver, wait)
+    row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово']]"
+    click(driver, row + "//button[@data-parish-rename-button]")
+    renamed = shown(driver, PARISH + "//input[@data-parish-rename]")
+    renamed.send_keys(Keys.CONTROL, "a")
+    renamed.send_keys("Николо-Макарово проба")
+    renamed.send_keys(Keys.ENTER)
+    time.sleep(0.8)
+    listing = driver.find_element(By.XPATH, PARISH).text
+    check("переименование: в перечне «Николо-Макарово проба»", "Николо-Макарово проба" in listing,
+          listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
+    row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово проба']]"
+    click(driver, row + "//button[@data-parish-delete-button]")
+    click(driver, row + "//button[@data-parish-delete-yes]")
+    time.sleep(1.0)
+    listing = driver.find_element(By.XPATH, PARISH).text
+    deleted = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "Удалённые приходы"
+    moved = sorted(p.name for p in deleted.glob("*.sqlite")) if deleted.exists() else []
+    check("удаление: строки в перечне нет, файл — в «Удалённые приходы»",
+          "Николо-Макарово проба" not in listing and any("удалён" in n for n in moved),
+          f"{moved} | " + listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
+    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+    time.sleep(0.3)
 
     print("\n16. Импорт из Excel-индексатора — настоящим IPC, файл частями")
     fixture = REPO / "db" / "fixtures" / "indexer.xlsx"

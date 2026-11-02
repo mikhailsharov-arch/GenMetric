@@ -756,7 +756,19 @@ pub fn import_into(conn: &Connection, bytes: &[u8]) -> Result<ImportReport, Stri
                         w.note = note;
                         let mut p = imp.person(w)?;
                         p.marriage_order = marriage_order;
+                        // «17,5» — половина года (Роман 02.11.2026): годы и
+                        // месяцы тем же разбором, что у смерти, и книжное написание.
                         p.age_years = int(row, c + 5);
+                        if p.age_years.is_none() {
+                            if let Some(raw) = opt(row, c + 5) {
+                                if let Some(a) = crate::age::parse_age(&raw)
+                                    .filter(|a| a.years.is_some() && a.weeks.is_none() && a.days.is_none()) {
+                                    (p.age_years, p.age_months) = (a.years, a.months);
+                                    // Одно написание с формой: «17 лет 3 мес» — «17,25».
+                                    p.age_text = crate::age::years_text(a.years, a.months);
+                                }
+                            }
+                        }
                         persons.push(p);
                     }
                     // Родственник пишется и без имени — как в форме: «отец»
@@ -1366,7 +1378,10 @@ mod tests {
             r
         };
         let births = vec![row("1", "Ф.1 Оп.2 Д.7", "1890", "Нил"), row("2", "Ф.1 Оп.2 Д.7", "1890", "Ия"),
-                          row("3", "Ф.1 Оп.2 Д.7", "1892", "Фома"), row("4", "Ф.1 Оп.2 Д.20", "", "Лука")];
+                          row("3", "Ф.1 Оп.2 Д.7", "1892", "Фома"), row("4", "Ф.1 Оп.2 Д.20", "", "Лука"),
+                          // Ни номера дела, ни года — своего дела не заводит (п. 101,
+                          // ревьюер 28.10.2026): безгодовое дело импорта всегда с номером.
+                          row("5", "", "", "Петр")];
         let sheets = ["Рождения", "Браки", "Смерти"].map(|s| crate::xlsx::SheetRows {
             sheet: s.into(), first_row: 3, rows: if s == "Рождения" { births.clone() } else { vec![] } });
         let bytes = crate::xlsx::fill_template(crate::export::EXCEL_TEMPLATE, &sheets, &[], &[]).unwrap();
@@ -1374,7 +1389,7 @@ mod tests {
         conn.execute_batch("BEGIN").unwrap();
         let rep = import_into(&conn, &bytes).unwrap();
         conn.execute_batch("COMMIT").unwrap();
-        assert_eq!(rep.births, 4, "{rep:?}");
+        assert_eq!(rep.births, 5, "{rep:?}");
         let text = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(text("SELECT group_concat(coalesce(delo, '-') || ':' || coalesce(year, '-'), ' ') FROM (SELECT * FROM mk_case ORDER BY id)"),
                    "7:1890 20:-", "дело 20 — без года: строка 1892 года его не «удочерила»");
@@ -1388,6 +1403,40 @@ mod tests {
         conn.execute_batch("UPDATE mk_case SET delo = NULL WHERE id = 2").unwrap();
         let (case_id, created) = crate::records::case_for_year(&conn, 1894).unwrap();
         assert!(!created && case_id == 2, "дело без номера получило 1894 год: {case_id} {created}");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Возраст жениха «17,5» (Роман 02.11.2026): 17 лет 6 месяцев и книжное
+    /// написание; целый возраст — как раньше, без текста.
+    #[test]
+    fn marriage_half_year_age() {
+        let Some(seed) = seed() else { return };
+        let mk = "Церковь: Никольская Село: Никольское Уезд: Тестовский Губерния: Тестовская";
+        let mut r = vec![None; 30];
+        for (c, v) in [(1usize, "1"), (2, "ГА"), (3, "Ф.1 Оп.2 Д.7"), (4, mk), (5, "1890"), (7, "5"), (8, "1"),
+                       (10, "03.05.1890"), (15, "Иван Петров Кузнецов"), (18, "17,5"),
+                       (21, "Мария Иванова"), (24, "19")] {
+            r[c - 1] = Some(v.to_string());
+        }
+        let sheets = ["Рождения", "Браки", "Смерти"].map(|s| crate::xlsx::SheetRows {
+            sheet: s.into(), first_row: 3, rows: if s == "Браки" { vec![r.clone()] } else { vec![] } });
+        let bytes = crate::xlsx::fill_template(crate::export::EXCEL_TEMPLATE, &sheets, &[], &[]).unwrap();
+        let (path, conn) = fresh("half-age", &seed);
+        conn.execute_batch("BEGIN").unwrap();
+        let rep = import_into(&conn, &bytes).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(rep.marriages, 1, "{rep:?}");
+        let age = |role: &str| -> String {
+            conn.query_row("SELECT coalesce(age_years, '-') || '|' || coalesce(age_months, '-') || '|' || coalesce(age_text, '-') \
+                            FROM person_mention WHERE role_code = ?1", [role], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(age("groom"), "17|6|17,5");
+        assert_eq!(age("bride"), "19|-|-");
+        // Выгрузка в Excel — как в книге: «17,5».
+        let (back, _) = crate::export::excel_bytes(&conn).unwrap();
+        let rows = crate::xlsx::read_sheet(&back, "Браки").unwrap();
+        assert!(rows.values().any(|row| row.values().any(|v| v == "17,5")), "«17,5» в выгрузке Excel");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

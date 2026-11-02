@@ -62,7 +62,6 @@ struct App {
     search_live: std::sync::atomic::AtomicBool,
     /// Ширина окна до включения блока скана — к ней окно возвращается, когда
     /// блок скрывают: ширина и положение левого края (в физических точках).
-    narrow_width: Mutex<Option<(u32, i32)>>,
     data_dir: PathBuf,
     /// База поставки внутри программы: из неё создаётся и обновляется каждый приход.
     bundled: Result<PathBuf, String>,
@@ -1585,6 +1584,10 @@ struct MentionOut {
     marriage_order: Option<String>,
     kinship: Option<String>,
     age_text: Option<String>,
+    /// Месяцы к годам жениха и невесты («17,25» из Familio — 17 лет 3 мес):
+    /// форма собирает из них книжное написание, иначе правка их теряла
+    /// (проверяющий 02.11.2026).
+    age_months: Option<i64>,
     death_cause: Option<String>,
 }
 
@@ -1629,7 +1632,7 @@ fn entry_load(app: State<App>, id: i64) -> Result<EntryFull, String> {
                     first_name: r.get(3)?, patronymic: r.get(4)?, gender: r.get(9)?,
                     rank: r.get(10)?, confession: r.get(11)?, place: r.get(12)?, note: r.get(13)?,
                     age_years: r.get(15)?, marriage_order: r.get(16)?, kinship: r.get(17)?,
-                    age_text: r.get(18)?, death_cause: r.get(19)?,
+                    age_text: r.get(18)?, death_cause: r.get(19)?, age_months: r.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1921,23 +1924,35 @@ fn scan_remember(app: State<App>, year: Option<i64>, file: String) -> Result<(),
 /// выключили — возвращается к прежней ширине. Окно, которое человек уже сам
 /// сделал широким, не трогаем.
 #[tauri::command]
-fn scan_window(window: tauri::Window, app: State<App>, on: bool) -> Result<(), String> {
+fn scan_window(window: tauri::Window, wins: State<windows::Windows>, on: bool) -> Result<(), String> {
     let e = |e: tauri::Error| e.to_string();
     let inner = window.inner_size().map_err(e)?;
     let scale = window.scale_factor().map_err(e)?;
-    let mut saved = app.narrow_width.lock().unwrap_or_else(|p| p.into_inner());
     // Развёрнутое на весь экран окно не трогаем ни в какую сторону.
     if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
         if !on {
-            saved.take();
+            wins.set_narrow(None);
         }
         return Ok(());
     }
     if !on {
-        if let Some((width, x)) = saved.take() {
+        // Узкая ширина помнится и после перезапуска (ревьюер 28.10.2026, п. 97).
+        // Хранится в логических точках: после перезапуска на мониторе другого
+        // масштаба ширина та же (ревьюер 02.11.2026).
+        if let Some((w, x)) = wins.narrow() {
+            wins.set_narrow(None);
+            let (width, x) = ((w as f64 * scale).round() as u32, (x as f64 * scale).round() as i32);
             window.set_size(tauri::PhysicalSize::new(width, inner.height)).map_err(e)?;
             let pos = window.outer_position().map_err(e)?;
-            window.set_position(tauri::PhysicalPosition::new(x, pos.y)).map_err(e)?;
+            // Прежний левый край — на мониторе, которого уже нет: окно не уводим
+            // за экран, оставляем где стоит.
+            let on_monitor = window.current_monitor().ok().flatten().is_some_and(|m| {
+                let a = m.work_area();
+                x >= a.position.x && x < a.position.x + a.size.width as i32
+            });
+            if on_monitor {
+                window.set_position(tauri::PhysicalPosition::new(x, pos.y)).map_err(e)?;
+            }
         }
         return Ok(());
     }
@@ -1953,7 +1968,7 @@ fn scan_window(window: tauri::Window, app: State<App>, on: bool) -> Result<(), S
         return Ok(());
     }
     let pos = window.outer_position().map_err(e)?;
-    *saved = Some((inner.width, pos.x));
+    wins.set_narrow(Some(((inner.width as f64 / scale).round() as u32, (pos.x as f64 / scale).round() as i32)));
     window.set_size(tauri::PhysicalSize::new(width, inner.height)).map_err(e)?;
     // Не уходить за правый край экрана: сдвигаем окно влево, сколько нужно.
     let right = area.position.x + area.size.width as i32;
@@ -2037,6 +2052,31 @@ fn parish_create(app: State<App>, window: tauri::Window, name: String) -> Result
         msg
     })?;
     switch_parish(&app, &window, id)
+}
+
+/// Переименовать приход. Открытый — сразу и в заголовке окна.
+#[tauri::command]
+fn parish_rename(app: State<App>, window: tauri::Window, id: i64, name: String) -> Result<String, String> {
+    let name = parish::rename(&app.data_dir, id, &name)?;
+    let mut current = app.parish.lock().unwrap_or_else(|p| p.into_inner());
+    if current.0 == id {
+        current.1 = name.clone();
+        let _ = window.set_title(&window_title(&name));
+    }
+    write_log(&app.log_path, &format!("Приход {id} переименован: «{name}»"));
+    Ok(name)
+}
+
+/// Удалить приход: файл — в папку «Удалённые приходы», строка — из перечня.
+#[tauri::command]
+fn parish_delete(app: State<App>, id: i64) -> Result<String, String> {
+    if app.parish.lock().map(|p| p.0 == id).unwrap_or(false) {
+        return Err("открытый приход не удаляется — сначала откройте другой".into());
+    }
+    let kept = parish::remove(&app.data_dir, id)?;
+    write_log(&app.log_path, &format!("Приход {id} удалён из перечня, файл: {}",
+                                       if kept.is_empty() { "не было" } else { &kept }));
+    Ok(kept)
 }
 
 // ----------------------------------------------------------------------------
@@ -2322,7 +2362,6 @@ fn main() {
                 died: Mutex::new(None),
                 search_busy: std::sync::atomic::AtomicBool::new(false),
                 search_live: std::sync::atomic::AtomicBool::new(false),
-                narrow_width: Mutex::new(None),
                 data_dir,
                 bundled,
                 log_path,
@@ -2421,6 +2460,8 @@ fn main() {
             parish_list,
             parish_open,
             parish_create,
+            parish_rename,
+            parish_delete,
             import_chunk,
             import_inspect,
             import_run,

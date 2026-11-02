@@ -115,6 +115,15 @@ pub fn parse_age(text: &str) -> Option<Age> {
     single(&t).or_else(|| compound(&t))
 }
 
+/// Возраст жениха и невесты книжным написанием из лет и месяцев: 17 и 6 —
+/// «17,5», 17 и 3 — «17,25»; без месяцев — `None` (годы — числом). Копия —
+/// `yearsText` в `src/MarriageForm.tsx`; обратно разбирает `parse_age`.
+pub fn years_text(years: Option<i64>, months: Option<i64>) -> Option<String> {
+    let (y, m) = (years?, months.filter(|m| (1..12).contains(m))?);
+    let frac = format!("{:.2}", m as f64 / 12.0);
+    Some(format!("{y},{}", frac[2..].trim_end_matches('0')))
+}
+
 /// Одна часть: «5», «75 лет», «1,5 мес», «3 мес.».
 fn single(t: &[char]) -> Option<Age> {
     let (whole, mut rest) = number(t)?;
@@ -169,6 +178,18 @@ fn single(t: &[char]) -> Option<Age> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn years_text_round_trip() {
+        for m in 1..12 {
+            let t = years_text(Some(17), Some(m)).unwrap();
+            assert_eq!(parse_age(&t).and_then(|a| a.months), Some(m), "{t}");
+        }
+        assert_eq!(years_text(Some(17), Some(6)).as_deref(), Some("17,5"));
+        assert_eq!(years_text(Some(17), Some(3)).as_deref(), Some("17,25"));
+        assert_eq!(years_text(Some(17), None), None);
+        assert_eq!(years_text(Some(17), Some(0)), None);
+    }
 
     fn a(y: Option<i64>, m: Option<i64>, w: Option<i64>, d: Option<i64>) -> Option<Age> {
         Some(Age { years: y, months: m, weeks: w, days: d })

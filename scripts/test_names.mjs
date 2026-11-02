@@ -1,6 +1,6 @@
 // Заглавные буквы в ИОФ и слово «имени нет» — src/names.ts. Запуск:
 //   node --experimental-strip-types scripts/test_names.mjs
-import { feminineSurname, maskFragment, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel, stripPlaceType, dayMonth } from "../src/names.ts";
+import { feminineSurname, maskFragment, onlyFeminineOf, rankForRole, noNameWord, showNoName, titleCase, capFirst, placeCase, NP_TYPES, placeLabel, splitPlaceLabel, stripPlaceType, placeTypeOf, dayMonth } from "../src/names.ts";
 
 let ok = 0, fail = 0;
 function check(input, expected) {
@@ -141,6 +141,20 @@ for (const [text, want] of [
   ["Павел Яготи***", { text: "Павел ***", note: "Отчество или фамилия в документе не читаемы: Яготи" }],
   ["***кея Ва***на", { text: "*** ***", note: "Имя в документе не читаемо: кея; Отчество или фамилия в документе не читаемы: Ва***на" }],
 ]) same(`«${text}»`, JSON.stringify(maskFragment(text)), JSON.stringify(want));
+
+
+// Тип пункта приставкой к названию нового пункта (Роман 02.11.2026).
+for (const [raw, want] of [
+  ["с.Шишкино", "с.|Шишкино"], ["с. Шишкино", "с.|Шишкино"], ["С.Шишкино", "с.|Шишкино"],
+  ["д.Керша", "д.|Керша"], ["дер. Керша", "д.|Керша"], ["сц.Никольское", "с-цо|Никольское"],
+  ["с-цо Никольское", "с-цо|Никольское"], ["погост Никола", "погост|Никола"],
+  ["Погостово", "-"], ["Сычёво", "-"], ["Дубки", "-"], ["с.", "-"], ["х.Ракитин", "-"],
+]) {
+  const got = placeTypeOf(raw, NP_TYPES);
+  same(`тип приставкой: «${raw}»`, got ? `${got.type}|${got.name}` : "-", want);
+}
+const withX = placeTypeOf("х.Ракитин", [...NP_TYPES, "х."]);
+same("тип из пополненного перечня: «х.Ракитин»", withX ? `${withX.type}|${withX.name}` : "-", "х.|Ракитин");
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);

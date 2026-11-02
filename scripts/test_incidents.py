@@ -1748,7 +1748,7 @@ def incident_20261028_mesto_okna_pri_raznom_masshtabe():
     check("клавиши окна скана — очередью, нажатия окна программы ждут её",
           "if (!e.isTrusted || typingPending === 0 || e.altKey) return;" in scan
           and 'if (e.key === "Enter" || e.key === "Tab" || e.key === "Escape") {' in scan
-          and 'case "key": typeFromScan(a); break;' in scan)
+          and 'case "key": typeFromScan({ kind: "key", key: a.key, ctrl: a.ctrl, meta: a.meta, shift: a.shift }, a.at); break;' in scan)
 
 
 def incident_20261028_e2e_peremennaya_perekryla_pomoshchnika():
@@ -1765,6 +1765,47 @@ def incident_20261028_e2e_peremennaya_perekryla_pomoshchnika():
     local = {t.id for n in ast.walk(run_fn) if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
     check("в сценарии e2e локальные имена run() не перекрывают его помощники",
           not (helpers & local), str(sorted(helpers & local)))
+
+
+def incident_20261102_otvet_romana_na_sborku_28_10():
+    """
+    02.11.2026, ответ Романа на сборку 28.10 и долг ревью 28.10: «с.Шишкино»
+    заводился типом «д.» (тип приставкой не разбирался); возраст жениха
+    «17,5» не набирался (целое поле, целое в базе, импорт Excel его терял);
+    буквы из окна скана ставились по приходу, а не по нажатию (п. 99);
+    узкая ширина окна забывалась при выходе (п. 97).
+    """
+    card = read("src/PlaceCard.tsx")
+    check("тип пункта приставкой — в поле «Тип» нового пункта (п. 104)",
+          "placeTypeOf(label.name, placeTypes())" in card and "typedType?.type ?? defaultType" in card
+          and "placeTypeOf(" in read("scripts/test_names.mjs"))
+    mf = read("src/MarriageForm.tsx")
+    check("возраст жениха и невесты — «17,5»: поле с запятой, месяцы и книжное написание (п. 105)",
+          '<AgeYearsField label="Лет"' in mf and "...ageOf(g.age)" in mf and "...ageOf(b.age)" in mf
+          and "age_text: t.includes(\",\") ? t : null" in mf)
+    check("правка записи не теряет месяцы возраста: поле — из лет и месяцев, импорт — тем же написанием (проверяющий 02.11)",
+          "age: ageForField(m) });" in mf and "yearsText(m.age_years, m.age_months)" in mf
+          and "m.age_text, m.death_cause, m.age_months" in read("db/statements.sql")
+          and read("src-tauri/core/src/import_familio.rs").count("crate::age::years_text(p.age_years, p.age_months)") == 2
+          and "crate::age::years_text(a.years, a.months)" in read("src-tauri/core/src/import.rs"))
+    st = read("db/statements.sql")
+    check("выгрузки: Excel — «17,5», Familio — годы и месяцы (п. 105)",
+          st.count("coalesce(g.age_text, g.age_years)") == 1 and st.count("coalesce(b.age_text, b.age_years)") == 1
+          and "g.age_years, g.age_months, NULL, NULL," in st and "b.age_years, b.age_months, NULL, NULL," in st)
+    check("импорт Excel-индексатора читает «17,5» (п. 105)",
+          "fn marriage_half_year_age()" in read("src-tauri/core/src/import.rs")
+          and "crate::age::parse_age(&raw)" in read("src-tauri/core/src/import.rs"))
+    scan = read("src/scan.tsx")
+    check("очередь букв — по времени нажатия (п. 99)",
+          "queue.sort((x, y) => x.at - y.at);" in scan and "return performance.timeOrigin + e.timeStamp;" in scan
+          and "act(typeof item === \"string\" ? { kind: \"type\", text: item, at } : { ...item, at });" in scan)
+    check("узкая ширина окна — в файле мест окон, переживает выход (п. 97)",
+          "wins.set_narrow(Some(((inner.width as f64 / scale).round() as u32, (pos.x as f64 / scale).round() as i32)));" in read("src-tauri/src/main.rs")
+          and "narrow_width" not in read("src-tauri/src/main.rs"))
+    par = read("src-tauri/core/src/parish.rs")
+    check("удаление прихода: файл не стирается — в «Удалённые приходы»; открытый и первый — нельзя",
+          'pub const DELETED_DIR: &str = "Удалённые приходы";' in par and "std::fs::rename(&path, &target)" in par
+          and "if id == current_id(&common)" in par and "if id == 1 {" in par and "std::fs::remove_file" not in par.split("pub fn remove(")[1].split("\n}\n")[0])
 
 
 def incident_20261027_ui_scan_detached_ne_obshchaya():
@@ -1937,6 +1978,7 @@ def incident_20261017_semya_celikom_1():
     incident_20261027_ui_scan_detached_ne_obshchaya,
     incident_20261028_mesto_okna_pri_raznom_masshtabe,
     incident_20261028_e2e_peremennaya_perekryla_pomoshchnika,
+    incident_20261102_otvet_romana_na_sborku_28_10,
     incident_20261021_podpis_str_v_e2e,
     incident_20261020_mac_povrezhdeno_i_resizeobserver,
     incident_20261019_oshibki_svyazej,

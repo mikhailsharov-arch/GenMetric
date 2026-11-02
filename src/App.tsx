@@ -52,6 +52,12 @@ export default function App() {
   const [info, setInfo] = useState<DbInfo | null>(null);
   const [oneColumn, toggleOneColumn] = useOneColumn();
   const [startup, setStartup] = useState<Startup | null>(null);
+  // Открытый приход переименовали в окне «Приходы» — название на «Деле» сразу.
+  useEffect(() => {
+    const on = (e: Event) => setStartup((s) => (s ? { ...s, parish_name: (e as CustomEvent<string>).detail } : s));
+    window.addEventListener("parish-renamed", on);
+    return () => window.removeEventListener("parish-renamed", on);
+  }, []);
   const [lookups, setLookups] = useState<LookupSize[]>([]);
   const [mkCase, setMkCase] = useState<Case | null>(null);
   // Дело — на год книги (02.10.2026): запись другого года уводит работу в

@@ -74,9 +74,10 @@ export type ScanAct =
   | { kind: "pick" }
   | { kind: "back" }
   | { kind: "hide" }
-  | { kind: "type"; text: string }
+  /** `at` — время нажатия по часам машины: очередь ставит по нему (п. 99). */
+  | { kind: "type"; text: string; at?: number }
   /** Enter, Tab, Esc, Ctrl+Enter, нажатые в окне скана, — полю формы. */
-  | { kind: "key"; key: "Enter" | "Tab" | "Escape"; ctrl: boolean; meta: boolean; shift: boolean };
+  | { kind: "key"; key: "Enter" | "Tab" | "Escape"; ctrl: boolean; meta: boolean; shift: boolean; at?: number };
 
 /** Что видно в окне скана: открытый файл и помещается ли лист по ширине
  *  (тогда Alt+← и Alt+→ остаются полю формы). */

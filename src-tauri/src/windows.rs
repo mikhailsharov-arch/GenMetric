@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, Position, Size, WebviewUrl, We
 
 pub const MAIN: &str = "main";
 pub const SCAN: &str = "scan";
+const NARROW: &str = "main-narrow";
 
 /// Место окна: левый верхний угол рамки и размер содержимого. Единицы — те,
 /// в которых координаты у системы общие для всех мониторов (`units`): на
@@ -101,6 +102,24 @@ impl Windows {
         if let Err(e) = result {
             crate::write_log(&self.log, &format!("Место окон не запомнилось ({}): {e}", self.path.display()));
         }
+    }
+
+    /// Ширина и левый край окна программы до того, как его расширили под блок
+    /// скана (логические точки — по масштабу окна): «скрыть» возвращает их и
+    /// после перезапуска (п. 97). Ключ в файле — `main-narrow`.
+    pub fn narrow(&self) -> Option<(u32, i32)> {
+        self.get(NARROW).map(|g| (g.w, g.x))
+    }
+
+    pub fn set_narrow(&self, value: Option<(u32, i32)>) {
+        {
+            let mut all = self.geo.lock().unwrap_or_else(|p| p.into_inner());
+            match value {
+                Some((w, x)) => all.insert(NARROW.to_string(), Geo { x, y: 0, w, h: 0, max: false }),
+                None => all.remove(NARROW),
+            };
+        }
+        self.flush();
     }
 
     /// Программа закрывается (Cmd+Q, выход): окно скана закрывается вместе с

@@ -455,8 +455,12 @@ impl Familio<'_> {
         // фамилии впереди нет (долг п. 82, ревьюер 21.10.2026). Середина —
         // отчество по словарю отчеств, а не по окончанию: «Петрова Улияна
         // Иванова» — «Улияна» оканчивается на «-на», но это имя (п. 96).
+        // Отчества нет в словаре («Прокофьев» у редкого имени) — середина
+        // всё равно отчество, если это мужское книжное «-ов»/«-ев»: имя так не
+        // оканчивается (п. 102, проверяющий 28.10.2026).
         let middle_patr = |s: &mut Self| -> Result<bool, String> {
-            Ok(looks_like_patronymic(&clean(words[1])) && s.is_patronymic(words[1])?)
+            let m = clean(words[1]);
+            Ok(looks_like_patronymic(&m) && (s.is_patronymic(words[1])? || old_masculine_patronymic(&m)))
         };
         if at.is_none() && words.len() >= 3
             && (strong_patronymic(words[last])
@@ -587,6 +591,13 @@ impl Familio<'_> {
             death_cause: None,
         }))
     }
+}
+
+/// Мужское книжное отчество вне словаря («Мелхиседеков»): «-ов», «-ев», «-ёв».
+/// Женские («-ова», «-ева») и «-на» сюда не входят: «Улияна» — имя (п. 96).
+fn old_masculine_patronymic(w: &str) -> bool {
+    let w = w.to_lowercase();
+    ["ов", "ев", "ёв"].iter().any(|e| w.ends_with(e)) && w.chars().count() > 4
 }
 
 /// Отчество без сомнений — по окончанию: «Лаврентьевна», «Дормидонтович»,
@@ -917,23 +928,39 @@ pub fn import_into(conn: &Connection, files: &[(String, Vec<u8>)]) -> Result<Imp
                         let groom = Names { surname: surname(g(18), g(19)), first: g(20), patr: g(21) };
                         if let Some(mut p) = fam.person("groom", 10, groom, Some("М".into()), g(17), g(15), None)? {
                             p.marriage_order = marriage_order(g(22));
-                            p.age_years = n(23);
+                            (p.age_years, p.age_months) = (n(23), n(24));
+                            // «17,5» в колонке лет — половина года (Роман 02.11.2026).
                             if let Some(v) = g(23).filter(|_| n(23).is_none()) {
-                                notes.push(format!("возраст (жених): {v}"));
+                                match crate::age::parse_age(&v).filter(|a| a.years.is_some() && a.weeks.is_none() && a.days.is_none()) {
+                                    Some(a) => (p.age_years, p.age_months) = (a.years, a.months.or(p.age_months)),
+                                    None => notes.push(format!("возраст (жених): {v}")),
+                                }
                             }
+                            // Годы с месяцами — одним написанием с формой («17,25»):
+                            // иначе правка записи теряла месяцы (проверяющий 02.11.2026).
+                            p.age_text = crate::age::years_text(p.age_years, p.age_months);
                             persons.push(p);
                         }
                         let bride = Names { surname: g(37), first: g(38), patr: g(39) };
                         if let Some(mut p) = fam.person("bride", 20, bride, Some("Ж".into()), g(36), g(34), None)? {
                             p.marriage_order = marriage_order(g(40));
-                            p.age_years = n(41);
+                            (p.age_years, p.age_months) = (n(41), n(42));
+                            // «17,5» в колонке лет — половина года (Роман 02.11.2026).
                             if let Some(v) = g(41).filter(|_| n(41).is_none()) {
-                                notes.push(format!("возраст (невеста): {v}"));
+                                match crate::age::parse_age(&v).filter(|a| a.years.is_some() && a.weeks.is_none() && a.days.is_none()) {
+                                    Some(a) => (p.age_years, p.age_months) = (a.years, a.months.or(p.age_months)),
+                                    None => notes.push(format!("возраст (невеста): {v}")),
+                                }
                             }
+                            // Годы с месяцами — одним написанием с формой («17,25»):
+                            // иначе правка записи теряла месяцы (проверяющий 02.11.2026).
+                            p.age_text = crate::age::years_text(p.age_years, p.age_months);
                             persons.push(p);
                         }
                         for (who, c) in [("жених", 24u32), ("невеста", 42)] {
-                            let more = age_text([None, g(c), g(c + 1), g(c + 2)]);
+                            // Месяцы-числом лежат в age_months (02.11.2026); в
+                            // примечание — только то, что числом не стало.
+                            let more = age_text([None, g(c).filter(|_| n(c).is_none()), g(c + 1), g(c + 2)]);
                             if let Some(a) = more {
                                 notes.push(format!("возраст ({who}): {a}"));
                             }
@@ -1420,6 +1447,8 @@ mod tests {
         assert_eq!(split("Евфимиан Артемов Сидоров", false), "Сидоров/Евфимиан/Артемов", "долг п. 82: имя вне словаря, «Имя Отчество Фамилия»");
         assert_eq!(split("Петрова Улияна Иванова", false), "Петрова/Улияна/Иванова", "п. 96: середина на «-на» вне словаря отчеств — имя");
         assert_eq!(split("Евфимиан Артемьев Сидоров", false), "Сидоров/Евфимиан/Артемьев", "п. 96: середина из словаря отчеств — отчество");
+        assert_eq!(split("Хрумзиан Кукуев Сидоров", false), "Сидоров/Хрумзиан/Кукуев",
+                   "п. 102: мужское «-ов» вне словаря отчеств — отчество");
         drop(fam);
         drop(conn);
         let _ = std::fs::remove_file(path);
@@ -1574,6 +1603,28 @@ mod tests {
         };
         crate::records::save_entry(&conn, &entry).unwrap();
         assert_eq!(in_case("Нил"), "7", "правка без смены года дело не меняет");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Возраст жениха «17,5» и невесты «19 лет 3 мес» колонками Familio
+    /// (Роман 02.11.2026): годы, месяцы и одно написание с формой.
+    #[test]
+    fn marriage_ages() {
+        let Some(seed) = seed() else { return };
+        let bytes = file(&[("БРАК", vec![
+            (1, "1"), (2, "ГА"), (3, "56"), (5, "7"), (7, "Тестово"), (9, "Никольская"), (11, "1"),
+            (12, "5"), (13, "1"), (14, "1890"), (18, "Кузнецов"), (20, "Иван"), (21, "Петрович"), (23, "17,5"),
+            (37, "Сидорова"), (38, "Мария"), (39, "Ивановна"), (41, "19"), (42, "3")])]);
+        let (path, conn) = fresh("ages", &seed);
+        import(&conn, &[("m.xlsx".into(), bytes)]);
+        let age = |role: &str| -> String { conn.query_row(
+            "SELECT coalesce(age_years, '-') || '|' || coalesce(age_months, '-') || '|' || coalesce(age_text, '-') \
+               FROM person_mention WHERE role_code = ?1", [role], |r| r.get(0)).unwrap() };
+        assert_eq!(age("groom"), "17|6|17,5");
+        assert_eq!(age("bride"), "19|3|19,25");
+        let note: String = conn.query_row("SELECT coalesce(group_concat(note, ' '), '') FROM entry", [], |r| r.get(0)).unwrap();
+        assert!(!note.contains("возраст"), "в примечание возраст не уходит: {note}");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

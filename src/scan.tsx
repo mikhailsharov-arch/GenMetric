@@ -383,8 +383,8 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       case "pick": s.pickDir(); break;
       case "back": s.back(); break;
       case "hide": s.setOn(false); break;
-      case "type": typeFromScan(a.text); break;
-      case "key": typeFromScan(a); break;
+      case "type": typeFromScan(a.text, a.at); break;
+      case "key": typeFromScan({ kind: "key", key: a.key, ctrl: a.ctrl, meta: a.meta, shift: a.shift }, a.at); break;
     }
   }), []);
 
@@ -399,7 +399,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       if (!item) return;
       e.preventDefault();
       e.stopPropagation();
-      typeFromScan(item);
+      typeFromScan(item, pressedAt(e));
     };
     document.addEventListener("keydown", on, true);
     return () => document.removeEventListener("keydown", on, true);
@@ -416,10 +416,22 @@ const remoteView: ScanView = { loaded: null, fits: true };
  * ответ 1.4: «курсор сам возвращается в форму… и буквы идут туда»). Окно
  * программы встаёт наверх; нажатия идут очередью — ни одно не теряется и не
  * задваивается. Вставка — `insertText`: поле получает обычное событие ввода.
+ *
+ * Порядок — по времени нажатия, а не прихода (п. 99, ревьюер 28.10.2026):
+ * буква из окна скана, дошедшая позже буквы, набранной уже в окне программы,
+ * встаёт перед ней. Время у обоих окон общее (`performance.timeOrigin` — часы
+ * машины); очередь ждёт опоздавших `LATE` мс.
  */
-let typing: Promise<void> = Promise.resolve();
-let typingPending = 0;
+const LATE = 30;
 type Typed = string | Extract<ScanAct, { kind: "key" }>;
+const queue: { item: Typed; at: number }[] = [];
+let typingPending = 0;
+let typingRuns = false;
+
+/** Время нажатия по общим часам машины. */
+export function pressedAt(e: KeyboardEvent): number {
+  return performance.timeOrigin + e.timeStamp;
+}
 
 /** Нажатие, которое окно скана отдаёт форме: буква, Backspace — текстом;
  *  Enter, Tab, Esc (и с Ctrl, Cmd, Shift) — клавишей. Остальное — нет. */
@@ -431,43 +443,65 @@ function keyItem(e: KeyboardEvent): Typed | null {
   return e.key.length === 1 ? e.key : e.key === "Backspace" ? "\b" : null;
 }
 
-function typeFromScan(item: Typed) {
+function typeFromScan(item: Typed, pressed?: number) {
+  const now = performance.timeOrigin + performance.now();
+  // Время из другого окна, ушедшее больше чем на секунду, — часы разошлись:
+  // такое нажатие ставим по приходу.
+  const at = pressed !== undefined && Math.abs(pressed - now) < 1000 ? pressed : now;
   typingPending += 1;
-  typing = typing.then(async () => {
-    if (!document.hasFocus()) {
-      await invoke("scan_focus_main").catch((e) => report("Окно программы не встало наверх", e));
-      await new Promise<void>((done) => {
-        if (document.hasFocus()) { done(); return; }
-        const timer = window.setTimeout(done, 400);
-        window.addEventListener("focus", () => { window.clearTimeout(timer); done(); }, { once: true });
-      });
-    }
-    const el = document.activeElement;
-    if (typeof item !== "string") {
-      // Клавиша — тем же обработчикам, что слушают её в поле: Enter и
-      // Ctrl+Enter (сохранить), Esc. Tab, которого никто не перехватил, —
-      // к следующему полю, как своим ходом.
-      const target = el instanceof HTMLElement && el !== document.body ? el : document.body;
-      const ev = new KeyboardEvent("keydown", { key: item.key, code: item.key, ctrlKey: item.ctrl, metaKey: item.meta,
-                                                shiftKey: item.shift, bubbles: true, cancelable: true });
-      const free = target.dispatchEvent(ev);
-      if (free && item.key === "Tab" && target !== document.body) focusNextField(target, item.shift ? -1 : 1);
-      return;
-    }
-    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || el.readOnly || el.disabled) {
-      // Курсор не в текстовом поле (перечень, кнопка, нигде) — буква не
-      // пропадает молча (проверяющий 28.10.2026).
-      warn("Буква из окна скана не набрана", "Курсор формы стоит не в поле для текста — щёлкните в нужное поле.");
-      return;
-    }
-    el.focus();
-    for (const ch of item) {
-      if (ch === "\b") document.execCommand("delete");
-      else document.execCommand("insertText", false, ch);
-    }
-  // Сбой одной вставки — вслух, и очередь идёт дальше: отклонённая цепочка
-  // молча пропустила бы все следующие буквы.
-  }).catch((e) => report("Буква из окна скана не набрана", e)).finally(() => { typingPending -= 1; });
+  queue.push({ item, at });
+  queue.sort((x, y) => x.at - y.at);
+  if (!typingRuns) void runTyping();
+}
+
+async function runTyping() {
+  typingRuns = true;
+  while (queue.length) {
+    // Не дольше LATE: разошедшиеся часы окон (сон машины, окно скана создано
+    // позже) не должны остановить набор (ревьюер 02.11.2026).
+    const wait = Math.min(LATE, queue[0].at + LATE - (performance.timeOrigin + performance.now()));
+    if (wait > 0) await new Promise((done) => window.setTimeout(done, wait));
+    const next = queue.shift();
+    if (!next) break;
+    // Сбой одной вставки — вслух, и очередь идёт дальше.
+    try { await typeOne(next.item); } catch (e) { report("Буква из окна скана не набрана", e); }
+    finally { typingPending -= 1; }
+  }
+  typingRuns = false;
+}
+
+async function typeOne(item: Typed) {
+  if (!document.hasFocus()) {
+    await invoke("scan_focus_main").catch((e) => report("Окно программы не встало наверх", e));
+    await new Promise<void>((done) => {
+      if (document.hasFocus()) { done(); return; }
+      const timer = window.setTimeout(done, 400);
+      window.addEventListener("focus", () => { window.clearTimeout(timer); done(); }, { once: true });
+    });
+  }
+  const el = document.activeElement;
+  if (typeof item !== "string") {
+    // Клавиша — тем же обработчикам, что слушают её в поле: Enter и
+    // Ctrl+Enter (сохранить), Esc. Tab, которого никто не перехватил, —
+    // к следующему полю, как своим ходом.
+    const target = el instanceof HTMLElement && el !== document.body ? el : document.body;
+    const ev = new KeyboardEvent("keydown", { key: item.key, code: item.key, ctrlKey: item.ctrl, metaKey: item.meta,
+                                              shiftKey: item.shift, bubbles: true, cancelable: true });
+    const free = target.dispatchEvent(ev);
+    if (free && item.key === "Tab" && target !== document.body) focusNextField(target, item.shift ? -1 : 1);
+    return;
+  }
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) || el.readOnly || el.disabled) {
+    // Курсор не в текстовом поле (перечень, кнопка, нигде) — буква не
+    // пропадает молча (проверяющий 28.10.2026).
+    warn("Буква из окна скана не набрана", "Курсор формы стоит не в поле для текста — щёлкните в нужное поле.");
+    return;
+  }
+  el.focus();
+  for (const ch of item) {
+    if (ch === "\b") document.execCommand("delete");
+    else document.execCommand("insertText", false, ch);
+  }
 }
 
 /**
@@ -995,6 +1029,11 @@ export function ScanWindow() {
     const on = (e: KeyboardEvent) => {
       // Номер разворота набирают здесь же.
       if ((e.target as HTMLElement | null)?.matches?.("[data-scan-no]")) return;
+      // Enter на кнопке окна скана — нажать её, а не форме (п. 100,
+      // ревьюер 28.10.2026). Tab с кнопки по-прежнему уходит в форму.
+      // Только кнопки самого скана: пробел остаётся буквой формы, кнопки
+      // полосы ошибок в окне скана — не исключение (ревьюер 02.11.2026).
+      if (e.key === "Enter" && (e.target as HTMLElement | null)?.closest?.("[data-scan] button")) return;
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         const pan = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key];
         if (pan && live.viewer) {
@@ -1013,7 +1052,8 @@ export function ScanWindow() {
       const item = keyItem(e);
       if (item === null) return;
       e.preventDefault();
-      act(typeof item === "string" ? { kind: "type", text: item } : item);
+      const at = pressedAt(e);
+      act(typeof item === "string" ? { kind: "type", text: item, at } : { ...item, at });
     };
     document.addEventListener("keydown", on, true);
     return () => document.removeEventListener("keydown", on, true);

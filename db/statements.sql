@@ -665,7 +665,7 @@ SELECT m.role_code, m.sort_order, m.surname, m.first_name, m.patronymic,
        m.gender, m.rank, m.confession,
        (SELECT p.name FROM place p WHERE p.id = m.place_id) AS place,
        m.note, m.uncertain, m.age_years, m.marriage_order, m.kinship,
-       m.age_text, m.death_cause
+       m.age_text, m.death_cause, m.age_months
   FROM person_mention m
  WHERE m.entry_id = :entry_id
  ORDER BY m.sort_order;
@@ -1533,9 +1533,10 @@ SELECT d.id, d.section,
        NULL,
        g.place, g.rank, nullif(g.iof_doc, ''), g.confession,
        -- «Прим.» жениха у индексатора — «каким браком»; своё примечание — следом.
-       nullif(trim(coalesce(g.marriage_order, '') || coalesce('; ' || g.note_clean, ''), '; '), ''), g.age_years,
+       -- Возраст — как в книге: «17,5» (Роман 02.11.2026), целые — числом.
+       nullif(trim(coalesce(g.marriage_order, '') || coalesce('; ' || g.note_clean, ''), '; '), ''), coalesce(g.age_text, g.age_years),
        b.place, b.rank, nullif(b.iof_doc, ''), b.confession,
-       nullif(trim(coalesce(b.marriage_order, '') || coalesce('; ' || b.note_clean, ''), '; '), ''), b.age_years,
+       nullif(trim(coalesce(b.marriage_order, '') || coalesce('; ' || b.note_clean, ''), '; '), ''), coalesce(b.age_text, b.age_years),
        gr.kinship, nullif(gr.iof_doc, ''), gr.rank, br.kinship, nullif(br.iof_doc, ''), br.rank,
        nullif(w1.iof_doc, ''), w1.place, w1.rank, nullif(trim(coalesce(w1.side, '') || coalesce('; ' || w1.note_clean, ''), '; '), ''),
        nullif(w2.iof_doc, ''), w2.place, w2.rank, nullif(trim(coalesce(w2.side, '') || coalesce('; ' || w2.note_clean, ''), '; '), ''),
@@ -1658,7 +1659,8 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
             WHEN g.marriage_order LIKE 'трет%' OR g.marriage_order LIKE 'Трет%' THEN 3
             WHEN g.marriage_order LIKE 'четв%' OR g.marriage_order LIKE 'Четв%' THEN 4
             ELSE g.marriage_order END,
-       g.age_years, NULL, NULL, NULL,
+       -- «17,5» — 17 лет 6 месяцев: колонки возраста Familio, как у смерти.
+       g.age_years, g.age_months, NULL, NULL,
        gf.place, gf.place_full, gf.rank, gf.surname_base, gf.maiden, gf.first_m, gf.patr_m,
        b.place, b.place_full, b.rank, b.surname_b, b.first_m, b.patr_m,
        CASE WHEN b.marriage_order LIKE 'перв%' OR b.marriage_order LIKE 'Перв%' THEN 1
@@ -1666,7 +1668,7 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
             WHEN b.marriage_order LIKE 'трет%' OR b.marriage_order LIKE 'Трет%' THEN 3
             WHEN b.marriage_order LIKE 'четв%' OR b.marriage_order LIKE 'Четв%' THEN 4
             ELSE b.marriage_order END,
-       b.age_years, NULL, NULL, NULL,
+       b.age_years, b.age_months, NULL, NULL,
        bf.place, bf.place_full, bf.rank, bf.surname_base, bf.maiden, bf.first_m, bf.patr_m,
        w1.rank, w1.place, w1.place_full, nullif(trim(coalesce(w1.surname_b || ' ', '') || coalesce(w1.first_m || ' ', '') || coalesce(w1.patr_m, '')), ''),
        w2.rank, w2.place, w2.place_full, nullif(trim(coalesce(w2.surname_b || ' ', '') || coalesce(w2.first_m || ' ', '') || coalesce(w2.patr_m, '')), ''),

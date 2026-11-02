@@ -203,6 +203,36 @@ export function stripPlaceType(name: string): string {
   return n;
 }
 
+/** Сокращения, которых нет в перечне типов, — к типу из перечня. */
+// «пос.» — не «посад»: обычно это посёлок (проверяющий 02.11.2026).
+const TYPE_ALIASES: Record<string, string> = { "дер.": "д.", "сел.": "с.", "сц.": "с-цо", "с/ц": "с-цо", "хут.": "х." };
+
+/**
+ * Тип пункта, набранный приставкой к названию нового пункта: «с.Шишкино»,
+ * «с. Шишкино», «погост Никола» → тип «с.» и название «Шишкино» (Роман
+ * 02.11.2026: «программа должна распознавать стандартные сокращения… из
+ * строки названия»). Типы — перечень `np_type` (его пополняют), длинные
+ * сначала. Тип-слово («погост») — только с пробелом после: «Погостово» не
+ * тип. Нет приставки или после неё пусто — null.
+ */
+export function placeTypeOf(label: string, types: string[]): { type: string; name: string } | null {
+  const n = label.trim();
+  const low = n.toLowerCase();
+  const all = [...types.map((t) => [t, t] as const), ...Object.entries(TYPE_ALIASES)
+    .filter(([, to]) => types.includes(to))]
+    .sort((a, b) => b[0].length - a[0].length);
+  for (const [prefix, type] of all) {
+    const p = prefix.toLowerCase();
+    if (!low.startsWith(p)) continue;
+    const after = n.slice(p.length);
+    const glued = p.endsWith(".") || p.endsWith("/");
+    if (!glued && !/^\s/.test(after)) continue;
+    const rest = after.trimStart();
+    if (/^[А-ЯЁа-яёA-Za-z]/.test(rest)) return { type, name: rest };
+  }
+  return null;
+}
+
 /**
  * Метка пункта для показа: название и комментарий в скобках на конце — он
  * рисуется серым. Только для экрана: настоящий комментарий лежит в карточке

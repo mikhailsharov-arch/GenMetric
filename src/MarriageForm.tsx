@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { type Parsed, type PersonHint } from "./IofField";
 import PersonBlock, { EMPTY_PERSON, usePlaceRenamed, type Person, nameSurnameNow, nameSurnameOf, appendNote } from "./PersonBlock";
 import NumberField from "./NumberField";
+import AgeYearsField from "./AgeYearsField";
+import { parseAge } from "./age";
 import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import { useFormClergy } from "./clergy";
@@ -46,10 +48,36 @@ const CONFESSION = "православного";
 const FIRST_MARRIAGE = "Первым браком";
 const KIN_DEFAULT = "отец";
 
-type Spouse = Person & { order: string; age: number | null };
+/** Возраст — как в книге: «17», «17,5» (Роман 02.11.2026). */
+type Spouse = Person & { order: string; age: string };
 type Relative = Person & { kinship: string };
 
-const NEW_SPOUSE: Spouse = { ...EMPTY_PERSON, confession: CONFESSION, order: FIRST_MARRIAGE, age: null };
+/** Возраст в годах для базы: целые годы — в `age_years`, половина — месяцами
+ *  (`age_months`, тем же разбором, что у смерти); «17,5» — ещё и книжным
+ *  написанием (`age_text`): его берёт выгрузка в Excel. */
+function ageOf(text: string) {
+  const t = text.trim().replace(/,$/, "");
+  const a = t ? parseAge(t) : null;
+  return { age_years: a?.years ?? null, age_months: a?.months ?? null, age_text: t.includes(",") ? t : null };
+}
+
+/** Годы и месяцы — книжным написанием: 17 и 3 — «17,25». Копия
+ *  `age::years_text` из крейта (правишь одно — правь другое). */
+function yearsText(years: number | null, months: number | null): string | null {
+  if (years === null || months === null || months < 1 || months > 11) return null;
+  return `${years},${(months / 12).toFixed(2).slice(2).replace(/0+$/, "")}`;
+}
+
+/** Возраст в поле «Лет» записи на правке: книжное написание, иначе — из лет
+ *  и месяцев (импорт Familio кладёт их числами), иначе годы. Иначе правка
+ *  теряла месяцы (проверяющий 02.11.2026). */
+function ageForField(m: { age_years: number | null; age_months: number | null; age_text: string | null } | undefined): string {
+  if (!m) return "";
+  if (m.age_text && /^\d{1,3}(,\d{1,2})?$/.test(m.age_text)) return m.age_text;
+  return yearsText(m.age_years, m.age_months) ?? (m.age_years !== null ? String(m.age_years) : "");
+}
+
+const NEW_SPOUSE: Spouse = { ...EMPTY_PERSON, confession: CONFESSION, order: FIRST_MARRIAGE, age: "" };
 const NEW_RELATIVE: Relative = { ...EMPTY_PERSON, kinship: KIN_DEFAULT };
 const SIDES = ["по жениху", "по невесте"] as const;
 // Поручителей по умолчанию четыре, кнопкой — до шести (Роман 27.09.2026:
@@ -83,7 +111,7 @@ type Brief = {
 type MentionOut = {
   role_code: string; surname: string | null; first_name: string | null; patronymic: string | null;
   gender: string | null; rank: string | null; confession: string | null; place: string | null;
-  note: string | null; age_years: number | null; marriage_order: string | null; kinship: string | null;
+  note: string | null; age_years: number | null; age_text: string | null; age_months: number | null; marriage_order: string | null; kinship: string | null;
 };
 type EntryFull = {
   scan_file?: string | null;
@@ -312,8 +340,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
       return;
     }
     const persons: ReturnType<typeof payload>[] = [];
-    if (g.iof.trim()) persons.push(payload("groom", 10, g, { age_years: g.age, marriage_order: g.order.trim() || null }, "М"));
-    if (b.iof.trim()) persons.push(payload("bride", 20, b, { age_years: b.age, marriage_order: b.order.trim() || null }, "Ж"));
+    if (g.iof.trim()) persons.push(payload("groom", 10, g, { ...ageOf(g.age), marriage_order: g.order.trim() || null }, "М"));
+    if (b.iof.trim()) persons.push(payload("bride", 20, b, { ...ageOf(b.age), marriage_order: b.order.trim() || null }, "Ж"));
     // Родственник пишется и без имени: «отец» стоит у всех 180 записей Excel,
     // а имя — лишь у 13–15. Выгрузка в Familio ждёт его в колонке «Отец жениха».
     const rel = (role: string, order: number, r: Relative) => {
@@ -437,7 +465,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
               confession: m.confession ?? "", note: m.note ?? "" } : { ...base, note: "" };
       const by = (role: string) => e.persons.find((m) => m.role_code === role);
       const spouse = (m: MentionOut | undefined): Spouse =>
-        ({ ...person(m, NEW_SPOUSE), order: m?.marriage_order ?? "", age: m?.age_years ?? null });
+        ({ ...person(m, NEW_SPOUSE), order: m?.marriage_order ?? "",
+           age: ageForField(m) });
       const relative = (m: MentionOut | undefined): Relative =>
         ({ ...person(m, EMPTY_PERSON), kinship: m?.kinship ?? "" });
       setPage(e.page);
@@ -523,8 +552,7 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
     <>
       <Suggest label="Брак" kind="marriage_order" value={p.order} browse
                onChange={(order) => set((s) => ({ ...s, order }))} />
-      <NumberField label="Лет" value={p.age} min={1} max={100}
-                   onChange={(age) => set((s) => ({ ...s, age }))} />
+      <AgeYearsField label="Лет" value={p.age} onChange={(age) => set((s) => ({ ...s, age }))} />
     </>
   );
 

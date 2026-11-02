@@ -38,8 +38,8 @@
     node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 75, ошибок 0» (месяц сам: по дню обряда, первая цифра дня, смена года)
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
-    node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 149, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 409, ошибок 0»
+    node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 417, ошибок 0»
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -53,7 +53,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 46 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 49 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -72,7 +72,11 @@ Familio (`import_familio.rs`: колонки по подписям, нескол
 `genmetric-общее.sqlite` (схема — `db/common.sql`) хранит перечень приходов,
 настройки окна и общие справочники; сверка — `db/parish_sync.sql` (его же
 гоняет `db/test_parish.py`). Дело — на год книги: к делу своего года запись
-привязывает `records::save_entry`, не форма.
+привязывает `records::save_entry`, не форма. С 02.11.2026 приход
+переименовывается (`parish::rename` — только название в перечне) и
+удаляется (`parish::remove`): файл не стирается, а уходит в папку
+«Удалённые приходы» рядом с папкой данных — не в «приходы», иначе сборка
+перечня по папке вернула бы его. Открытый и первый приход не удаляются.
 
 **Импорт из Excel** проверяется синтетическим индексатором
 `db/fixtures/indexer.xlsx` (собирает `python3 scripts/make_indexer_fixture.py`,

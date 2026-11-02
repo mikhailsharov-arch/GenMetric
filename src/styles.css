@@ -700,6 +700,11 @@ button.toggle.small { width: auto; padding: 0.15em 0.7em; font-size: 0.82rem; }
 /* Кнопка не переносит слово: «Откр / ыть» в перечне приходов (снимок Романа). */
 button.toggle { white-space: nowrap; }
 .facts.parishes td:last-child { white-space: nowrap; padding-left: 0.6em; }
+/* Подтверждение удаления прихода — текстом, в несколько строк (02.11.2026). */
+.facts.parishes td [data-parish-confirm] { display: block; white-space: normal; max-width: 18em; text-align: left; }
+.facts.parishes td input[data-parish-rename] { width: 100%; font-weight: 600; }
+.facts.parishes .parishopen { color: var(--muted); margin-right: 0.3em; }
+.toggle.danger { border-color: #c0392b; color: #c0392b; }
 /* Смена прихода — важное действие: строка крупнее и выделена. */
 .parishrow.main {
   font-size: 1rem; padding: 0.45em 0.7em; margin-bottom: 0.5em;

@@ -47,8 +47,8 @@ pub struct ParishRow {
     pub opened_at: Option<String>,
     /// Число записей; None — файл не читается.
     pub entries: Option<i64>,
-    /// Файл убрали руками: удаления в программе нет, приход остаётся в
-    /// перечне с пометкой «файл не найден».
+    /// Файл убрали руками (не кнопкой «Удалить»): приход остаётся в перечне
+    /// с пометкой «файл не найден», «Удалить» убирает и такую строку.
     pub missing: bool,
     pub current: bool,
     /// Имя файла Excel, из которого приход импортирован.
@@ -467,6 +467,70 @@ pub fn replace(dir: &Path, old_id: i64, new_id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Папка удалённых приходов — рядом с папкой данных, не в «приходы»: файлы
+/// оттуда не возвращаются в перечень сами (сборка перечня по папке).
+pub const DELETED_DIR: &str = "Удалённые приходы";
+
+/// Переименовать приход (Роман 02.11.2026: «переименовывать существующие»).
+/// Меняется только название в перечне; файл прихода остаётся тем же.
+/// Правила названия — те же, что у нового прихода.
+pub fn rename(dir: &Path, id: i64, name: &str) -> Result<String, String> {
+    let name = check_name(dir, name, Some(id))?;
+    let common = open_common(dir)?;
+    let n = common.execute("UPDATE parish SET name = ?2 WHERE id = ?1", rusqlite::params![id, name]).map_err(s)?;
+    if n == 0 {
+        return Err("такого прихода в перечне нет".into());
+    }
+    Ok(name)
+}
+
+/// Удалить приход из перечня (Роман 02.11.2026: «удалять ненужные приходы» —
+/// тестовые и пробные). Файл не стирается: уходит в папку «Удалённые
+/// приходы» с отметкой времени — вернуть можно руками. Открытый приход и
+/// первый (с ним программа запускается впервые) не удаляются. Возвращает
+/// путь, куда ушёл файл (пусто — файла и не было).
+pub fn remove(dir: &Path, id: i64) -> Result<String, String> {
+    if id == 1 {
+        return Err("первый приход программы не удаляется — его можно переименовать".into());
+    }
+    let common = open_common(dir)?;
+    if id == current_id(&common) {
+        return Err("открытый приход не удаляется — сначала откройте другой".into());
+    }
+    let file: String = common
+        .query_row("SELECT file FROM parish WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+        .map_err(s)?
+        .ok_or("такого прихода в перечне нет")?;
+    let path = dir.join(&file);
+    let mut kept = String::new();
+    if path.exists() {
+        let to_dir = dir.join(DELETED_DIR);
+        std::fs::create_dir_all(&to_dir).map_err(|e| format!("папка «{DELETED_DIR}» не создана: {e}"))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let stem = path.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+        let target = to_dir.join(format!("{stem}-удалён-{stamp}.sqlite"));
+        std::fs::rename(&path, &target).map_err(|e| format!("файл прихода не перенесён: {e}"))?;
+        kept = target.to_string_lossy().to_string();
+        // Хвосты WAL — вместе с файлом, иначе последние записи остались бы
+        // позади, а новый приход с тем же номером получил бы чужой -wal.
+        // Не перенёсся — пусть человек и журнал об этом узнают.
+        for tail in ["-wal", "-shm"] {
+            let from = PathBuf::from(format!("{}{tail}", path.display()));
+            if from.exists() {
+                if let Err(e) = std::fs::rename(&from, PathBuf::from(format!("{}{tail}", target.display()))) {
+                    kept.push_str(&format!(" (файл {} не перенесён: {e})", from.display()));
+                }
+            }
+        }
+    }
+    common.execute("DELETE FROM parish WHERE id = ?1", [id]).map_err(s)?;
+    Ok(kept)
+}
+
 // ----------------------------------------------------------------------------
 //  Настройки: окно — в общем файле, остальное — в приходе
 // ----------------------------------------------------------------------------
@@ -563,6 +627,22 @@ mod tests {
             .filter(|n| n.ends_with("-wal") || n.ends_with("-shm"))
             .collect();
         assert!(left.is_empty(), "после перечня остались: {left:?}");
+
+        // Переименование и удаление (Роман 02.11.2026).
+        assert_eq!(rename(&dir, id, "  Николо-Макарово   новое ").unwrap(), "Николо-Макарово новое");
+        assert!(rename(&dir, id, "борисоглебское").is_err(), "занятое название");
+        assert!(rename(&dir, id, " ").is_err(), "пустое название");
+        assert!(remove(&dir, id).is_err(), "открытый приход не удаляется");
+        assert!(remove(&dir, 1).is_err(), "первый приход не удаляется");
+        let spare = create(&dir, &seed, "Пробный").unwrap();
+        let spare_file = list(&dir).unwrap().into_iter().find(|r| r.id == spare).unwrap().file;
+        // create открыл новый приход — делаем открытым прежний.
+        open(&dir, &seed, id).unwrap();
+        let kept = remove(&dir, spare).unwrap();
+        assert!(kept.contains(DELETED_DIR) && Path::new(&kept).exists() && !dir.join(&spare_file).exists(), "{kept}");
+        assert!(!list(&dir).unwrap().iter().any(|r| r.id == spare), "строки в перечне нет");
+        assert!(list(&dir).unwrap().iter().any(|r| r.id == id && r.name == "Николо-Макарово новое"));
+        rename(&dir, id, "Николо-Макарово").unwrap();
 
         // Запуск открывает последний; пропавший файл — первый с предупреждением.
         assert_eq!(open_current(&dir, &seed).unwrap().id, 2);
