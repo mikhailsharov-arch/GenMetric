@@ -63,6 +63,9 @@ export type ScanSync = {
   index: number;
   away: "edit" | "link" | null;
   keepPlace: boolean;
+  /** Вид листов, когда в папке и картинки, и PDF (спринт 2 от 03.11.2026). */
+  kind: "images" | "pdf" | null;
+  bad: Record<string, string>;
 };
 
 /** Действие человека в окне скана. */
@@ -71,6 +74,8 @@ export type ScanAct =
   | { kind: "step"; by: 1 | -1 }
   | { kind: "goto"; index: number }
   | { kind: "keep"; on: boolean }
+  /** Переключатель «картинки / PDF». */
+  | { kind: "sheets"; value: "images" | "pdf" }
   | { kind: "pick" }
   | { kind: "back" }
   | { kind: "hide" }

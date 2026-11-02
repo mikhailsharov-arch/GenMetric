@@ -327,8 +327,7 @@ def run(driver, wait, archive):
     not_patr = driver.find_elements(By.XPATH, "//div[contains(@class,'modal')]//button[normalize-space()='Это не отчество']")
     if not_patr:
         not_patr[0].click()
-        time.sleep(0.5)
-    check("после причта окон сверки нет", not driver.find_elements(By.CSS_SELECTOR, ".modal"))
+    check("после причта окон сверки нет", wait_until(lambda: not driver.find_elements(By.CSS_SELECTOR, ".modal"), 5))
     # Пол приходит асинхронно (parse_iof). Нажать «Сохранить» раньше —
     # форма попросит выбрать пол и не сохранит. Ждём метку «Ж» под полем.
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
@@ -690,11 +689,9 @@ def run(driver, wait, archive):
             "const s = document.querySelector('[data-search]'); return !!s && s.offsetParent !== null;"))
 
     def wait_for(cond, seconds=8):
-        for _ in range(int(seconds / 0.2)):
-            if cond():
-                return True
-            time.sleep(0.2)
-        return cond()
+        # Тот же помощник, что у остальных шагов (п. 108): элемент, пропавший
+        # на перерисовке, — не провал сценария, а «ещё не готово».
+        return wait_until(cond, seconds)
 
     start = field(driver, "Ребёнок")
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].focus();", start)
@@ -952,6 +949,7 @@ def run(driver, wait, archive):
     saved_geo = json.loads(geo.read_text(encoding="utf-8")) if geo.exists() else {}
     check("место окон запомнено в genmetric-окна.json (окно программы и окно скана)",
           "main" in saved_geo and "scan" in saved_geo, f"{geo}: {saved_geo}")
+    pdf_tiff_scans(driver, scans.parent, scan_attr)
     tab(driver, 'Рождения')
     shutil.rmtree(scans.parent, ignore_errors=True)
 
@@ -959,17 +957,135 @@ def run(driver, wait, archive):
     # С 08.10.2026 переключатель стоит на экране «Дело» и включён, пока его
     # явно не выключили (Роман 07.10.2026).
     tab(driver, 'Дело')
-    time.sleep(0.5)
-    on = driver.execute_script("return document.documentElement.classList.contains('onecol')")
-    pressed = shown(driver, "//button[@data-onecol]").get_attribute("aria-pressed")
+    onecol = lambda: (driver.execute_script("return document.documentElement.classList.contains('onecol')"),
+                      shown(driver, "//button[@data-onecol]").get_attribute("aria-pressed"))
+    wait_until(lambda: onecol() == (True, "true"), 5)
+    on, pressed = onecol()
     check("изначально включено: форма в один столбец", bool(on) and pressed == "true",
           f"класс {on}, кнопка «{pressed}» | {error_details(driver)}")
     click(driver, "//button[@data-onecol]")
-    time.sleep(0.8)
-    on = driver.execute_script("return document.documentElement.classList.contains('onecol')")
-    pressed = shown(driver, "//button[@data-onecol]").get_attribute("aria-pressed")
+    wait_until(lambda: onecol() == (False, "false"), 5)
+    on, pressed = onecol()
     check("выключили: плотная раскладка", not on and pressed == "false",
           f"класс {on}, кнопка «{pressed}» | {error_details(driver)}")
+
+
+def sample_pdf(jpeg):
+    """PDF «как у архива» (спринт 2 от 03.11.2026): страница 1 и 3 — по одной
+    картинке JPEG, страница 2 — без картинки."""
+    def image():
+        return (b"<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8"
+                b" /Filter /DCTDecode /Length " + str(len(jpeg)).encode() + b" >>\nstream\n" + jpeg + b"\nendstream")
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Count 3 /Kids [3 0 R 5 0 R 6 0 R] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /XObject << /I0 4 0 R >> >> >>",
+        image(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /XObject << /I0 7 0 R >> >> >>",
+        image(),
+    ]
+    out = b"%PDF-1.4\n"
+    offs = []
+    for k, body in enumerate(objs):
+        offs.append(len(out))
+        out += f"{k + 1} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010} 00000 n \n".encode() for o in offs)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+def bilevel_tiff(w=64, h=48):
+    """TIFF в 1 бит без сжатия, белый — ноль (как у сканера Романа): рамка."""
+    import struct
+    stride = (w + 7) // 8
+    rows = bytearray(stride * h)
+    for y in range(h):
+        for x in range(w):
+            if x in (0, w - 1) or y in (0, h - 1) or x == y:
+                rows[y * stride + x // 8] |= 0x80 >> (x % 8)
+    tags = [(256, 4, w), (257, 4, h), (258, 3, 1), (259, 3, 1), (262, 3, 0), (273, 4, 0),
+            (277, 3, 1), (278, 4, h), (279, 4, len(rows))]
+    data_at = 8 + 2 + len(tags) * 12 + 4
+    out = b"II*\0" + struct.pack("<I", 8) + struct.pack("<H", len(tags))
+    for tag, typ, v in tags:
+        v = data_at if tag == 273 else v
+        out += struct.pack("<HHI", tag, typ, 1) + (struct.pack("<HH", v, 0) if typ == 3 else struct.pack("<I", v))
+    return out + struct.pack("<I", 0) + bytes(rows)
+
+
+def pdf_tiff_scans(driver, root, scan_attr):
+    """5е3. Листы PDF и TIFF (спека 2026-10-20-tiff-i-pdf): их окно само не
+    показывает — байты отдаёт Rust протоколом `scan`. Стенд этого не видит:
+    там картинки лежат готовыми."""
+    print("\n5е3. Сканы TIFF и PDF — протокол scan в настоящем WebView2")
+    folder = root / "дело pdf"
+    folder.mkdir()
+    jpeg = Path(__file__).with_name("scan.jpg").read_bytes()
+    (folder / "дело 1897.pdf").write_bytes(sample_pdf(jpeg))
+    (folder / "лист.tif").write_bytes(bilevel_tiff())
+    tab(driver, 'Дело')
+    wait_until(lambda: bool(driver.find_elements(By.CSS_SELECTOR, "[data-scan-toggle]")))
+    driver.execute_script("window.__pickScanDir = () => arguments[0];", str(folder))
+    # Скан — блоком (после 5е2 он в режиме окна и спрятан).
+    driver.execute_script("const b = document.querySelector('[data-scan-toggle]'); b.scrollIntoView({block: 'center'}); b.click();")
+    wait_until(lambda: scan_attr("data-scan-count") is not None, 10)
+    driver.execute_script("const b = document.querySelector('[data-scan-pick]'); b.scrollIntoView({block: 'center'}); b.click();")
+    check("папка с PDF и TIFF: показаны картинки — один TIFF, переключатель вида на месте",
+          wait_until(lambda: scan_attr("data-scan-count") == "1" and scan_attr("data-scan-kind") == "images", 15),
+          f"листов {scan_attr('data-scan-count')}, вид {scan_attr('data-scan-kind')!r} | {error_details(driver)}")
+    check("TIFF показан в окне (Rust перекодировал его в PNG)",
+          wait_until(lambda: scan_attr("data-scan-loaded") == "лист.tif", 20) and not scan_attr("data-scan-problem"),
+          f"показан: {scan_attr('data-scan-loaded')!r}, беда: {scan_attr('data-scan-problem')!r} | {error_details(driver)}")
+    driver.execute_script("document.querySelector('[data-scan-kind-set=pdf]').click();")
+    check("«PDF» — три листа PDF, первый — «дело 1897.pdf#1»",
+          wait_until(lambda: scan_attr("data-scan-count") == "3" and scan_attr("data-scan-file") == "дело 1897.pdf#1", 15),
+          f"листов {scan_attr('data-scan-count')}, лист {scan_attr('data-scan-file')!r} | {error_details(driver)}")
+    check("страница PDF показана в окне (JPEG из файла, протокол scan)",
+          wait_until(lambda: scan_attr("data-scan-loaded") == "дело 1897.pdf#1", 20) and not scan_attr("data-scan-problem"),
+          f"показан: {scan_attr('data-scan-loaded')!r}, беда: {scan_attr('data-scan-problem')!r} | {error_details(driver)}")
+    check("в полосе блока — «дело 1897.pdf · стр. 1»",
+          "дело 1897.pdf · стр. 1" in driver.execute_script("return document.querySelector('[data-scan] .scanname').textContent;"))
+    driver.execute_script("document.querySelector('[data-scan-next]').click();")
+    check("страница без картинки — пометка «показать не может»",
+          wait_until(lambda: "показать не может" in (scan_attr("data-scan-problem") or ""), 10),
+          f"беда: {scan_attr('data-scan-problem')!r}")
+    driver.execute_script("document.querySelector('[data-scan-next]').click();")
+    check("третья страница показана, пометки нет",
+          wait_until(lambda: scan_attr("data-scan-loaded") == "дело 1897.pdf#3" and not scan_attr("data-scan-problem"), 20),
+          f"показан: {scan_attr('data-scan-loaded')!r}, беда: {scan_attr('data-scan-problem')!r}")
+    def state():
+        return driver.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "window.__TAURI_INTERNALS__.invoke('scan_state', {year: 1897}).then("
+            "  (s) => done({kind: s.kind, files: s.files, bad: Object.keys(s.bad), open: s.open}), (e) => done({error: String(e)}));")
+    # Открытый лист запоминается с задержкой — ждём, а не проверяем сразу (п. 108).
+    wait_until(lambda: state().get("open") == "дело 1897.pdf#3", 10)
+    got = state()
+    check("выбор «PDF» и открытый лист «дело 1897.pdf#3» запомнены у дела (scan_state читает их заново)",
+          got.get("kind") == "pdf" and got.get("files") == ["дело 1897.pdf#1", "дело 1897.pdf#2", "дело 1897.pdf#3"]
+          and got.get("bad") == ["дело 1897.pdf#2"] and got.get("open") == "дело 1897.pdf#3", str(got))
+    # Картинкой, как просмотрщик: img-src разрешает протокол scan, ответ 403 — ошибка загрузки.
+    blocked = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1]; const img = new Image();"
+        "img.onload = () => done('показан'); img.onerror = () => done('не отдан');"
+        "img.src = window.__TAURI_INTERNALS__.convertFileSrc(arguments[0], 'scan');",
+        str(folder / "дело 1897.pdf#3"))
+    check("тот же лист картинкой по адресу протокола scan — показан", blocked == "показан", str(blocked))
+    foreign = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1]; const img = new Image();"
+        "img.onload = () => done('показан'); img.onerror = () => done('не отдан');"
+        "img.src = window.__TAURI_INTERNALS__.convertFileSrc(arguments[0], 'scan');",
+        str(root.parent / "чужое.pdf#1"))
+    check("протокол scan не отдаёт файлы чужих папок", foreign == "не отдан", str(foreign))
+    driver.execute_script("document.querySelector('[data-scan-kind-set=images]').click();")
+    check("«картинки» — снова только TIFF",
+          wait_until(lambda: scan_attr("data-scan-count") == "1" and scan_attr("data-scan-kind") == "images", 15),
+          f"листов {scan_attr('data-scan-count')}, вид {scan_attr('data-scan-kind')!r}")
+    driver.execute_script("document.querySelector('[data-scan-hide]').click();")
+    wait_until(lambda: scan_attr("data-scan-count") is None, 10)
 
 
 def print_app_log():
@@ -1047,15 +1163,15 @@ def resumed(driver, wait):
     # «Всегда в столбик», выключенное в конце первого запуска (шаг 5а), так и
     # осталось выключенным: настройка лежит в общем файле приходов и читается
     # через Rust. Без неё форма встала бы в столбик — он включён изначально.
-    time.sleep(1)
     check("выключенное «всегда в столбик» пережило перезапуск",
-          not driver.execute_script("return document.documentElement.classList.contains('onecol')"),
+          wait_until(lambda: not driver.execute_script("return document.documentElement.classList.contains('onecol')"), 5),
           error_details(driver))
     tab(driver, 'Рождения')
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
-    time.sleep(1)
     # Счёт ставится сам, по полу (Роман 08.10.2026): последняя запись —
     # девочка № 7, пол следующего ребёнка ещё не известен — в поле 8.
+    wait_until(lambda: field(driver, "Счёт").get_attribute("value") == "8"
+               and field(driver, "Стр.").get_attribute("value") == "939об-940", 5)
     count = field(driver, "Счёт").get_attribute("value")
     check("счёт продолжен: после девочки № 7 — 8", count == "8", f"«{count}»")
     check("поле «Счёт» вне обхода клавишами", field(driver, "Счёт").get_attribute("tabindex") == "-1")
@@ -1076,7 +1192,7 @@ def resumed(driver, wait):
     fill(driver, "Ребёнок", "Иван")
     child = "//div[contains(@class,'field')][./label[normalize-space()='Ребёнок']]"
     wait.until(EC.text_to_be_present_in_element((By.XPATH, child + "//*[contains(@class,'parsedline')]"), "М"))
-    time.sleep(0.5)
+    wait_until(lambda: field(driver, "Счёт").get_attribute("value") == "1", 5)
     count = field(driver, "Счёт").get_attribute("value")
     check("набрали мальчика — счёт сам стал 1", count == "1", f"«{count}»")
     click(driver, "//button[starts-with(normalize-space(),'Сохранить и следующая')]")
@@ -1088,7 +1204,8 @@ def resumed(driver, wait):
     errorbar = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
     check("вторая запись после перезапуска сохранена", "Набрано: 2" in body, " | ".join(errorbar))
     check("у мальчика «№ м. 1»", "№ м. 1" in body)
-    time.sleep(0.5)  # счёт пересчитывается вслед за списком «Набрано»
+    # Счёт пересчитывается вслед за списком «Набрано».
+    wait_until(lambda: field(driver, "Счёт").get_attribute("value") == "2", 5)
     count = field(driver, "Счёт").get_attribute("value")
     check("после сохранения в поле следующий номер мальчиков — 2", count == "2", f"«{count}»")
 
@@ -1187,11 +1304,11 @@ def resumed(driver, wait):
         # «Найти на Familio» (Роман 03.10.2026): команда идёт через настоящий
         # Rust и открывает браузер системы. Что именно открыто — в журнале.
         click(driver, "//div[contains(@class,'modal')]//button[@data-familio-find]")
-        time.sleep(1.5)
         appdata = os.environ.get("APPDATA", "")
         log = Path(appdata) / "org.genmetric.app" / "genmetric-журнал.txt"
-        journal = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
         want = "https://familio.org/places?title=" + quote("Новодеревенька", safe="")
+        wait_until(lambda: log.exists() and want in log.read_text(encoding="utf-8", errors="replace"), 5)
+        journal = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
         check("«Найти на Familio»: открыт поиск по названию и губернии, ошибки нет",
               want in journal and "georequisites=" + quote("Костромская", safe="") in journal
               and "Familio" not in error_details(driver),
@@ -1265,7 +1382,7 @@ def resumed(driver, wait):
     father = "//section[.//h2[normalize-space()='Отец']]//"
     field(driver, "ИОФ", father).send_keys("Пётр Сидоров")
     field(driver, "ИОФ", father).send_keys(Keys.ESCAPE)
-    time.sleep(0.5)
+    wait_until(lambda: field(driver, "Звание", mother).get_attribute("value") == "законная жена его", 5)
     rank = field(driver, "Звание", mother).get_attribute("value")
     check("набрали отца — у матери «законная жена его»", rank == "законная жена его", f"«{rank}»")
 
@@ -1436,7 +1553,10 @@ def wait_until(cond, seconds=8):
         except (NoSuchElementException, StaleElementReferenceException):
             pass
         time.sleep(0.2)
-    return bool(cond())
+    try:
+        return bool(cond())
+    except (NoSuchElementException, StaleElementReferenceException):
+        return False
 
 
 def open_parishes(driver, wait):
@@ -1487,8 +1607,9 @@ def parishes(driver, wait):
     time.sleep(0.6)
     shown(driver, PARISH + "//input[@data-field]").send_keys("Отказ")
     click(driver, PARISH + "//button[normalize-space()='Создать и открыть']")
-    time.sleep(1.0)
-    refused = " ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".refused"))
+    refusal = lambda: " ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, ".refused"))
+    wait_until(lambda: "Сначала сохраните или очистите набранное" in refusal(), 5)
+    refused = refusal()
     check("с несохранённой записью приход не меняется — программа говорит почему",
           "Сначала сохраните или очистите набранное" in refused, refused or "отказа нет")
     fresh_window(driver, wait)
@@ -1568,6 +1689,7 @@ def parishes(driver, wait):
             break
         driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
         time.sleep(0.3)
+    wait_until(lambda: field(driver, "Год", b).get_attribute("value") == "1891", 5)
     year = field(driver, "Год", b).get_attribute("value")
     page = field(driver, "Стр.", b).get_attribute("value")
     check("кнопка «+» года: 1891 с чистого листа (страница пуста)", year == "1891" and page == "",
@@ -1576,7 +1698,7 @@ def parishes(driver, wait):
     # Год без правки реквизитов и уход из поля — открывает дело этого года.
     fill(driver, "Год книги", "1890")
     field(driver, "Фонд").click()
-    time.sleep(0.8)
+    wait_until(lambda: "Дело за 1890 год" in driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text, 5)
     head = driver.find_element(By.CSS_SELECTOR, "h2.caseyear").text
     delo = field(driver, "Дело").get_attribute("value")
     check("у 1890 года реквизиты прежние — дело не «77»", "Дело за 1890 год" in head and delo != "77",
@@ -1613,7 +1735,7 @@ def parishes(driver, wait):
         "set.call(i, arguments[1]); i.dispatchEvent(new Event('input', {bubbles: true}));", renamed, "Николо-Макарово проба")
     typed = renamed.get_attribute("value")
     click(driver, PARISH + "//button[@data-parish-rename-save]")
-    time.sleep(0.8)
+    wait_until(lambda: "Николо-Макарово проба" in driver.find_element(By.XPATH, PARISH).text, 5)
     listing = driver.find_element(By.XPATH, PARISH).text
     check("переименование: в перечне «Николо-Макарово проба»", "Николо-Макарово проба" in listing,
           f"в поле было «{typed}» | " + listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
@@ -1706,8 +1828,8 @@ def parishes(driver, wait):
             if not modals:
                 break
             modals[0].send_keys(Keys.ESCAPE)
-            time.sleep(0.5)
-        check("окно сверки имени закрыто", not driver.find_elements(By.CSS_SELECTOR, ".modal"))
+            wait_until(lambda: not driver.find_elements(By.CSS_SELECTOR, ".modal"), 1)
+        check("окно сверки имени закрыто", wait_until(lambda: not driver.find_elements(By.CSS_SELECTOR, ".modal"), 3))
         click(driver, "//div[contains(@class,'birth')]//div[contains(@class,'editbar')]//button[normalize-space()='Отменить']")
         time.sleep(0.5)
     tab(driver, 'Дело')
@@ -1728,7 +1850,7 @@ def parishes(driver, wait):
           f"год «{year}» | " + block[-300:].replace("\n", " | "))
     # Подсказки «прогреты»: отец из импорта подсказывается с местом и званием.
     field(driver, "ИОФ", father).send_keys("Иван Сем")
-    time.sleep(1.2)
+    wait_until(lambda: "Иван Семенов" in driver.find_element(By.CSS_SELECTOR, ".birth").text, 5)
     hints = driver.find_element(By.CSS_SELECTOR, ".birth").text
     check("персона из импорта подсказывается", "Иван Семенов" in hints, hints[:300].replace("\n", " | "))
     field(driver, "ИОФ", father).send_keys(Keys.ESCAPE)
@@ -1920,8 +2042,7 @@ def exported_path(driver, wait, kind, reveal=False):
             bars = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".errorbar")]
             check("«Показать в папке» отработала без ошибки", not bars, " | ".join(bars))
         click(driver, box + "//button[normalize-space()='ОК']")
-        time.sleep(0.4)
-        check("окно итога выгрузки закрылось", not driver.find_elements(By.XPATH, box))
+        check("окно итога выгрузки закрылось", wait_until(lambda: not driver.find_elements(By.XPATH, box), 5))
     return path if path and Path(path).is_file() else None
 
 

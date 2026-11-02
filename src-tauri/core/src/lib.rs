@@ -11,10 +11,12 @@ pub mod export;
 pub mod import;
 pub mod import_familio;
 pub mod parish;
+pub mod pdf;
 pub mod records;
 pub mod scans;
 pub mod search;
 pub mod text;
+pub mod tiff_png;
 pub mod xlsx;
 
 /// Запросы записи и чтения. Тот же файл читает тест db/test_entry.py —

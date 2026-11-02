@@ -1072,6 +1072,8 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
 }
 .scanname b { color: var(--ink); font-weight: 600; }
 .scantools { display: flex; gap: 0.3em; flex-wrap: wrap; }
+/* Картинки или листы PDF — только когда в папке есть и то и другое (03.11.2026). */
+.scankind { display: flex; gap: 0.15em; }
 /* Номер разворота — поле: набрали и Enter (Роман 12.10.2026). */
 .scanno {
   width: 3.2em; padding: 0.05em 0.25em; margin-right: 0.15em;

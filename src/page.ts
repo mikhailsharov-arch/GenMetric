@@ -91,3 +91,28 @@ export function panStep(repeat: boolean, heldMs: number): number {
   const t = Math.min(Math.max(heldMs / PAN_RAMP_MS, 0), 1);
   return PAN_CRAWL + (PAN_TAP - PAN_CRAWL) * t * t;
 }
+
+/**
+ * Лист PDF (спринт 2 от 03.11.2026): каждая страница PDF — отдельный лист
+ * блока скана, в записи он хранится как «имя.pdf#12» (`scans::split_sheet`
+ * в крейте — правишь одно, правь другое). Знак «#» в имени обычного файла
+ * номером не считается.
+ */
+export function pdfPage(name: string): { file: string; page: number } | null {
+  const m = /^(.*\.pdf)#(\d+)$/i.exec(name);
+  if (!m || m[1].startsWith(".")) return null;
+  const page = Number(m[2]);
+  return page >= 1 ? { file: m[1], page } : null;
+}
+
+/** Имя листа для человека: «имя.pdf · стр. 12»; файл — как есть. */
+export function sheetLabel(name: string): string {
+  const p = pdfPage(name);
+  return p ? `${p.file} · стр. ${p.page}` : name;
+}
+
+/** Лист отдаёт Rust (протокол `scan`): страница PDF или TIFF — окно само
+ *  их не показывает. JPG и PNG окно берёт с диска. */
+export function viaRust(name: string): boolean {
+  return pdfPage(name) !== null || /\.tiff?$/i.test(name);
+}

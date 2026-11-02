@@ -31,15 +31,16 @@
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
-    python3 db/test_export.py                                   # → «Итог: успешно 137, ошибок 0» (выгрузка Familio и Excel)
+    python3 db/test_export.py                                   # → «Итог: успешно 139, ошибок 0» (выгрузка Familio и Excel)
     python3 db/test_parish.py                                   # → «Итог: успешно 40, ошибок 0» (приходы, общие справочники)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
-    node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 44, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель)
+    node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 52, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель, имя листа PDF)
     node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 75, ошибок 0» (месяц сам: по дню обряда, первая цифра дня, смена года)
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 417, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 425, ошибок 0»
+    python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
 
@@ -53,7 +54,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 49 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 57 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -118,6 +119,12 @@ Python: быстрая проверка в конвейере идёт на 3.14
 не запустить; его лог читается командой `gh run view <номер> --log-failed`
 (номер — из `gh run list`).
 Новая команда с байтами или файлом — сначала шаг в этот сценарий.
+
+**Ветка `test/…` перед `main`** (с 03.11.2026, п. 106): сборка с e2e идёт и
+на ветках `test/**`, выпуск `latest-test` — только из `main`. Спринт
+пушится в `test/<имя>`; в `main` — тем же коммитом после зелёной ветки.
+Сценарий e2e проверяется `pyflakes` в быстрой проверке: перекрытое имя или
+опечатка ловятся за секунды, а не через десять минут сборки на Windows.
 
 Рабочая папка `Genapp` лежит вне репозитория, и у того, кто получит репозиторий,
 её не будет. Всё, без чего нельзя собрать и проверить программу, лежит в самом
@@ -535,8 +542,22 @@ genmetric-core --release search_real -- --ignored --nocapture`.
   поля; шаг — `panStep` (`src/page.ts`: нажатие 1/20 блока, удержание ползёт
   и разгоняется). Alt+← и Alt+→ числовое поле уступает, только если лист
   шире блока (`fitsWidth`).
-  Сканы — `.jpg`, `.jpeg`, `.png` (`scans::is_scan`); TIFF и PDF окно само не
-  показывает.
+  Сканы — `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff` и `.pdf` (`scans::is_scan`).
+- **TIFF и PDF** (с 03.11.2026, спека 2026-10-20-tiff-i-pdf): окно их само не
+  показывает — байты отдаёт Rust протоколом `scan` (`src-tauri/src/scanserve.rs`;
+  адрес — `sheetUrl` в `scan.tsx`, `convertFileSrc(путь, "scan")`). JPG и PNG
+  идут по-прежнему протоколом `asset`. Протокол отдаёт файлы только папок,
+  разрешённых в `scan_open_dir` (`Sheets::allow`), и с CORS — без него WebGL
+  просмотрщика картинку не берёт. Каждая страница PDF — лист «имя.pdf#N»
+  (`scans::sheet`/`split_sheet`, в окне `pdfPage`/`sheetLabel` в `src/page.ts`
+  — правишь одно, правь другое); показывается её единственная картинка JPEG
+  без перекодирования (`core/src/pdf.rs` — свой разбор, без движка PDF; индекс
+  страниц — в памяти, пока файл не изменился). TIFF → PNG (`tiff_png.rs`) в
+  кэше `кэш сканов/` папки данных, не больше 500 МБ. Картинки и PDF в одной
+  папке — показан один вид (`ScanState.kind`, настройка `scan_kind_<год>`),
+  листы другого — в `other`: запись на листе другого вида показывается
+  обменом видов до «к набору». Файлы Романа для проверки разбора —
+  `GENMETRIC_SCANS_DIR=… cargo test -p genmetric-core --release scans_roman -- --ignored`.
 - **Страница идёт за сканом** (с 14.10.2026): листание на один файл
   (`Scan.step`, не `goTo`/`show`/`peek`) зовёт подписчиков `onTurn`; форма
   сдвигает «Стр.» правилом `turnPage` (`src/page.ts`: разворот — как кнопка

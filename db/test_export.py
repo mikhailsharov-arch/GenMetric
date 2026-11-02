@@ -586,6 +586,14 @@ def main() -> int:
         db.execute("UPDATE setting SET value = '/Users/r/сканы/дело 18/' WHERE key = ?", (f"scan_dir_{first[1]}",))
         check("скан: папка с косой чертой на конце — без двойного разделителя",
               scan_of()[1] == "/Users/r/сканы/дело 18/лист 12.jpg", str(scan_of()))
+        # Лист PDF (спринт 2 от 03.11.2026, ответ Романа 6.4: «подходит»).
+        db.execute("UPDATE entry SET scan_file = 'Ф627 МК 1875г.PDF#12' WHERE id = ?", (first[0],))
+        check("скан: лист PDF — «имя.pdf, стр. 12», путь — к файлу PDF",
+              list(scan_of()) == ["Ф627 МК 1875г.PDF, стр. 12", "/Users/r/сканы/дело 18/Ф627 МК 1875г.PDF"], str(scan_of()))
+        db.execute("UPDATE entry SET scan_file = 'лист #3.jpg' WHERE id = ?", (first[0],))
+        check("скан: «#» в имени картинки — не страница PDF",
+              list(scan_of()) == ["лист #3.jpg", "/Users/r/сканы/дело 18/лист #3.jpg"], str(scan_of()))
+        db.execute("UPDATE entry SET scan_file = 'лист 12.jpg' WHERE id = ?", (first[0],))
         check("скан: у записи без файла обе колонки пусты",
               all(list(x[55:]) == [None, None] for x in rows(db, sql, "excel_births") if x[0] != 1))
         check("скан: в выгрузке Familio файла нет",

@@ -22,3 +22,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # NFC: «й» одной буквой и «и» с краткой отдельным знаком — один ключ поиска.
 unicode-normalization = "0.1"
+# Сканы TIFF и PDF (03.11.2026, спека 2026-10-20-tiff-i-pdf): TIFF
+# перекодируется в PNG (окно TIFF не показывает), сжатые части PDF
+# (таблица ссылок потоком) — flate2; он и так был в сборке через Tauri.
+tiff = "0.11"
+png = "0.18"
+flate2 = "1"

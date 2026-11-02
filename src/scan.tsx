@@ -3,7 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { report, warn } from "./errors";
 import ErrorBar from "./ErrorBar";
 import { focusNextField } from "./focus";
-import { panStep } from "./page";
+import { panStep, pdfPage, sheetLabel, viaRust } from "./page";
 import { listen, send, type ScanAct, type ScanSync, type ScanView } from "./scanlink";
 
 /**
@@ -22,7 +22,20 @@ import { listen, send, type ScanAct, type ScanSync, type ScanView } from "./scan
  * скане не отбирает курсор у формы.
  */
 
-type ScanFiles = { dir: string | null; files: string[]; sep: string; missing: string | null; open: string | null };
+/** Папка дела от Rust (`ScanState`). Лист — файл картинки или страница PDF
+ *  («имя.pdf#12», спринт 2 от 03.11.2026). `kind` — вид листов, когда в
+ *  папке есть и картинки, и PDF (иначе null); `other` — листы другого вида;
+ *  `bad` — листы, которые программа показать не может, и почему. */
+type ScanFiles = { dir: string | null; files: string[]; sep: string; missing: string | null; open: string | null;
+                   kind: SheetKind | null; other: string[]; bad: Record<string, string> };
+export type SheetKind = "images" | "pdf";
+
+/** Адрес листа для окна: JPG и PNG — с диска (протокол `asset`), страницы
+ *  PDF и TIFF — от Rust (протокол `scan`, `scanserve.rs`). */
+export function sheetUrl(dir: string | null, sep: string, name: string): string {
+  const path = `${dir ?? ""}${sep}${name}`;
+  return viaRust(name) ? convertFileSrc(path, "scan") : convertFileSrc(path);
+}
 
 type Scan = {
   /** Скан показан: блоком рядом с формой или отдельным окном. */
@@ -36,6 +49,12 @@ type Scan = {
   year: number | null;
   dir: string | null;
   files: string[];
+  /** В папке и картинки, и PDF — какой вид показан; null — вид один. */
+  kind: SheetKind | null;
+  /** Показать картинки или листы PDF (выбор помнится по году дела). */
+  setKind: (kind: SheetKind) => void;
+  /** Листы, которые программа показать не может, и почему. */
+  bad: Record<string, string>;
   /** Папка выбрана, но не читается, — что сказать человеку. */
   missing: string | null;
   index: number;
@@ -79,7 +98,7 @@ type Scan = {
   setFormWidth: (px: number, save: boolean) => void;
 };
 
-const EMPTY: ScanFiles = { dir: null, files: [], sep: "/", missing: null, open: null };
+const EMPTY: ScanFiles = { dir: null, files: [], sep: "/", missing: null, open: null, kind: null, other: [], bad: {} };
 const ScanContext = createContext<Scan | null>(null);
 
 export function useScan(): Scan {
@@ -101,12 +120,17 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   /** Разворот, на котором шёл набор, пока показан другой: запись на правке
    *  или ссылка «скан». */
   const held = useRef<number | null>(null);
+  /** Пока показан лист другого вида (запись на листе PDF при виде
+   *  «картинки» и наоборот), списки видов поменяны местами; «к набору»
+   *  меняет их обратно. */
+  const heldFlipped = useRef(false);
   const [away, setAway] = useState<"edit" | "link" | null>(null);
   const yearRef = useRef(year);
   yearRef.current = year;
 
   const apply = useCallback((next: ScanFiles) => {
     held.current = null;
+    heldFlipped.current = false;
     setAway(null);
     setState(next);
     setIndex(Math.max(0, next.open ? next.files.indexOf(next.open) : 0));
@@ -218,7 +242,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
   const chosen = useCallback((s: ScanFiles) => {
     apply(s);
     setOn(true);
-    if (!s.missing && s.files.length === 0) warn("В папке нет сканов", "программа показывает файлы .jpg, .jpeg и .png; вложенные папки не читаются");
+    if (!s.missing && s.files.length === 0) warn("В папке нет сканов", "программа показывает файлы .jpg, .jpeg, .png, .tif и .pdf; вложенные папки не читаются");
   }, [apply, setOn]);
 
   const pickDir = useCallback(() => {
@@ -281,7 +305,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
 
   // Окну скана — всё, что показать, при каждой перемене.
   const sync: ScanSync = { on, year, dir: state.dir, sep: state.sep, files: state.files, missing: state.missing,
-                           index: at, away, keepPlace };
+                           index: at, away, keepPlace, kind: state.kind, bad: state.bad };
   const syncRef = useRef(sync);
   syncRef.current = sync;
   useEffect(() => {
@@ -303,19 +327,34 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
 
   const scan = useMemo<Scan>(() => {
     const go = (i: number) => setIndex(Math.min(Math.max(0, count - 1), Math.max(0, i)));
-    const leave = (kind: "edit" | "link", i: number) => {
+    /** Поменять местами виды листов: показать другой. */
+    const flip = () => setState((s) => ({ ...s, files: s.other, other: s.files,
+                                          kind: s.kind === "pdf" ? "images" : "pdf" }));
+    const leave = (kind: "edit" | "link", i: number, other = false) => {
       if (held.current === null) held.current = at;
+      if (other) { flip(); heldFlipped.current = !heldFlipped.current; }
       setAway(kind);
       setIndex(i);
     };
+    /** Стали работать на показанном по ссылке листе — место набора теперь
+     *  тут; показан другой вид листов — он и запоминается. */
+    const settle = () => {
+      held.current = null;
+      setAway(null);
+      if (heldFlipped.current && state.kind) {
+        heldFlipped.current = false;
+        invoke("set_setting", { key: `scan_kind_${year ?? ""}`, value: state.kind })
+          .catch((e) => report("Вид сканов не запомнен", e));
+      }
+    };
     return {
       on, setOn, detached, showIn, year, dir: state.dir, files: state.files, missing: state.missing, index: at, file, away,
-      url: (name) => convertFileSrc(`${state.dir ?? ""}${state.sep}${name}`),
+      url: (name) => sheetUrl(state.dir, state.sep, name),
       step: (by) => {
         // Листают после ссылки «скан» — значит, работают уже здесь: место
         // набора теперь тут. При правке записи место набора ждёт её конца.
         const wasAway = away !== null;
-        if (away === "link") { held.current = null; setAway(null); }
+        if (away === "link") settle();
         const to = Math.min(Math.max(0, count - 1), Math.max(0, at + by));
         go(to);
         // Страница формы идёт за сканом, только если скан и правда сменился
@@ -333,14 +372,21 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
           .catch((e) => report("Как вести скан при перелистывании — изменено, но не сохранено", e));
       },
       goTo: (i) => {
-        if (away === "link") { held.current = null; setAway(null); }
+        if (away === "link") settle();
         go(i);
       },
       show: (name, entryYear) => {
         if (entryYear !== year) return "другое дело";
         const i = state.files.indexOf(name);
-        if (i < 0) return "нет файла";
-        if (i !== at) leave(away ?? "link", i);
+        if (i >= 0) {
+          if (i !== at) leave(away ?? "link", i);
+          return "ok";
+        }
+        // Лист другого вида (запись на странице PDF, а показаны картинки) —
+        // показывается всё равно (спека 2026-10-20-tiff-i-pdf).
+        const j = state.other.indexOf(name);
+        if (j < 0) return "нет файла";
+        leave(away ?? "link", j, true);
         return "ok";
       },
       pickDir, askDir,
@@ -349,7 +395,11 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       peek: (name, entryYear) => {
         if (!name || entryYear !== year) return;
         const i = state.files.indexOf(name);
-        if (i < 0) return;
+        if (i < 0) {
+          const j = state.other.indexOf(name);
+          if (j >= 0) leave("edit", j, true);
+          return;
+        }
         if (i === at && held.current === null) return;
         leave("edit", i);
       },
@@ -358,7 +408,16 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
         if (held.current === null) return;
         const to = held.current;
         held.current = null;
+        if (heldFlipped.current) { heldFlipped.current = false; flip(); }
         setIndex(to);
+      },
+      kind: state.kind,
+      bad: state.bad,
+      setKind: (kind) => {
+        const mine = ++loadSeq.current;
+        invoke<ScanFiles>("scan_set_kind", { year, kind })
+          .then((s) => { if (mine === loadSeq.current) apply(s); })
+          .catch((e) => report("Не удалось переключить вид сканов", e));
       },
       formWidth,
       setFormWidth: (px, save) => {
@@ -368,7 +427,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
           .catch((e) => report("Ширина колонки формы не сохранена", e));
       },
     };
-  }, [on, setOn, detached, showIn, year, state, at, file, count, pickDir, askDir, formWidth, away, keepPlace]);
+  }, [on, setOn, detached, showIn, year, state, at, file, count, pickDir, askDir, formWidth, away, keepPlace, apply]);
 
   // Действия человека в окне скана — те же, что кнопками блока.
   const scanRef = useRef(scan);
@@ -380,6 +439,7 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       case "step": s.step(a.by); break;
       case "goto": s.goTo(a.index); break;
       case "keep": s.setKeepPlace(a.on); break;
+      case "sheets": s.setKind(a.value); break;
       case "pick": s.pickDir(); break;
       case "back": s.back(); break;
       case "hide": s.setOn(false); break;
@@ -594,9 +654,9 @@ export function useEntryScan(editing: boolean, year: number | null,
     },
     /** Строка в полосе правки: у записи нет разворота или он не тот, что открыт. */
     bar: !editing || !scan.on || !open || own === open ? null
-      : rebind ? <span className="scanbind" data-scan-bind="rebound"> · скан: запишется {open}</span>
+      : rebind ? <span className="scanbind" data-scan-bind="rebound"> · скан: запишется {sheetLabel(open)}</span>
       : own === null ? <span className="scanbind" data-scan-bind="none"> · у записи нет скана: {bind}</span>
-      : <span className="scanbind" data-scan-bind="other"> · скан записи: {own} {bind}</span>,
+      : <span className="scanbind" data-scan-bind="other"> · скан записи: {sheetLabel(own)} {bind}</span>,
   };
 }
 
@@ -605,14 +665,14 @@ export function ScanLink({ file, year }: { file: string | null | undefined; year
   const scan = useScan();
   if (!file) return null;
   return (
-    <button type="button" className="linkish scanlink" data-scan-link={file} title={`Показать скан: ${file}`}
+    <button type="button" className="linkish scanlink" data-scan-link={file} title={`Показать скан: ${sheetLabel(file)}`}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               const got = scan.show(file, year);
               if (got === "ok") { if (!scan.on) scan.setOn(true); return; }
               if (got === "другое дело") warn("Скан — в папке другого дела",
-                `запись из дела ${year ?? "без года"} года, а открыта папка дела ${scan.year ?? "без года"} года; у записи — файл «${file}». Откройте дело её года на экране «Дело»`);
-              else warn("Скана нет в папке", scan.dir ? `в папке «${scan.dir}» нет файла «${file}»` : `папка сканов этого дела не выбрана; у записи — файл «${file}»`);
+                `запись из дела ${year ?? "без года"} года, а открыта папка дела ${scan.year ?? "без года"} года; у записи — «${sheetLabel(file)}». Откройте дело её года на экране «Дело»`);
+              else warn("Скана нет в папке", scan.dir ? `в папке «${scan.dir}» нет «${sheetLabel(file)}»` : `папка сканов этого дела не выбрана; у записи — «${sheetLabel(file)}»`);
             }}>
       скан
     </button>
@@ -621,6 +681,9 @@ export function ScanLink({ file, year }: { file: string | null | undefined; year
 
 type Viewer = import("openseadragon").Viewer;
 type Osd = typeof import("openseadragon");
+
+/** Пустой белый лист (PNG 1×1) — вместо страницы, которую показать нельзя. */
+const BLANK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGP4DwABAQEAsTj2FAAAAABJRU5ErkJggg==";
 
 /** Просмотрщик открытого блока — для клавиш, которые слушает всё окно. */
 const live: { viewer: Viewer | null; osd: Osd | null } = { viewer: null, osd: null };
@@ -696,7 +759,9 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
         sequenceMode: true,
         preserveViewport: true,
         initialPage: want.current,
-        tileSources: scan.files.map((name) => ({ type: "image", url: scan.url(name), buildPyramid: false })) as never,
+        // Лист, который программа показать не может, — пустая картинка:
+        // просмотрщик листает дальше, объяснение — над ним.
+        tileSources: scan.files.map((name) => ({ type: "image", url: scan.bad[name] !== undefined ? BLANK : scan.url(name), buildPyramid: false })) as never,
         // Картинка идёт через протокол программы — с разрешением CORS, без
         // него режим WebGL её не возьмёт; canvas — запасной.
         crossOriginPolicy: "Anonymous",
@@ -740,7 +805,10 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
       v.addHandler("open-failed", () => {
         onViewRef.current?.({ loaded: null, fits: true });
         setLoaded(null);
-        setProblem(`Файл «${scan.files[want.current] ?? ""}» не открылся: его нет на месте или это не картинка JPG или PNG.`);
+        const name = scan.files[want.current] ?? "";
+        setProblem(pdfPage(name)
+          ? `«${sheetLabel(name)}» не открылся: файла нет на месте или он изменился — выберите папку заново.`
+          : `Файл «${name}» не открылся: его нет на месте или это не картинка JPG, PNG или TIFF.`);
       });
     }).catch((e) => { if (!gone) { setProblem("Просмотрщик не запустился."); report("Не удалось запустить просмотрщик сканов", e); } });
     return () => {
@@ -764,7 +832,13 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
   const count = scan.files.length;
   const empty = !scan.dir ? "Папка со сканами этого дела не выбрана."
     : scan.missing ? `Папка сканов не открылась: ${scan.missing}`
-    : count === 0 ? "В папке нет файлов .jpg, .jpeg и .png." : null;
+    : count === 0 ? "В папке нет сканов: файлов .jpg, .jpeg, .png, .tif или .pdf." : null;
+  // Страница PDF без одной картинки JPEG (Роман 20.10: у его PDF такого нет —
+  // это защита).
+  const badWhy = scan.file !== null ? scan.bad[scan.file] : undefined;
+  const shownProblem = badWhy !== undefined
+    ? `${sheetLabel(scan.file ?? "")}: ${badWhy} — эту страницу программа показать не может.`
+    : problem;
 
   // Номер разворота — поле: набрали, Enter — открыт. Курсор после этого
   // возвращается в поле формы, из которого пришли.
@@ -782,7 +856,7 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
 
   return (
     <aside className="scanpane" data-scan data-scan-file={scan.file ?? ""} data-scan-count={count}
-           data-scan-loaded={loaded ?? ""} data-scan-problem={problem ?? ""}
+           data-scan-loaded={loaded ?? ""} data-scan-problem={shownProblem ?? ""} data-scan-kind={scan.kind ?? ""}
            // Нажатие мыши в блоке не уводит курсор из поля формы: набор
            // продолжается в том же поле (спека, п. 2.3). Перетаскивание и
            // колесо у просмотрщика — на событиях указателя, им это не мешает.
@@ -819,10 +893,24 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
                        if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); leaveNo(true); }
                        else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); leaveNo(false); }
                      }} />
-              <b> из {count}</b> · {scan.file}
+              <b> из {count}</b> · {sheetLabel(scan.file ?? "")}
             </>
           ) : "скан"}
         </span>
+        {scan.kind && !scan.missing && (
+          // В папке и картинки, и PDF (Роман 20.10: распаковывает PDF в JPG
+          // в ту же папку) — показывается один вид; выбор помнится по году дела.
+          <span className="scankind" role="group" aria-label="Что показывать">
+            {(["images", "pdf"] as const).map((k) => (
+              <button key={k} type="button" className={scan.kind === k ? "toggle small on" : "toggle small"}
+                      data-scan-kind-set={k} aria-pressed={scan.kind === k} {...keep}
+                      onClick={() => { if (scan.kind !== k) scan.setKind(k); }}
+                      title={k === "pdf" ? "Показывать страницы PDF" : "Показывать картинки (JPG, PNG, TIFF)"}>
+                {k === "pdf" ? "PDF" : "картинки"}
+              </button>
+            ))}
+          </span>
+        )}
         {scan.away === "link" && (
           <button type="button" className="toggle small" data-scan-back {...keep} onClick={scan.back}
                   title="Вернуться к развороту, на котором шёл набор">↩ к набору</button>
@@ -860,13 +948,14 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
           <p>{empty}</p>
           <button type="button" className="toggle" {...keep} onClick={scan.pickDir}>Выбрать папку…</button>
           <p className="hint">
-            Можно и перетащить папку (или любой её файл) мышью на окно программы. Сканы — файлы JPG или PNG, один
-            файл — один разворот или одна страница; они идут по порядку имён. У каждого дела папка своя.
+            Можно и перетащить папку (или любой её файл) мышью на окно программы. Сканы — файлы JPG, PNG или TIFF
+            (один файл — один разворот или одна страница) или PDF (каждая страница — отдельный лист); они идут по
+            порядку имён. У каждого дела папка своя.
           </p>
         </div>
       ) : (
         <>
-          {problem && <p className="scanproblem" data-scan-error>{problem}</p>}
+          {shownProblem && <p className="scanproblem" data-scan-error>{shownProblem}</p>}
           <div className="scanview" ref={box} />
         </>
       )}
@@ -1000,8 +1089,8 @@ export function ScanCaseBlock() {
       </button>
       <p className="hint">
         {scan.dir
-          ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, файлов: ${scan.files.length}`}. </>
-          : "Сканы дела — файлы JPG или PNG в одной папке. Папку можно и перетащить мышью на окно программы. "}
+          ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, листов: ${scan.files.length}`}. </>
+          : "Сканы дела — файлы JPG, PNG, TIFF или PDF в одной папке. Папку можно и перетащить мышью на окно программы. "}
         Листать, не уходя из поля: Alt+PageDown и Alt+PageUp; двигать лист — Alt+стрелки (и когда скан в
         отдельном окне). Запись запоминает разворот, с которого набрана.
       </p>
@@ -1067,7 +1156,8 @@ export function ScanWindow() {
       on: sync.on, setOn: (v) => { if (!v) act({ kind: "hide" }); }, detached: true, showIn: () => undefined,
       year: sync.year, dir: sync.dir, files: sync.files, missing: sync.missing, index,
       file: count > 0 && !sync.missing ? sync.files[index] : null,
-      url: (name) => convertFileSrc(`${sync.dir ?? ""}${sync.sep}${name}`),
+      url: (name) => sheetUrl(sync.dir, sync.sep, name),
+      kind: sync.kind, bad: sync.bad, setKind: (k) => act({ kind: "sheets", value: k }),
       step: (by) => act({ kind: "step", by }), goTo: (i) => act({ kind: "goto", index: i }),
       show: () => "ok", pickDir: () => act({ kind: "pick" }), askDir: () => undefined, current: () => null,
       peek: () => undefined, back: () => act({ kind: "back" }), away: sync.away, onTurn: () => () => undefined,

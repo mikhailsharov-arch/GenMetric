@@ -1351,7 +1351,10 @@ def incident_20261010_skany_ryadom_s_formoj():
     statements = read("db/statements.sql")
     check("колонка файла скана — в схеме и в запросах записи, списка и досье",
           "scan_file      TEXT" in read("db/schema.sql")
-          and statements.count(":scan_file") == 2 and statements.count("e.scan_file") == 11
+          and statements.count(":scan_file") == 2
+          # Разбор листа PDF в выгрузке Excel (03.11.2026) — не новые места чтения колонки.
+          and statements.count("e.scan_file") - statements.count("instr(lower(e.scan_file), '.pdf#')")
+              - statements.count("substr(e.scan_file") == 11
           and "note, scan_file\n  FROM entry" in statements)
     main_rs = read("src-tauri/src/main.rs")
     conf = read("src-tauri/tauri.conf.json")
@@ -1480,7 +1483,7 @@ def incident_20261012_otvet_romana_na_sborku_10_10():
     check("скан: переход по номеру, вид к верху листа при смене разворота, Alt+стрелки, PNG",
           "data-scan-no" in scan and "if (opened++ > 0 && !keepRef.current) toTop(v, OpenSeadragon);" in scan
           and "panView(pan[0] * step, pan[1] * step, repeat);" in scan
-          and 'lower.ends_with(".png")' in read("src-tauri/core/src/scans.rs"))
+          and '[".jpg", ".jpeg", ".png", ".tif", ".tiff"]' in read("src-tauri/core/src/scans.rs"))
 
 
 def incident_20261014_stranica_i_dovodka():
@@ -1767,6 +1770,47 @@ def incident_20261028_e2e_peremennaya_perekryla_pomoshchnika():
           not (helpers & local), str(sorted(helpers & local)))
 
 
+def incident_20261103_tiff_i_pdf_i_dolg_e2e():
+    """
+    03.11.2026, спринт 2: сканы TIFF и PDF (спека 2026-10-20-tiff-i-pdf) и
+    долг e2e. С 13.10 по 02.11 шесть сборок из тринадцати упали в e2e на
+    Windows уже в main, почти все — в новых шагах сценария (п. 106–108).
+    """
+    wf = read(".github/workflows/build.yml")
+    check("сборка с e2e идёт и на ветках test/**, выпуск latest-test — только из main (п. 106)",
+          'branches: [main, "test/**"]' in wf
+          and "if: github.ref == 'refs/heads/main'" in wf.split("  release:")[1].split("steps:")[0])
+    check("pyflakes по сценарию e2e и скриптам — в быстрой проверке (п. 107)",
+          "python -m pyflakes scripts db" in wf.split("  build:")[0])
+    e2e = read("scripts/e2e/windows.py")
+    sleep_then_check = re.findall(r"time\.sleep\([^)]*\)\n\s*(?:\w+ = [^\n]*\n\s*)?check\(", e2e)
+    check("шаги e2e: после паузы — ожидание, а не проверка сразу (п. 108)",
+          # Остались четыре — проверки «ничего не случилось» (курсор не ушёл,
+          # полосы ошибки нет) и опрос в цикле: там пауза и есть ожидание.
+          "return wait_until(cond, seconds)" in e2e and len(sleep_then_check) <= 4,
+          f"пауза и сразу проверка: {len(sleep_then_check)} (остались проверки «ничего не случилось»)")
+    scans = read("src-tauri/core/src/scans.rs")
+    check("TIFF и PDF — сканы; лист PDF — «имя.pdf#N»",
+          '".tif", ".tiff"' in scans and "pub fn is_pdf(" in scans and 'format!("{file}#{page}")' in scans
+          and "/^(.*\\.pdf)#(\\d+)$/i" in read("src/page.ts"))
+    main = read("src-tauri/src/main.rs")
+    serve = read("src-tauri/src/scanserve.rs")
+    conf = read("src-tauri/tauri.conf.json")
+    check("листы PDF и TIFF — протокол scan: только разрешённые папки, с CORS, в CSP",
+          'register_asynchronous_uri_scheme_protocol("scan"' in main and "sheets.allow(Path::new(dir));" in main
+          and '"папка не открыта в программе"' in serve and '"Access-Control-Allow-Origin", "*"' in serve
+          and "scan: http://scan.localhost" in conf and 'convertFileSrc(path, "scan")' in read("src/scan.tsx"))
+    check("картинки и PDF в одной папке: показаны картинки, пока не выбран «PDF» (ответ 6.2)",
+          "let pdf_shown = if both { kind.as_deref() == Some(\"pdf\") } else { images.is_empty() };" in main
+          and "fn scan_set_kind(" in main)
+    pdf = read("src-tauri/core/src/pdf.rs")
+    check("PDF: страница — только своя картинка JPEG; битый файл — ошибка, не паника",
+          "fn rejects_garbage_without_panic()" in pdf and "const DEEP: usize" in pdf
+          and 'genmetric_core::guarded("Разбор PDF"' in serve)
+    check("выгрузка Excel: лист PDF — «имя.pdf, стр. 12»",
+          read("db/statements.sql").count("|| ', стр. ' ||") == 3)
+
+
 def incident_20261102_otvet_romana_na_sborku_28_10():
     """
     02.11.2026, ответ Романа на сборку 28.10 и долг ревью 28.10: «с.Шишкино»
@@ -1974,6 +2018,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261103_tiff_i_pdf_i_dolg_e2e,
     incident_20261020_otvet_na_sborku_19_10,
     incident_20261027_ui_scan_detached_ne_obshchaya,
     incident_20261028_mesto_okna_pri_raznom_masshtabe,

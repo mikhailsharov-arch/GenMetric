@@ -1788,9 +1788,14 @@ SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c1
        -- папка не указана — путь пуст. Разделитель — какой стоит в папке.
        -- Год книги — прямо из записи: x_entry без индекса по id давал бы
        -- просмотр всей таблицы на каждую строку (ревьюер 13.10.2026).
-       (SELECT e.scan_file FROM entry e WHERE e.id = x_row.entry_id),
+       -- Лист PDF «имя.pdf#12» (03.11.2026) — «имя.pdf, стр. 12», путь — к файлу PDF.
+       (SELECT CASE WHEN instr(lower(e.scan_file), '.pdf#') > 0 AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) GLOB '[1-9]*' AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) NOT GLOB '*[^0-9]*'
+                    THEN substr(e.scan_file, 1, instr(lower(e.scan_file), '.pdf#') + 3) || ', стр. ' || substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5)
+                    ELSE e.scan_file END
+          FROM entry e WHERE e.id = x_row.entry_id),
        (SELECT rtrim(s.value, '/' || char(92))
-               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END || e.scan_file
+               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END
+               || CASE WHEN instr(lower(e.scan_file), '.pdf#') > 0 AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) GLOB '[1-9]*' AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) NOT GLOB '*[^0-9]*' THEN substr(e.scan_file, 1, instr(lower(e.scan_file), '.pdf#') + 3) ELSE e.scan_file END
           FROM entry e
           JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')
          WHERE e.id = x_row.entry_id AND e.scan_file IS NOT NULL AND trim(coalesce(s.value, '')) <> '')
@@ -1808,9 +1813,14 @@ SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c1
        -- папка не указана — путь пуст. Разделитель — какой стоит в папке.
        -- Год книги — прямо из записи: x_entry без индекса по id давал бы
        -- просмотр всей таблицы на каждую строку (ревьюер 13.10.2026).
-       (SELECT e.scan_file FROM entry e WHERE e.id = x_row.entry_id),
+       -- Лист PDF «имя.pdf#12» (03.11.2026) — «имя.pdf, стр. 12», путь — к файлу PDF.
+       (SELECT CASE WHEN instr(lower(e.scan_file), '.pdf#') > 0 AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) GLOB '[1-9]*' AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) NOT GLOB '*[^0-9]*'
+                    THEN substr(e.scan_file, 1, instr(lower(e.scan_file), '.pdf#') + 3) || ', стр. ' || substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5)
+                    ELSE e.scan_file END
+          FROM entry e WHERE e.id = x_row.entry_id),
        (SELECT rtrim(s.value, '/' || char(92))
-               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END || e.scan_file
+               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END
+               || CASE WHEN instr(lower(e.scan_file), '.pdf#') > 0 AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) GLOB '[1-9]*' AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) NOT GLOB '*[^0-9]*' THEN substr(e.scan_file, 1, instr(lower(e.scan_file), '.pdf#') + 3) ELSE e.scan_file END
           FROM entry e
           JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')
          WHERE e.id = x_row.entry_id AND e.scan_file IS NOT NULL AND trim(coalesce(s.value, '')) <> '')
@@ -1826,9 +1836,14 @@ SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c1
        -- папка не указана — путь пуст. Разделитель — какой стоит в папке.
        -- Год книги — прямо из записи: x_entry без индекса по id давал бы
        -- просмотр всей таблицы на каждую строку (ревьюер 13.10.2026).
-       (SELECT e.scan_file FROM entry e WHERE e.id = x_row.entry_id),
+       -- Лист PDF «имя.pdf#12» (03.11.2026) — «имя.pdf, стр. 12», путь — к файлу PDF.
+       (SELECT CASE WHEN instr(lower(e.scan_file), '.pdf#') > 0 AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) GLOB '[1-9]*' AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) NOT GLOB '*[^0-9]*'
+                    THEN substr(e.scan_file, 1, instr(lower(e.scan_file), '.pdf#') + 3) || ', стр. ' || substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5)
+                    ELSE e.scan_file END
+          FROM entry e WHERE e.id = x_row.entry_id),
        (SELECT rtrim(s.value, '/' || char(92))
-               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END || e.scan_file
+               || CASE WHEN instr(s.value, char(92)) > 0 THEN char(92) ELSE '/' END
+               || CASE WHEN instr(lower(e.scan_file), '.pdf#') > 0 AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) GLOB '[1-9]*' AND substr(e.scan_file, instr(lower(e.scan_file), '.pdf#') + 5) NOT GLOB '*[^0-9]*' THEN substr(e.scan_file, 1, instr(lower(e.scan_file), '.pdf#') + 3) ELSE e.scan_file END
           FROM entry e
           JOIN setting s ON s.key = 'scan_dir_' || coalesce(e.rite_year, e.event_year, '')
          WHERE e.id = x_row.entry_id AND e.scan_file IS NOT NULL AND trim(coalesce(s.value, '')) <> '')

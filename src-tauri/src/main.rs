@@ -17,6 +17,8 @@ use tauri::{Manager, State};
 
 mod export;
 
+mod scanserve;
+
 mod windows;
 
 use genmetric_core::parish;
@@ -1775,8 +1777,15 @@ fn window_title(parish_name: &str) -> String {
 struct ScanState {
     /// Папка сканов дела этого года; None — не выбрана.
     dir: Option<String>,
-    /// Имена файлов по порядку (scans::list).
+    /// Листы по порядку: имена файлов (scans::list), у PDF — «имя.pdf#N».
     files: Vec<String>,
+    /// В папке и картинки, и PDF (спринт 2 от 03.11.2026): какой вид
+    /// показан — «images» или «pdf»; None — вид в папке один.
+    kind: Option<String>,
+    /// Листы другого вида — запись, привязанная к ним, показывается всё равно.
+    other: Vec<String>,
+    /// Листы, которые программа показать не может, и почему.
+    bad: std::collections::HashMap<String, String>,
     /// Разделитель пути этой системы — окно склеивает путь к файлу само.
     sep: String,
     /// Папка была выбрана, но сейчас не читается (другой компьютер, диск не подключён).
@@ -1790,21 +1799,62 @@ fn scan_keys(year: Option<i64>) -> (String, String) {
     (format!("scan_dir_{y}"), format!("scan_last_{y}"))
 }
 
+/// Вид листов в папке, где есть и картинки, и PDF: «images» или «pdf».
+fn scan_kind_key(year: Option<i64>) -> String {
+    format!("scan_kind_{}", year.map(|y| y.to_string()).unwrap_or_default())
+}
+
+fn scan_empty(dir: Option<String>, missing: Option<String>) -> ScanState {
+    ScanState { dir, files: Vec::new(), kind: None, other: Vec::new(), bad: Default::default(),
+                sep: std::path::MAIN_SEPARATOR.to_string(), missing, open: None }
+}
+
 /// Прочитать папку и разрешить окну её файлы — только её, без вложенных.
-fn scan_open_dir(handle: &tauri::AppHandle, dir: &str, open: Option<String>) -> ScanState {
-    let sep = std::path::MAIN_SEPARATOR.to_string();
-    match genmetric_core::scans::list(Path::new(dir)) {
-        Ok(files) => {
-            let allowed = handle.asset_protocol_scope().allow_directory(dir, false);
-            ScanState {
-                dir: Some(dir.to_string()),
-                open: open.filter(|f| files.contains(f)),
-                files,
-                sep,
-                missing: allowed.err().map(|e| format!("программа не получила доступ к папке: {e}")),
+/// Каждая страница PDF — отдельный лист. Есть в папке картинки — PDF не
+/// показываются (Роман 20.10, ответ 6.2: он распаковывает PDF в JPG «прямо
+/// в ту же самую папку»), пока человек не выбрал вид «PDF» (`kind`).
+fn scan_open_dir(handle: &tauri::AppHandle, log: &Path, dir: &str, open: Option<String>, kind: Option<String>) -> ScanState {
+    use genmetric_core::{pdf::Page, scans};
+    let names = match scans::list(Path::new(dir)) {
+        Ok(names) => names,
+        Err(e) => return scan_empty(Some(dir.to_string()), Some(e)),
+    };
+    let sheets = handle.state::<scanserve::Sheets>();
+    sheets.allow(Path::new(dir));
+    let images: Vec<String> = names.iter().filter(|n| scans::is_image(n)).cloned().collect();
+    let mut pdf_sheets = Vec::new();
+    let mut bad = std::collections::HashMap::new();
+    for name in names.iter().filter(|n| scans::is_pdf(n)) {
+        match sheets.pdf_pages(&Path::new(dir).join(name)) {
+            Ok(pages) => for (k, page) in pages.iter().enumerate() {
+                let sheet = scans::sheet(name, k + 1);
+                if let Page::Unsupported(why) = page {
+                    bad.insert(sheet.clone(), why.clone());
+                }
+                pdf_sheets.push(sheet);
+            },
+            // Файл не разобрался — один лист с объяснением, а не тишина.
+            Err(why) => {
+                write_log(log, &format!("PDF «{name}» в папке «{dir}» не разобран: {why}"));
+                let sheet = scans::sheet(name, 1);
+                bad.insert(sheet.clone(), format!("PDF не читается: {why}"));
+                pdf_sheets.push(sheet);
             }
         }
-        Err(e) => ScanState { dir: Some(dir.to_string()), files: Vec::new(), sep, missing: Some(e), open: None },
+    }
+    let both = !images.is_empty() && !pdf_sheets.is_empty();
+    let pdf_shown = if both { kind.as_deref() == Some("pdf") } else { images.is_empty() };
+    let (files, other) = if pdf_shown { (pdf_sheets, images) } else { (images, pdf_sheets) };
+    let allowed = handle.asset_protocol_scope().allow_directory(dir, false);
+    ScanState {
+        dir: Some(dir.to_string()),
+        open: open.filter(|f| files.contains(f)),
+        files,
+        kind: both.then(|| if pdf_shown { "pdf" } else { "images" }.to_string()),
+        other,
+        bad,
+        sep: std::path::MAIN_SEPARATOR.to_string(),
+        missing: allowed.err().map(|e| format!("программа не получила доступ к папке: {e}")),
     }
 }
 
@@ -1812,7 +1862,7 @@ fn scan_open_dir(handle: &tauri::AppHandle, dir: &str, open: Option<String>) -> 
 #[tauri::command]
 fn scan_state(handle: tauri::AppHandle, app: State<App>, year: Option<i64>) -> Result<ScanState, String> {
     let (dir_key, last_key) = scan_keys(year);
-    let (dir, last) = with_conn(&app, "Папка сканов", |conn| {
+    let (dir, last, kind) = with_conn(&app, "Папка сканов", |conn| {
         let mut dir = parish::setting_get(conn, &dir_key)?.filter(|d| !d.trim().is_empty());
         // Папку выбрали, когда у дела ещё не было года (новое дело): теперь
         // год есть — она переходит к нему, а не теряется (проверяющий 10.10.2026).
@@ -1824,12 +1874,23 @@ fn scan_state(handle: tauri::AppHandle, app: State<App>, year: Option<i64>) -> R
                 dir = Some(loose);
             }
         }
-        Ok((dir, parish::setting_get(conn, &last_key)?))
+        Ok((dir, parish::setting_get(conn, &last_key)?, parish::setting_get(conn, &scan_kind_key(year))?))
     })?;
     Ok(match dir.filter(|d| !d.trim().is_empty()) {
-        Some(dir) => scan_open_dir(&handle, &dir, last),
-        None => ScanState { dir: None, files: Vec::new(), sep: std::path::MAIN_SEPARATOR.to_string(), missing: None, open: None },
+        Some(dir) => scan_open_dir(&handle, &app.log_path, &dir, last, kind),
+        None => scan_empty(None, None),
     })
+}
+
+/// В папке и картинки, и PDF: показать «images» или «pdf». Выбор —
+/// настройка прихода по году дела, рядом с папкой.
+#[tauri::command]
+fn scan_set_kind(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, kind: String) -> Result<ScanState, String> {
+    if kind != "images" && kind != "pdf" {
+        return Err(format!("Вид сканов «{kind}» неизвестен"));
+    }
+    with_conn(&app, "Вид сканов", |conn| parish::setting_set(conn, &scan_kind_key(year), &kind))?;
+    scan_state(handle, app, year)
 }
 
 /// Системное окно «Выберите папку» и выбранная в нём папка. Окно открывает
@@ -1869,22 +1930,30 @@ fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, pa
             if dropped == Some(true) {
                 return scan_state(handle, app, year);
             }
-            return Err(fail(format!("«{name}» — не скан: программа показывает файлы .jpg, .jpeg и .png")));
+            return Err(fail(format!("«{name}» — не скан: программа показывает файлы .jpg, .jpeg, .png, .tif и .pdf")));
         }
         let parent = picked.parent().ok_or_else(|| fail(format!("у файла «{path}» нет папки")))?;
-        (parent.to_path_buf(), picked.file_name().map(|n| n.to_string_lossy().to_string()))
+        // Перетащили PDF — открывается его первая страница.
+        let open = if genmetric_core::scans::is_pdf(&name) { genmetric_core::scans::sheet(&name, 1) } else { name };
+        (parent.to_path_buf(), Some(open))
     } else {
         return Err(fail(format!("«{path}» — не папка и не файл")));
     };
     let dir = dir.to_string_lossy().to_string();
     let (dir_key, last_key) = scan_keys(year);
-    let last = with_conn(&app, "Папка сканов", |conn| {
+    let (last, kind) = with_conn(&app, "Папка сканов", |conn| {
         let before = parish::setting_get(conn, &dir_key)?;
         parish::setting_set(conn, &dir_key, &dir)?;
+        // Перетащили файл — вид листов по нему: PDF или картинки.
+        if let Some(f) = &file {
+            let kind = if genmetric_core::scans::split_sheet(f).1.is_some() { "pdf" } else { "images" };
+            parish::setting_set(conn, &scan_kind_key(year), kind)?;
+        }
+        let kind = parish::setting_get(conn, &scan_kind_key(year))?;
         // Та же папка выбрана снова — место в ней остаётся.
-        if before.as_deref() == Some(dir.as_str()) { parish::setting_get(conn, &last_key) } else { Ok(None) }
+        Ok((if before.as_deref() == Some(dir.as_str()) { parish::setting_get(conn, &last_key)? } else { None }, kind))
     })?;
-    let state = scan_open_dir(&handle, &dir, file.or(last));
+    let state = scan_open_dir(&handle, &app.log_path, &dir, file.or(last), kind);
     if let Some(why) = &state.missing {
         write_log(&app.log_path, &format!("Папка сканов «{dir}»: {why}"));
     }
@@ -2305,6 +2374,10 @@ async fn familio_run(app: State<'_, App>, window: tauri::Window, name: String,
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Листы PDF и TIFF для блока скана (03.11.2026, scanserve.rs).
+        .register_asynchronous_uri_scheme_protocol("scan", |ctx, request, responder| {
+            scanserve::handle(ctx.app_handle().clone(), request, responder)
+        })
         .setup(|app| {
             // GENMETRIC_DATA_DIR — папка данных для проверок разработчика:
             // настоящая программа на чужих данных, не трогая свои. У
@@ -2351,6 +2424,7 @@ fn main() {
             let log_for_window = log_path.clone();
             let title = window_title(&current.1);
             app.manage(windows::Windows::load(&data_dir));
+            app.manage(scanserve::Sheets::new(&data_dir));
             app.manage(App {
                 conn: Mutex::new(conn),
                 db_path: Mutex::new(db_path),
@@ -2454,6 +2528,7 @@ fn main() {
             scan_set_dir,
             scan_pick_dir,
             scan_remember,
+            scan_set_kind,
             scan_window,
             windows::scan_detach,
             windows::scan_focus_main,

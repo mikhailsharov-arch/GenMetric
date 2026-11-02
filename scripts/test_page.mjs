@@ -1,6 +1,6 @@
 // Проверка шага по номеру страницы (src/page.ts). Запуск:
 //     node --experimental-strip-types scripts/test_page.mjs
-import { stepPage, normalizePage, pageOverflow, turnPage, panStep, PAN_TAP, PAN_CRAWL } from "../src/page.ts";
+import { stepPage, normalizePage, pageOverflow, turnPage, panStep, PAN_TAP, PAN_CRAWL, pdfPage, sheetLabel, viaRust } from "../src/page.ts";
 
 let ok = 0, fail = 0;
 function check(title, got, want) {
@@ -61,6 +61,16 @@ check("через полсекунды — ещё медленнее корот�
 check("шаг растёт с удержанием", panStep(true, 1000) > panStep(true, 500), true);
 check("к полутора секундам — полный шаг", panStep(true, 1500), PAN_TAP);
 check("дальше не растёт", panStep(true, 9000), PAN_TAP);
+
+console.log("\nЛисты PDF и TIFF — спринт 2 от 03.11.2026");
+check("лист PDF — «имя.pdf · стр. 12»", sheetLabel("Ф627 МК 1875г.pdf#12"), "Ф627 МК 1875г.pdf · стр. 12");
+check("картинка — как есть", sheetLabel("лист 1.jpg"), "лист 1.jpg");
+check("«#» в имени PDF — номер с конца", pdfPage("Дело #3.PDF#2")?.file, "Дело #3.PDF");
+check("«#» в имени картинки — не страница", pdfPage("лист #2.jpg"), null);
+check("страница 0 — не лист", pdfPage("дело.pdf#0"), null);
+check("PDF без номера — не лист", pdfPage("дело.pdf"), null);
+check("TIFF отдаёт Rust", viaRust("Лист.TIFF") && viaRust("лист.tif"), true);
+check("лист PDF отдаёт Rust, JPG — нет", viaRust("дело.pdf#1") && !viaRust("лист.jpg") && !viaRust("лист.png"), true);
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${fail}`);
 process.exit(fail ? 1 : 0);
