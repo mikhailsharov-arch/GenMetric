@@ -100,6 +100,26 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Путь из адреса протокола `scan`: «%D0%B4» → байты → строка. Не «%XX» —
+/// как есть, без паники.
+pub fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 // ---------------------------------------------------------------------------
 //  Кэш сканов: PNG из TIFF (спринт 2 от 03.11.2026)
 // ---------------------------------------------------------------------------
@@ -132,13 +152,21 @@ pub fn cached(cache: &Path, src: &Path, ext: &str, make: impl FnOnce() -> Result
     let file = cache.join(cache_name(src, ext)?);
     if let Ok(bytes) = std::fs::read(&file) {
         if !bytes.is_empty() {
+            // Прочитанный лист — свежий: чистка кэша уберёт его последним.
+            if let Ok(f) = std::fs::File::options().append(true).open(&file) {
+                let _ = f.set_modified(std::time::SystemTime::now());
+            }
             return Ok(bytes);
         }
     }
     let bytes = make()?;
     if std::fs::create_dir_all(cache).is_ok() {
         // Сначала во временный файл: оборванная запись не станет «готовым» листом.
-        let tmp = file.with_extension(format!("{ext}.tmp{}", std::process::id()));
+        // Свой временный файл у каждого запроса: блок и окно скана просят
+        // один TIFF одновременно (ревьюер 03.11.2026).
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = file.with_extension(format!("{ext}.tmp{}-{n}", std::process::id()));
         if std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, &file).is_ok() {
             trim_cache(cache, CACHE_LIMIT);
         } else {
@@ -193,6 +221,14 @@ mod tests {
         assert_eq!(split_sheet("дело.pdf#"), ("дело.pdf#", None));
         assert_eq!(split_sheet("дело.pdf"), ("дело.pdf", None));
         assert!(is_tiff("Лист.TIFF") && is_image("лист.tif") && !is_image("дело.pdf") && is_scan("дело.pdf"));
+    }
+
+    #[test]
+    fn decodes_percent() {
+        assert_eq!(percent_decode("%2FUsers%2F%D0%B4%D0%B5%D0%BB%D0%BE.pdf%2312"), "/Users/дело.pdf#12");
+        assert_eq!(percent_decode("C%3A%5C%D0%B0%5Ca.tif"), "C:\\а\\a.tif");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%д"), "%д", "не цифры после «%» — как есть, без паники");
     }
 
     #[test]

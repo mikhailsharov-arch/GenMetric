@@ -1809,6 +1809,15 @@ def incident_20261103_tiff_i_pdf_i_dolg_e2e():
           and 'genmetric_core::guarded("Разбор PDF"' in serve)
     check("выгрузка Excel: лист PDF — «имя.pdf, стр. 12»",
           read("db/statements.sql").count("|| ', стр. ' ||") == 3)
+    # Находки агентов 03.11.2026 (до выкладки).
+    check("битый PDF не роняет программу: /Length потока объектов внутрь него же, огромная /Length (ревьюер)",
+          "if !self.busy.insert(stm)" in pdf and "start.checked_add(n)" in pdf
+          and "fn object_stream_length_inside_itself_is_an_error()" in pdf and "fn huge_length_and_broken_kid()" in pdf)
+    check("ответ протокола scan — всегда, и при панике; папка PDF — не в главном потоке (ревьюер)",
+          "genmetric_core::caught(|| sheets.serve(&full))" in serve
+          and main.count("#[tauri::command(async)]\nfn scan_") == 3)
+    check("место в картинках и в листах PDF помнится раздельно (проверяющий)",
+          'format!("scan_last_pdf_{y}")' in main and "let last_key = scan_last_key(year, &file);" in main)
 
 
 def incident_20261102_otvet_romana_na_sborku_28_10():

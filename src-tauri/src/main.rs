@@ -1799,6 +1799,21 @@ fn scan_keys(year: Option<i64>) -> (String, String) {
     (format!("scan_dir_{y}"), format!("scan_last_{y}"))
 }
 
+/// Место в листах PDF помнится отдельно от места в картинках (проверяющий
+/// 03.11.2026): заглянули в PDF — место в сотнях JPG той же папки не теряется.
+fn scan_last_key(year: Option<i64>, file: &str) -> String {
+    let y = year.map(|y| y.to_string()).unwrap_or_default();
+    if genmetric_core::scans::split_sheet(file).1.is_some() { format!("scan_last_pdf_{y}") } else { format!("scan_last_{y}") }
+}
+
+/// Места, на которых остановились: в картинках и в листах PDF.
+fn scan_lasts(conn: &Connection, year: Option<i64>) -> Result<Vec<String>, String> {
+    let y = year.map(|y| y.to_string()).unwrap_or_default();
+    Ok([format!("scan_last_{y}"), format!("scan_last_pdf_{y}")].iter()
+        .filter_map(|k| parish::setting_get(conn, k).transpose())
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Вид листов в папке, где есть и картинки, и PDF: «images» или «pdf».
 fn scan_kind_key(year: Option<i64>) -> String {
     format!("scan_kind_{}", year.map(|y| y.to_string()).unwrap_or_default())
@@ -1813,7 +1828,7 @@ fn scan_empty(dir: Option<String>, missing: Option<String>) -> ScanState {
 /// Каждая страница PDF — отдельный лист. Есть в папке картинки — PDF не
 /// показываются (Роман 20.10, ответ 6.2: он распаковывает PDF в JPG «прямо
 /// в ту же самую папку»), пока человек не выбрал вид «PDF» (`kind`).
-fn scan_open_dir(handle: &tauri::AppHandle, log: &Path, dir: &str, open: Option<String>, kind: Option<String>) -> ScanState {
+fn scan_open_dir(handle: &tauri::AppHandle, log: &Path, dir: &str, open: Vec<String>, kind: Option<String>) -> ScanState {
     use genmetric_core::{pdf::Page, scans};
     let names = match scans::list(Path::new(dir)) {
         Ok(names) => names,
@@ -1848,7 +1863,8 @@ fn scan_open_dir(handle: &tauri::AppHandle, log: &Path, dir: &str, open: Option<
     let allowed = handle.asset_protocol_scope().allow_directory(dir, false);
     ScanState {
         dir: Some(dir.to_string()),
-        open: open.filter(|f| files.contains(f)),
+        // Первое из запомненных мест, что есть среди показанных листов.
+        open: open.into_iter().find(|f| files.contains(f)),
         files,
         kind: both.then(|| if pdf_shown { "pdf" } else { "images" }.to_string()),
         other,
@@ -1858,10 +1874,12 @@ fn scan_open_dir(handle: &tauri::AppHandle, log: &Path, dir: &str, open: Option<
     }
 }
 
-/// Папка сканов дела этого года и её файлы.
-#[tauri::command]
+/// Папка сканов дела этого года и её файлы. Не в главном потоке окна (как и
+/// `scan_set_dir`, `scan_set_kind`): папка с PDF читается целиком при первом
+/// открытии — 55 МБ файла Романа не должны останавливать окно.
+#[tauri::command(async)]
 fn scan_state(handle: tauri::AppHandle, app: State<App>, year: Option<i64>) -> Result<ScanState, String> {
-    let (dir_key, last_key) = scan_keys(year);
+    let (dir_key, _) = scan_keys(year);
     let (dir, last, kind) = with_conn(&app, "Папка сканов", |conn| {
         let mut dir = parish::setting_get(conn, &dir_key)?.filter(|d| !d.trim().is_empty());
         // Папку выбрали, когда у дела ещё не было года (новое дело): теперь
@@ -1874,7 +1892,7 @@ fn scan_state(handle: tauri::AppHandle, app: State<App>, year: Option<i64>) -> R
                 dir = Some(loose);
             }
         }
-        Ok((dir, parish::setting_get(conn, &last_key)?, parish::setting_get(conn, &scan_kind_key(year))?))
+        Ok((dir, scan_lasts(conn, year)?, parish::setting_get(conn, &scan_kind_key(year))?))
     })?;
     Ok(match dir.filter(|d| !d.trim().is_empty()) {
         Some(dir) => scan_open_dir(&handle, &app.log_path, &dir, last, kind),
@@ -1884,7 +1902,7 @@ fn scan_state(handle: tauri::AppHandle, app: State<App>, year: Option<i64>) -> R
 
 /// В папке и картинки, и PDF: показать «images» или «pdf». Выбор —
 /// настройка прихода по году дела, рядом с папкой.
-#[tauri::command]
+#[tauri::command(async)]
 fn scan_set_kind(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, kind: String) -> Result<ScanState, String> {
     if kind != "images" && kind != "pdf" {
         return Err(format!("Вид сканов «{kind}» неизвестен"));
@@ -1913,7 +1931,7 @@ async fn scan_pick_dir(handle: tauri::AppHandle, app: State<'_, App>, year: Opti
 /// приходит перетаскивание — перетащили файл, открывается он). `dropped` —
 /// путь брошен на окно мышью: чужой файл (не скан) тогда не трогает ничего —
 /// на окно бросают и другое, и папка сканов от этого меняться не должна.
-#[tauri::command]
+#[tauri::command(async)]
 fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, path: String,
                 dropped: Option<bool>) -> Result<ScanState, String>
 {
@@ -1940,7 +1958,7 @@ fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, pa
         return Err(fail(format!("«{path}» — не папка и не файл")));
     };
     let dir = dir.to_string_lossy().to_string();
-    let (dir_key, last_key) = scan_keys(year);
+    let (dir_key, _) = scan_keys(year);
     let (last, kind) = with_conn(&app, "Папка сканов", |conn| {
         let before = parish::setting_get(conn, &dir_key)?;
         parish::setting_set(conn, &dir_key, &dir)?;
@@ -1951,9 +1969,9 @@ fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, pa
         }
         let kind = parish::setting_get(conn, &scan_kind_key(year))?;
         // Та же папка выбрана снова — место в ней остаётся.
-        Ok((if before.as_deref() == Some(dir.as_str()) { parish::setting_get(conn, &last_key)? } else { None }, kind))
+        Ok((if before.as_deref() == Some(dir.as_str()) { scan_lasts(conn, year)? } else { Vec::new() }, kind))
     })?;
-    let state = scan_open_dir(&handle, &app.log_path, &dir, file.or(last), kind);
+    let state = scan_open_dir(&handle, &app.log_path, &dir, file.into_iter().chain(last).collect(), kind);
     if let Some(why) = &state.missing {
         write_log(&app.log_path, &format!("Папка сканов «{dir}»: {why}"));
     }
@@ -1963,7 +1981,7 @@ fn scan_set_dir(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, pa
 /// Запомнить открытый разворот — после перезапуска блок покажет его же.
 #[tauri::command]
 fn scan_remember(app: State<App>, year: Option<i64>, file: String) -> Result<(), String> {
-    let (_, last_key) = scan_keys(year);
+    let last_key = scan_last_key(year, &file);
     // Листание — запись в базу прихода, а память поиска сверяется по счётчику
     // изменений соединения: каждое перелистывание заставляло бы перечитать все
     // упоминания прихода. Место скана упоминаний не меняет — память, свежая

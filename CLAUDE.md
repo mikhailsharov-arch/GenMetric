@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 425, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 428, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
@@ -54,7 +54,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 57 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 61 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -553,7 +553,10 @@ genmetric-core --release search_real -- --ignored --nocapture`.
   — правишь одно, правь другое); показывается её единственная картинка JPEG
   без перекодирования (`core/src/pdf.rs` — свой разбор, без движка PDF; индекс
   страниц — в памяти, пока файл не изменился). TIFF → PNG (`tiff_png.rs`) в
-  кэше `кэш сканов/` папки данных, не больше 500 МБ. Картинки и PDF в одной
+  кэше `кэш сканов/` папки данных, не больше 500 МБ. Место в листах PDF помнится
+  отдельно от места в картинках (`scan_last_pdf_<год>` и `scan_last_<год>`).
+  Команды папки сканов — `command(async)`: PDF читается целиком при первом
+  открытии, главный поток окна этого ждать не должен. Картинки и PDF в одной
   папке — показан один вид (`ScanState.kind`, настройка `scan_kind_<год>`),
   листы другого — в `other`: запись на листе другого вида показывается
   обменом видов до «к набору». Файлы Романа для проверки разбора —

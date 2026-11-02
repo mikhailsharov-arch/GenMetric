@@ -46,9 +46,10 @@ pub fn pages(data: &[u8]) -> Result<Vec<Page>, String> {
     if !data.starts_with(b"%PDF") && find(data, b"%PDF", 0).map_or(true, |i| i > 1024) {
         return Err("это не PDF".into());
     }
-    let mut doc = Doc { data, at: HashMap::new(), streams: HashMap::new() };
+    let mut doc = Doc { data, at: HashMap::new(), streams: HashMap::new(), busy: HashSet::new() };
     let root = match doc.read_xref() {
         Ok(root) => root,
+        Err(e) if e == ENCRYPTED => return Err(e),
         // Таблица ссылок битая или её нет — места объектов по самому файлу.
         Err(_) => doc.rebuild()?,
     };
@@ -95,6 +96,10 @@ impl Obj {
         if let Obj::Num(n) = self { Some(*n) } else { None }
     }
 }
+
+const ENCRYPTED: &str = "PDF зашифрован (защищён паролем) — его страницы программа показать не может";
+/// Распакованный поток служебных данных больше этого — битый или злонамеренный файл.
+const INFLATE_LIMIT: u64 = 64 << 20;
 
 /// Глубина вложения массивов и словарей: битый файл не должен уронить
 /// программу переполнением стека.
@@ -333,6 +338,9 @@ struct Doc<'a> {
     at: HashMap<u32, Loc>,
     /// Распакованные потоки объектов: место первого объекта (/First) и тело.
     streams: HashMap<u32, (usize, Vec<u8>)>,
+    /// Потоки объектов, которые сейчас распаковываются: /Length потока,
+    /// указывающий внутрь него же, иначе ходил бы по кругу до переполнения стека.
+    busy: HashSet<u32>,
 }
 
 impl<'a> Doc<'a> {
@@ -351,6 +359,10 @@ impl<'a> Doc<'a> {
             let trailer = self.xref_section(off)?;
             if root.is_none() {
                 root = trailer.get("Root").cloned();
+            }
+            // Картинки зашифрованного PDF — не JPEG, а шифр: окно получило бы мусор.
+            if trailer.get("Encrypt").is_some() {
+                return Err(ENCRYPTED.into());
             }
             // Смешанный файл: обычная таблица и таблица потоком.
             if let Some(stm) = trailer.get("XRefStm").and_then(Obj::num) {
@@ -493,7 +505,12 @@ impl<'a> Doc<'a> {
                         Some(Loc::At(off)) => Lexer::new(self.data, *off).indirect()?.1,
                         _ => return Err(format!("нет потока объектов {stm}")),
                     };
-                    let raw = self.stream_bytes(&holder, self.data)?;
+                    if !self.busy.insert(stm) {
+                        return Err(format!("поток объектов {stm} ссылается сам на себя"));
+                    }
+                    let raw = self.stream_bytes(&holder, self.data);
+                    self.busy.remove(&stm);
+                    let raw = raw?;
                     let first = holder.get("First").and_then(Obj::num).unwrap_or(0.0) as usize;
                     self.streams.insert(stm, (first, raw));
                 }
@@ -534,12 +551,15 @@ impl<'a> Doc<'a> {
 
     /// Длина данных потока: /Length числом или ссылкой.
     fn stream_len(&mut self, s: &Obj, start: usize, buf: &[u8]) -> Result<usize, String> {
+        // Длина ссылкой на объект, которого ещё нет (таблица ссылок потоком
+        // читается сама) или он битый, — как длины нет.
         let len = match s.get("Length") {
-            Some(l) => self.resolve(&l.clone(), 0)?.num().map(|n| n as usize),
+            Some(l) => self.resolve(&l.clone(), 0).ok().and_then(|o| o.num()).map(|n| n as usize),
             None => None,
         };
+        // /Length 1e30 — не сложение с переполнением, а «длина врёт» (ревьюер 03.11).
         match len {
-            Some(n) if start + n <= buf.len() => Ok(n),
+            Some(n) if start.checked_add(n).is_some_and(|e| e <= buf.len()) => Ok(n),
             // Длины нет или она врёт — до «endstream».
             _ => {
                 let end = find(buf, b"endstream", start).ok_or("поток не закрыт")?;
@@ -566,7 +586,7 @@ impl<'a> Doc<'a> {
                 return Err(format!("сжатие {f} не поддерживается"));
             }
             let mut z = Vec::new();
-            flate2::read::ZlibDecoder::new(&out[..]).read_to_end(&mut z).map_err(|e| format!("поток не распаковался: {e}"))?;
+            flate2::read::ZlibDecoder::new(&out[..]).take(INFLATE_LIMIT).read_to_end(&mut z).map_err(|e| format!("поток не распаковался: {e}"))?;
             out = z;
         }
         let parms = match s.get("DecodeParms") {
@@ -598,7 +618,12 @@ impl<'a> Doc<'a> {
         let res = d.get("Resources").cloned().or(inherited);
         if let Some(Obj::Arr(kids)) = d.get("Kids").map(|k| self.resolve(k, 0)).transpose()? {
             for kid in kids {
-                self.walk(&kid, res.clone(), out, seen, depth + 1)?;
+                // Битая ссылка на одну страницу — лист с пометкой, а не весь
+                // PDF нечитаемым (ревьюер 03.11.2026).
+                if let Err(why) = self.walk(&kid, res.clone(), out, seen, depth + 1) {
+                    if depth + 1 > 64 { return Err(why); }
+                    out.push(Page::Unsupported(format!("страница не читается: {why}")));
+                }
             }
             return Ok(());
         }
@@ -821,6 +846,53 @@ pub(crate) mod tests {
         assert_eq!(got.len(), 1);
         let Page::Jpeg { offset, len } = got[0] else { panic!("{:?}", got[0]) };
         assert_eq!(&out[offset as usize..(offset + len) as usize], JPEG);
+    }
+
+    #[test]
+    fn object_stream_length_inside_itself_is_an_error() {
+        // /Length потока объектов — объект 2, который лежит в нём же.
+        let mut out = b"%PDF-1.5\n".to_vec();
+        let at3 = out.len();
+        out.extend_from_slice(b"3 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Length 2 0 R >>\nstream\n1 0 <<>>\nendstream\nendobj\n");
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 4\n0000000000 65535 f \n0000000000 00000 f \n0000000000 00000 f \n{at3:010} 00000 n \n").as_bytes());
+        out.extend_from_slice(format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        let mut doc = Doc { data: &out, at: HashMap::new(), streams: HashMap::new(), busy: HashSet::new() };
+        doc.at.insert(1, Loc::In(3, 0));
+        doc.at.insert(2, Loc::In(3, 0));
+        doc.at.insert(3, Loc::At(at3));
+        let _ = doc.load(1);
+        assert!(pages(&out).is_err());
+    }
+
+    #[test]
+    fn huge_length_and_broken_kid() {
+        let objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Count 2 /Kids [3 0 R 9 0 R] >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /Resources << /XObject << /I0 4 0 R >> >> >>".to_vec(),
+            {
+                let mut b = b"<< /Subtype /Image /Filter /DCTDecode /Length 1e30 >>\nstream\n".to_vec();
+                b.extend_from_slice(JPEG);
+                b.extend_from_slice(b"\nendstream");
+                b
+            },
+        ];
+        let pdf = sample_pdf(&objs, 1);
+        let got = pages(&pdf).unwrap();
+        assert_eq!(got.len(), 2, "{got:?}");
+        let Page::Jpeg { offset, len } = got[0] else { panic!("{:?}", got[0]) };
+        assert_eq!(&pdf[offset as usize..(offset + len) as usize], JPEG, "длина — до endstream");
+        assert!(matches!(got[1], Page::Unsupported(_)), "битая ссылка — одна страница с пометкой");
+    }
+
+    #[test]
+    fn encrypted_pdf_is_named() {
+        let mut pdf = three_pages();
+        let t = rfind(&pdf, b"/Root 1 0 R").unwrap();
+        pdf.splice(t..t, b"/Encrypt 9 0 R ".iter().copied());
+        // Место startxref не сдвинулось: вставка — после таблицы.
+        assert_eq!(pages(&pdf).unwrap_err(), ENCRYPTED);
     }
 
     #[test]

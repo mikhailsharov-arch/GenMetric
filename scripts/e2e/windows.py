@@ -1025,6 +1025,11 @@ def pdf_tiff_scans(driver, root, scan_attr):
     folder.mkdir()
     jpeg = Path(__file__).with_name("scan.jpg").read_bytes()
     (folder / "дело 1897.pdf").write_bytes(sample_pdf(jpeg))
+    # Настоящий PDF в папке, которую программе не открывали: отказ протокола —
+    # из-за папки, а не из-за того, что файла нет (ревьюер 03.11.2026).
+    foreign_dir = root / "чужая папка"
+    foreign_dir.mkdir()
+    (foreign_dir / "чужое.pdf").write_bytes(sample_pdf(jpeg))
     (folder / "лист.tif").write_bytes(bilevel_tiff())
     tab(driver, 'Дело')
     wait_until(lambda: bool(driver.find_elements(By.CSS_SELECTOR, "[data-scan-toggle]")))
@@ -1057,10 +1062,14 @@ def pdf_tiff_scans(driver, root, scan_attr):
           wait_until(lambda: scan_attr("data-scan-loaded") == "дело 1897.pdf#3" and not scan_attr("data-scan-problem"), 20),
           f"показан: {scan_attr('data-scan-loaded')!r}, беда: {scan_attr('data-scan-problem')!r}")
     def state():
-        return driver.execute_async_script(
-            "const done = arguments[arguments.length - 1];"
-            "window.__TAURI_INTERNALS__.invoke('scan_state', {year: 1897}).then("
-            "  (s) => done({kind: s.kind, files: s.files, bad: Object.keys(s.bad), open: s.open}), (e) => done({error: String(e)}));")
+        # Дело на экране — 1897 года (шаг 5е открывал «дело 1897»).
+        try:
+            return driver.execute_async_script(
+                "const done = arguments[arguments.length - 1];"
+                "window.__TAURI_INTERNALS__.invoke('scan_state', {year: 1897}).then("
+                "  (s) => done({kind: s.kind, files: s.files, bad: Object.keys(s.bad), open: s.open}), (e) => done({error: String(e)}));")
+        except TimeoutException as e:
+            return {"error": str(e).splitlines()[0]}
     # Открытый лист запоминается с задержкой — ждём, а не проверяем сразу (п. 108).
     wait_until(lambda: state().get("open") == "дело 1897.pdf#3", 10)
     got = state()
@@ -1078,8 +1087,30 @@ def pdf_tiff_scans(driver, root, scan_attr):
         "const done = arguments[arguments.length - 1]; const img = new Image();"
         "img.onload = () => done('показан'); img.onerror = () => done('не отдан');"
         "img.src = window.__TAURI_INTERNALS__.convertFileSrc(arguments[0], 'scan');",
-        str(root.parent / "чужое.pdf#1"))
+        str(foreign_dir / "чужое.pdf#1"))
     check("протокол scan не отдаёт файлы чужих папок", foreign == "не отдан", str(foreign))
+    # Запись на листе PDF: открыли сохранённую, «привязать к открытому»,
+    # сохранили — в базе «дело 1897.pdf#3» (критерий 3 спеки).
+    tab(driver, 'Рождения')
+    click(driver, "(//table[contains(@class,'saved')]//button[starts-with(normalize-space(),'Открыть')])[1]")
+    if wait_until(lambda: bool(driver.find_elements(By.CSS_SELECTOR, "[data-scan-rebind]")), 10):
+        driver.find_element(By.CSS_SELECTOR, "[data-scan-rebind]").click()
+        check("«привязать» — «скан: запишется дело 1897.pdf · стр. 3»", wait_until(lambda: "дело 1897.pdf · стр. 3" in (driver.execute_script(
+            "const b = document.querySelector('[data-scan-bind=rebound]'); return b ? b.textContent : '';") or ""), 5), error_details(driver))
+        click(driver, "//button[starts-with(normalize-space(),'Сохранить изменения')]")
+        wait_until(lambda: not driver.find_elements(By.CSS_SELECTOR, ".editbar"), 10)
+        bound = driver.execute_async_script(
+            "const done = arguments[arguments.length - 1];"
+            "const call = window.__TAURI_INTERNALS__.invoke;"
+            "(async () => {"
+            "  const last = (await call('entry_list', {section: 1, year: null, last: true}))[0];"
+            "  return (await call('entry_load', {id: last.id})).scan_file;"
+            "})().then(done, (e) => done('ошибка: ' + String(e)));")
+        check("запись на листе PDF сохранена: в базе «дело 1897.pdf#3»", bound == "дело 1897.pdf#3", str(bound))
+    else:
+        check("у открытой записи есть «привязать к открытому» (лист PDF)", False, error_details(driver))
+    tab(driver, 'Дело')
+    wait_until(lambda: bool(driver.find_elements(By.CSS_SELECTOR, "[data-scan-kind-set=images]")), 5)
     driver.execute_script("document.querySelector('[data-scan-kind-set=images]').click();")
     check("«картинки» — снова только TIFF",
           wait_until(lambda: scan_attr("data-scan-count") == "1" and scan_attr("data-scan-kind") == "images", 15),

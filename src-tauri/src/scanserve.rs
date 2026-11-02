@@ -55,9 +55,13 @@ impl Sheets {
         let path_owned = path.to_path_buf();
         let pages = Arc::new(genmetric_core::guarded("Разбор PDF", move || pdf::index_file(&path_owned))?);
         let mut all = self.pdfs.lock().unwrap_or_else(|e| e.into_inner());
-        // Память — на несколько дел: больше 16 файлов — старое забывается.
-        if all.len() >= 16 {
-            all.clear();
+        // Память — на несколько дел: больше 64 файлов — забывается один, самый
+        // старый по времени файла (не всё разом: папка из 17 PDF перечитывалась
+        // бы при каждом открытии, ревьюер 03.11.2026).
+        if all.len() >= 64 {
+            if let Some(old) = all.iter().min_by_key(|(_, v)| v.1).map(|(k, _)| k.clone()) {
+                all.remove(&old);
+            }
         }
         all.insert(path.to_path_buf(), (len, modified, pages.clone()));
         Ok(pages)
@@ -92,33 +96,16 @@ impl Sheets {
     }
 }
 
-/// «%D0%B4» → байты → строка.
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// Ответ протоколу `scan`. В отдельном потоке: разбор PDF и перекодирование
 /// TIFF не должны держать окно.
 pub fn handle(app: tauri::AppHandle, request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder) {
     use tauri::Manager;
     std::thread::spawn(move || {
-        let full = percent_decode(request.uri().path().trim_start_matches('/'));
+        let full = scans::percent_decode(request.uri().path().trim_start_matches('/'));
+        // Паника при разборе — тоже ответ: иначе лист «висит» без пометки.
         let got = match app.try_state::<Sheets>() {
-            Some(sheets) => sheets.serve(&full),
+            Some(sheets) => genmetric_core::caught(|| sheets.serve(&full))
+                .unwrap_or_else(|why| Err((500, format!("внутренняя ошибка программы ({why})")))),
             None => Err((503, "программа ещё не готова".into())),
         };
         let builder = tauri::http::Response::builder()
@@ -141,17 +128,4 @@ pub fn handle(app: tauri::AppHandle, request: tauri::http::Request<Vec<u8>>, res
             Err(e) => responder.respond(tauri::http::Response::new(e.to_string().into_bytes())),
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_percent() {
-        assert_eq!(percent_decode("%2FUsers%2F%D0%B4%D0%B5%D0%BB%D0%BE.pdf%2312"), "/Users/дело.pdf#12");
-        assert_eq!(percent_decode("C%3A%5C%D0%B0%5Ca.tif"), "C:\\а\\a.tif");
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(percent_decode("%д"), "%д", "не цифры после «%» — как есть, без паники");
-    }
 }
