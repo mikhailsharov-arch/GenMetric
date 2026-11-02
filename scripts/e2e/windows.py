@@ -1593,13 +1593,17 @@ def parishes(driver, wait):
     row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово']]"
     click(driver, row + "//button[@data-parish-rename-button]")
     renamed = shown(driver, PARISH + "//input[@data-parish-rename]")
-    renamed.send_keys(Keys.CONTROL, "a")
-    renamed.send_keys("Николо-Макарово проба")
-    renamed.send_keys(Keys.ENTER)
+    # Значение — через React-совместимую установку: Ctrl+A на раннере
+    # 02.11.2026 не выделил текст поля, и сохранять было нечего.
+    driver.execute_script(
+        "const i = arguments[0]; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
+        "set.call(i, arguments[1]); i.dispatchEvent(new Event('input', {bubbles: true}));", renamed, "Николо-Макарово проба")
+    typed = renamed.get_attribute("value")
+    click(driver, PARISH + "//button[@data-parish-rename-save]")
     time.sleep(0.8)
     listing = driver.find_element(By.XPATH, PARISH).text
     check("переименование: в перечне «Николо-Макарово проба»", "Николо-Макарово проба" in listing,
-          listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
+          f"в поле было «{typed}» | " + listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
     row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово проба']]"
     click(driver, row + "//button[@data-parish-delete-button]")
     click(driver, row + "//button[@data-parish-delete-yes]")
