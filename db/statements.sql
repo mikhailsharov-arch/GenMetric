@@ -372,6 +372,99 @@ DELETE FROM usage_stat
 UPDATE OR IGNORE usage_stat SET value = :name, value_norm = :name_norm
  WHERE kind = 'place' AND value = :old_name;
 
+-- @place_merge_card
+-- Объединение пунктов (спека 2026-10-20-obedinenie-punktov.md): карточка
+-- одного из двух пунктов по id.
+SELECT id, name, name_norm, coalesce(np_type, ''), coalesce(guberniya, ''), coalesce(uyezd, ''),
+       coalesce(volost, ''), coalesce(familio_url, ''), coalesce(comment, '')
+  FROM place WHERE id = :id;
+
+-- @place_merge_uses
+-- Сколько записей прихода стоит у пункта (у всех строк с этим названием) —
+-- для выбора, какой пункт остаётся, и для отчёта.
+SELECT count(DISTINCT m.entry_id) FROM person_mention m
+  JOIN place p ON p.id = m.place_id
+ WHERE p.name_norm = :name_norm;
+
+-- @place_merge_old_names
+-- Написания ушедшего пункта: память подсказок хранит название текстом.
+SELECT DISTINCT name FROM place WHERE name_norm = :old_norm;
+
+-- @place_merge_mentions
+-- Записи ушедшего пункта — к оставшемуся (ко всем строкам с его названием).
+UPDATE person_mention SET place_id = :keep_id
+ WHERE place_id IN (SELECT id FROM place WHERE name_norm = :old_norm);
+
+-- @place_merge_persons
+UPDATE person SET place_id = :keep_id
+ WHERE place_id IN (SELECT id FROM place WHERE name_norm = :old_norm);
+
+-- @place_merge_cases
+-- Село в деле хранится текстом — свои названия дел приход прочитает в Rust
+-- (нормализация там), здесь только перечень.
+SELECT id, village, coalesce(church, ''), coalesce(uyezd, ''), coalesce(guberniya, ''), coalesce(parish_key, '')
+  FROM mk_case WHERE trim(coalesce(village, '')) <> '';
+
+-- @place_merge_case_set
+UPDATE mk_case SET village = :village, parish_key = :parish_key WHERE id = :id;
+
+-- @place_merge_scope_merge
+-- Частоты подсказок «по приходу» привязаны к ключу прихода, в котором есть
+-- село: ключ сменился — частоты переходят вместе с ним. Значение, уже
+-- запомненное под новым ключом, получает сумму (ревьюер 03.11.2026)…
+UPDATE usage_stat
+   SET count = count + (SELECT u2.count FROM usage_stat u2
+                         WHERE u2.kind = usage_stat.kind AND u2.scope = 'parish'
+                           AND u2.scope_key = :old_key AND u2.value = usage_stat.value)
+ WHERE scope = 'parish' AND scope_key = :new_key
+   AND EXISTS (SELECT 1 FROM usage_stat u2
+                WHERE u2.kind = usage_stat.kind AND u2.scope = 'parish'
+                  AND u2.scope_key = :old_key AND u2.value = usage_stat.value);
+
+-- @place_merge_scope_drop
+-- …и строка со старым ключом уходит.
+DELETE FROM usage_stat
+ WHERE scope = 'parish' AND scope_key = :old_key
+   AND EXISTS (SELECT 1 FROM usage_stat u2
+                WHERE u2.kind = usage_stat.kind AND u2.scope = 'parish'
+                  AND u2.scope_key = :new_key AND u2.value = usage_stat.value);
+
+-- @place_merge_scope
+UPDATE usage_stat SET scope_key = :new_key WHERE scope = 'parish' AND scope_key = :old_key;
+
+-- @place_merge_drop
+DELETE FROM place WHERE name_norm = :old_norm;
+
+-- @place_merged_remember
+INSERT OR REPLACE INTO place_merged (old_norm, into_norm, merged_at)
+VALUES (:old_norm, :into_norm, strftime('%Y-%m-%d %H:%M:%f', 'now'));
+
+-- @place_merged_chain
+-- Пункт, в который раньше объединяли другие, сам ушёл — те идут дальше, к
+-- оставшемуся: «Б → В» после «А → Б» даёт «А → В».
+UPDATE place_merged SET into_norm = :into_norm WHERE into_norm = :old_norm;
+
+-- @place_merged_alive
+-- Оставшийся пункт — живой: если когда-то его самого объединяли в другой,
+-- та память больше не верна.
+DELETE FROM place_merged WHERE old_norm = :into_norm;
+
+-- @place_merged_pending
+-- Все объединения: переводить ли записи и сёла дел прихода, решает
+-- apply_merges — есть ли строка пункта или село дела с этим названием
+-- (село сравнивается нормализацией в Rust; ревьюер 03.11.2026: село без
+-- строки пункта иначе оставалось ушедшим названием).
+SELECT old_norm, into_norm FROM place_merged;
+
+-- @place_merged_into
+SELECT into_norm FROM place_merged WHERE old_norm = :old_norm;
+
+-- @place_merged_target
+-- Набрали название ушедшего пункта — первым в похожих идёт оставшийся.
+SELECT p.name FROM place_merged m JOIN place p ON p.name_norm = m.into_norm
+ WHERE m.old_norm = :name_norm
+ ORDER BY (p.full_location IS NULL OR trim(p.full_location) = ''), p.id LIMIT 1;
+
 -- @place_import_fill
 -- Импорт из Excel-индексатора: подробности пункта с листа «НП» — пункту без
 -- единой подробности. С 08.10.2026 пунктов в поставке нет, и без этого шага

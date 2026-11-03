@@ -108,7 +108,7 @@ def main() -> int:
               one_a("SELECT target FROM common.name_alias WHERE form = 'Пискарь'") == "Кесарь")
         tables = {r[0] for r in a.execute("SELECT name FROM common.sqlite_master WHERE type = 'table'")}
         check("персон, жён, причта и записей в общем файле нет",
-              tables == {"parish", "setting", "place", "place_renamed", "lookup", "name_alias"}, str(sorted(tables)))
+              tables == {"parish", "setting", "place", "place_renamed", "place_merged", "lookup", "name_alias"}, str(sorted(tables)))
         before = a.execute("SELECT count(*), (SELECT count(*) FROM main.lookup), (SELECT count(*) FROM common.place) FROM main.place").fetchone()
         sync(a)
         after = a.execute("SELECT count(*), (SELECT count(*) FROM main.lookup), (SELECT count(*) FROM common.place) FROM main.place").fetchone()
@@ -265,6 +265,58 @@ def main() -> int:
         check("отпечаток поставки — у прихода свой",
               a.execute("SELECT count(*) FROM common.setting WHERE key = 'seed_stamp'").fetchone()[0] == 0
               and a.execute("SELECT count(*) FROM main.setting WHERE key = 'seed_stamp'").fetchone()[0] == 1)
+
+        print("\n8а. Объединение пунктов (03.11.2026): память объединений — во все приходы")
+        a.execute(sql["place_save"], card("Глинище", "д.", "Макарьевский", "Костромская"))
+        a.execute(sql["place_save"], card("Глиннище", "д.", "Макарьевский", "Костромская"))
+        sync(a)
+        a.close()
+        b = open_parish(path_b, common)
+        sync(b)
+        check("оба пункта пришли в Б", b.execute("SELECT count(*) FROM main.place WHERE name LIKE 'Глин%ище'").fetchone()[0] == 2)
+        b.close()
+        a = open_parish(path_a, common)
+        # То, что пишет place_merge.rs (merge): память объединения и
+        # переименования, ушедший пункт убран.
+        a.execute(sql["place_merged_remember"], dict(old_norm=norm("Глиннище"), into_norm=norm("Глинище")))
+        a.execute(sql["place_renamed_remember"], dict(old_norm=norm("Глиннище")))
+        a.execute(sql["place_merge_drop"], dict(old_norm=norm("Глиннище")))
+        sync(a)
+        check("объединение — в общем файле, ушедший пункт оттуда убран",
+              a.execute("SELECT into_norm FROM common.place_merged WHERE old_norm = ?", (norm("Глиннище"),)).fetchone()
+              == (norm("Глинище"),)
+              and a.execute("SELECT count(*) FROM common.place WHERE name = 'Глиннище'").fetchone()[0] == 0)
+        a.close()
+        b = open_parish(path_b, common)
+        sync(b)
+        check("память объединения дошла до Б (записи переводит apply_merges)",
+              b.execute("SELECT into_norm FROM main.place_merged WHERE old_norm = ?", (norm("Глиннище"),)).fetchone()
+              == (norm("Глинище"),))
+        sync(b)
+        check("повторная сверка Б не возвращает ушедший пункт в общий файл",
+              b.execute("SELECT count(*) FROM common.place WHERE name = 'Глиннище'").fetchone()[0] == 0)
+        b.close()
+        a = open_parish(path_a, common)
+        a.execute(sql["place_save"], card("Глиннище", "с.", "Макарьевский", "Костромская"))
+        sync(a)
+        check("пункт, заведённый заново карточкой, — снова обычный: объединение забыто",
+              a.execute("SELECT count(*) FROM common.place_merged WHERE old_norm = ?", (norm("Глиннище"),)).fetchone()[0] == 0
+              and a.execute("SELECT count(*) FROM main.place_merged").fetchone()[0] == 0)
+
+        print("\n8б. Кольцо из двух приходов: «X → Y» в А, позже «Y → X» в Б (ревьюер 03.11.2026)")
+        a.execute(sql["place_save"], card("Кольцово", "д.", "Макарьевский", "Костромская"))
+        a.execute(sql["place_save"], card("Кальцово", "д.", "Макарьевский", "Костромская"))
+        sync(a)
+        x, y = norm("Кольцово"), norm("Кальцово")
+        a.execute("INSERT INTO main.place_merged (old_norm, into_norm, merged_at) VALUES (?, ?, '2026-11-03 10:00:00.000')", (x, y))
+        a.execute("INSERT INTO main.place_renamed (old_norm, renamed_at) VALUES (?, '2026-11-03 10:00:00.000')", (x,))
+        a.execute("INSERT INTO common.place_merged (old_norm, into_norm, merged_at) VALUES (?, ?, '2026-11-03 11:00:00.000')", (y, x))
+        a.execute("INSERT INTO common.place_renamed (old_norm, renamed_at) VALUES (?, '2026-11-03 11:00:00.000')", (y,))
+        sync(a)
+        check("верно более позднее «Y → X», «X» — живой и в общем файле",
+              a.execute("SELECT old_norm, into_norm FROM main.place_merged WHERE old_norm IN (?, ?)", (x, y)).fetchall() == [(y, x)]
+              and a.execute("SELECT count(*) FROM main.place_renamed WHERE old_norm = ?", (x,)).fetchone()[0] == 0
+              and a.execute("SELECT count(*) FROM common.place WHERE name_norm = ?", (x,)).fetchone()[0] == 1)
 
         print("\n9. Тестовые пункты шаблона не возвращаются из общего файла (Роман 06.10.2026)")
         a.execute("INSERT INTO common.place (name, name_norm, np_type, guberniya, uyezd, origin) "

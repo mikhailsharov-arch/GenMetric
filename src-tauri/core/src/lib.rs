@@ -12,6 +12,7 @@ pub mod import;
 pub mod import_familio;
 pub mod parish;
 pub mod pdf;
+pub mod place_merge;
 pub mod records;
 pub mod scans;
 pub mod search;

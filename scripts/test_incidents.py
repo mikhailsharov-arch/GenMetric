@@ -879,8 +879,12 @@ def incident_20261006_molcha_i_padenie():
 
     db = read("src-tauri/core/src/db.rs")
     check("копия перед обновлением называется по файлу прихода",
-          'format!("{stem}{BACKUP_MARK}{seconds}.sqlite")' in db and "genmetric-до-обновления-{seconds}" not in db)
-    check("копии и заменённые файлы приходами не становятся", "contains(crate::db::BACKUP_MARK)" in parish)
+          'format!("{stem}{mark}{seconds}.sqlite")' in db and "backup_marked(conn, db_path, BACKUP_MARK)" in db
+          and "genmetric-до-обновления-{seconds}" not in db)
+    # С 03.11.2026 копий два вида (перед обновлением и перед объединением
+    # пунктов) — обе метки в одном правиле is_backup.
+    check("копии и заменённые файлы приходами не становятся", "crate::db::is_backup(n)" in parish
+          and "name.contains(BACKUP_MARK) || name.contains(MERGE_MARK)" in db)
     migrate = read("db/migrate.sql")
     check("слияние двойников: лучшая строка — с подробностями; при тёзках пустая не сливается",
           "ORDER BY (b.sig = '||||')" in migrate and "s.kinds <= 1" in migrate
@@ -1146,8 +1150,9 @@ def incident_20261008_chistaya_postavka():
     check("«законная жена его» вне поля матери — по званию мужа",
           'hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());' in main_rs
           and "keepWifeRank" in read("src/BirthForm.tsx").split('title="Мать"', 1)[-1][:500])
-    check("версия схемы 11 — в сборщике и в программе (10 — комментарий пункта, 11 — файл скана у записи)",
-          "SCHEMA_VERSION = 11" in build and "SCHEMA_VERSION: i64 = 11" in read("src-tauri/core/src/db.rs"))
+    check("версия схемы 12 — в сборщике и в программе (10 — комментарий пункта, 11 — файл скана у записи, "
+          "12 — объединённые пункты)",
+          "SCHEMA_VERSION = 12" in build and "SCHEMA_VERSION: i64 = 12" in read("src-tauri/core/src/db.rs"))
 
 
 def incident_20261009_otvet_na_sborku_08_10():
@@ -1822,6 +1827,58 @@ def incident_20261103_tiff_i_pdf_i_dolg_e2e():
           'format!("scan_last_pdf_{y}")' in main and "let last_key = scan_last_key(year, &file);" in main)
 
 
+def incident_20261103_obedinenie_punktov():
+    """
+    03.11.2026, спринт 2 «Объединение пунктов» (З4.5; Роман 12.10.2026:
+    «Глиница» и «Глинница» — один пункт, переименовать в уже заведённый
+    программа не давала). Объединение кнопкой в карточке, во всех приходах:
+    записи, память подсказок и село дела — к оставшемуся; ушедший пункт не
+    возвращается ни сверкой, ни обновлением; перед объединением — копии.
+    """
+    schema, common, sync_sql = read("db/schema.sql"), read("db/common.sql"), read("db/parish_sync.sql")
+    check("память объединений — и в приходе, и в общем файле",
+          "CREATE TABLE place_merged (" in schema and "CREATE TABLE IF NOT EXISTS place_merged (" in common)
+    check("сверка разносит объединения и забывает их вместе с переименованием",
+          "INSERT OR REPLACE INTO common.place_merged" in sync_sql and "INSERT OR REPLACE INTO main.place_merged" in sync_sql
+          and "DELETE FROM main.place_merged WHERE old_norm NOT IN (SELECT old_norm FROM main.place_renamed);" in sync_sql)
+    parish = read("src-tauri/core/src/parish.rs")
+    check("другие приходы переводят записи при сверке, в её транзакции",
+          "crate::place_merge::apply_merges(conn)" in parish.split("pub fn sync(", 1)[1].split("pub fn has_common", 1)[0])
+    merge = read("src-tauri/core/src/place_merge.rs")
+    check("ушедшее название — и в памяти переименований: обновление и сверка его не вернут",
+          'statement("place_renamed_remember")' in merge and 'statement("place_merged_remember")' in merge)
+    check("записи, персоны и село дела переходят к оставшемуся",
+          all(f'statement("{b}")' in merge for b in ("place_merge_mentions", "place_merge_persons", "place_merge_case_set")))
+    check("тесты крейта: один приход, двойник с приставкой, другой приход",
+          all(t in merge for t in ("fn merge_moves_everything", "fn prefix_twin_and_chain", "fn other_parish_follows"))
+          and "fn merge_reaches_other_parish" in parish)
+    main_rs = read("src-tauri/src/main.rs")
+    body = main_rs.split("fn place_merge(", 1)[1].split("\n}\n", 1)[0]
+    check("перед объединением — копии прихода и общего файла, иначе объединения нет",
+          "backup_marked(conn" in body and "MERGE_MARK" in body and body.index("backup_marked") < body.index("place_merge::merge"))
+    check("копии объединения приходами не становятся",
+          "name.contains(MERGE_MARK)" in read("src-tauri/core/src/db.rs"))
+    check("набранное название ушедшего пункта подсказывает оставшийся",
+          'statement("place_merged_target")' in main_rs)
+    card = read("src/PlaceCard.tsx")
+    check("кнопка — только в карточке известного пункта, и обе карточки (НП и «Село») её показывают",
+          "existing && onMerge" in card and "data-place-merge" in card
+          and "onMerged=" in read("src/PersonBlock.tsx") and "onMerged=" in read("src/CaseHeader.tsx"))
+    # Находки агентов 03.11.2026.
+    check("шаги окна объединения — разные окна: фокус встаёт, Esc и Enter работают (проверяющий)",
+          all(f'<Modal key="{k}"' in card for k in ("pick", "choose", "done")))
+    check("после выбора пункта курсор — на выборе, не на «Объединить» (ревьюер)",
+          "data-merge-go data-autofocus" not in card)
+    check("«Село» на «Деле» слушает переименование и объединение из формы (ревьюер)",
+          "usePlaceRenamed(" in read("src/CaseHeader.tsx"))
+    upd = main_rs.split("fn place_update(", 1)[1].split("\n}\n", 1)[0]
+    check("переименование оставшегося пункта ведёт за собой объединённые в него (ревьюер)",
+          'statement("place_merged_chain")' in upd and 'statement("place_merged_alive")' in upd)
+    check("село дела без строки пункта тоже переводится; кольцо из двух приходов разрывается (ревьюер)",
+          "villages.contains(&old_norm)" in merge and "CREATE TEMP TABLE s_ring" in sync_sql)
+    check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
+
+
 def incident_20261103_otvet_romana_na_sborku_03_11():
     """
     03.11.2026, ответ Романа на сборку 03.11 (пп. 114–119) и долг ревью
@@ -2099,6 +2156,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261103_obedinenie_punktov,
     incident_20261103_otvet_romana_na_sborku_03_11,
     incident_20261103_tiff_i_pdf_i_dolg_e2e,
     incident_20261020_otvet_na_sborku_19_10,

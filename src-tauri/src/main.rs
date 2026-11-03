@@ -1305,6 +1305,16 @@ fn place_check(app: State<App>, name: String) -> Result<PlaceCheck, String> {
         let max_dist = (norm.chars().count() / 4).max(2);
         // Деревни-тёзки с комментарием — первыми: название то же самое.
         let mut similar: Vec<Similar> = Vec::new();
+        // Набрали название пункта, объединённого с другим, — первым идёт
+        // оставшийся: одним Enter запись встаёт к нему (03.11.2026).
+        if let Some(target) = conn
+            .query_row(&statement("place_merged_target")?, rusqlite::named_params! { ":name_norm": norm },
+                       |r| r.get::<_, String>(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+        {
+            similar.push(Similar { value: target, gender: None, distance: 0 });
+        }
         {
             let mut stmt = conn.prepare(&statement("place_commented")?).map_err(|e| e.to_string())?;
             let rows = stmt
@@ -1463,9 +1473,80 @@ fn place_update(app: State<App>, id: i64, card: PlaceCard) -> Result<(), String>
             tx.execute(&statement("place_renamed_remember")?, rusqlite::named_params! {
                 ":old_norm": normalize(&old_name),
             }).map_err(|e| e.to_string())?;
+            // Объединённые в этот пункт идут за ним под новым названием, а
+            // новое название — живое, даже если его когда-то объединяли в
+            // другой (ревьюер 03.11.2026: иначе цепочка «X → Y» обрывалась
+            // в приходе, где Y нет).
+            tx.execute(&statement("place_merged_chain")?, rusqlite::named_params! {
+                ":old_norm": normalize(&old_name), ":into_norm": norm,
+            }).map_err(|e| e.to_string())?;
+            tx.execute(&statement("place_merged_alive")?, rusqlite::named_params! { ":into_norm": norm })
+                .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
+    })
+}
+
+/// Сколько записей у двух пунктов — окно объединения показывает, у какого
+/// их больше (по умолчанию остаётся он).
+#[tauri::command]
+fn place_merge_uses(app: State<App>, a: String, b: String) -> Result<(i64, i64), String> {
+    with_conn(&app, "Объединение пунктов: число записей", |conn| {
+        Ok((genmetric_core::place_merge::uses(conn, &normalize(&a))?,
+            genmetric_core::place_merge::uses(conn, &normalize(&b))?))
+    })
+}
+
+/// Пункты, похожие на этот, — кандидаты в объединение: «Глинница» к
+/// «Глинице», «Шишкино» к «с.Шишкино» (приставка типа не считается).
+#[tauri::command]
+fn place_merge_candidates(app: State<App>, name: String) -> Result<Vec<Similar>, String> {
+    with_conn(&app, &format!("Похожие на пункт «{name}»"), |conn| {
+        let key = |n: &str| normalize(genmetric_core::text::strip_place_type(n));
+        let (own, q) = (normalize(&name), key(&name));
+        let mut stmt = conn.prepare(&statement("place_names")?).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (value, norm) = row.map_err(|e| e.to_string())?;
+            if norm != own && !items.iter().any(|(_, v, _): &(String, String, Option<String>)| *v == value) {
+                items.push((key(&value), value, None));
+            }
+        }
+        let max_dist = (q.chars().count() / 4).max(2);
+        Ok(rank_similar(&q, items, 8, max_dist))
+    })
+}
+
+/// Объединение пунктов (спека 2026-10-20-obedinenie-punktov.md): остаётся
+/// `keep_id`, `drop_id` уходит. Перед этим — копии файла прихода и общего
+/// файла рядом с ними (метка «-до-объединения-пунктов-»).
+#[tauri::command]
+fn place_merge(app: State<App>, keep_id: i64, drop_id: i64) -> Result<genmetric_core::place_merge::Merged, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = app.data_dir.clone();
+    with_conn_shared(&app, "Объединение пунктов", |conn| {
+        genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::MERGE_MARK)
+            .map_err(|e| format!("копия прихода не сделана, объединение отменено: {e}"))?;
+        if parish::has_common(conn) {
+            let common = parish::common_path(&dir);
+            let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs()).unwrap_or(0);
+            let stem = common.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+            let mut target = common.with_file_name(format!("{stem}{}{seconds}.sqlite", genmetric_core::db::MERGE_MARK));
+            for n in 2.. {
+                if !target.exists() {
+                    break;
+                }
+                target = common.with_file_name(format!("{stem}{}{seconds}-{n}.sqlite", genmetric_core::db::MERGE_MARK));
+            }
+            std::fs::copy(&common, &target)
+                .map_err(|e| format!("копия общего файла не сделана, объединение отменено: {e}"))?;
+        }
+        genmetric_core::place_merge::merge(conn, keep_id, drop_id)
     })
 }
 
@@ -2552,6 +2633,9 @@ fn main() {
             place_save,
             place_get,
             place_update,
+            place_merge,
+            place_merge_uses,
+            place_merge_candidates,
             set_always_on_top,
             scan_state,
             scan_set_dir,

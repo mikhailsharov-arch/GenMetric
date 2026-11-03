@@ -62,12 +62,22 @@ type Props = {
   twin?: boolean;
   /** Кнопка «Другой пункт с тем же названием» в карточке известного пункта. */
   onTwin?: () => void;
+  /** Пункты объединены (кнопка «Объединить с другим пунктом» у известного
+   *  пункта): `kept` остался, `dropped` ушёл из справочника. */
+  onMerged?: (kept: string, dropped: string) => void;
   onPick: (name: string) => void;
   onSaved: (name: string) => void;
   onCancel: () => void;
 };
 
-export default function PlaceCard({ name, similar, defaults, existing, lastVolost, last, defaultType, fillBare, twin, onTwin, onPick, onSaved, onCancel }: Props) {
+export default function PlaceCard(props: Props) {
+  const [merging, setMerging] = useState(false);
+  if (merging && props.existing && props.onMerged)
+    return <MergePlaces mine={props.existing} onMerged={props.onMerged} onBack={() => setMerging(false)} onCancel={props.onCancel} />;
+  return <PlaceForm {...props} onMerge={props.existing && props.onMerged ? () => setMerging(true) : undefined} />;
+}
+
+function PlaceForm({ name, similar, defaults, existing, lastVolost, last, defaultType, fillBare, twin, onTwin, onMerge, onPick, onSaved, onCancel }: Props & { onMerge?: () => void }) {
   // Название правится только у известного пункта (Роман 25.09.2026: «вдруг
   // пользователь допустил ошибку в названии»); у нового оно уже в заголовке.
   // Название в карточке — чистое; комментарий деревни-тёзки — отдельным
@@ -329,7 +339,194 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
             Другой пункт с тем же названием
           </button>
         )}
+        {existing && onMerge && (
+          <button type="button" className="toggle" data-place-merge onClick={onMerge}
+                  title="Этот пункт и другой — одно и то же (опечатка, приставка «с.»): записи обоих станут записями одного">
+            Объединить с другим пунктом
+          </button>
+        )}
         <button type="button" className="toggle" onClick={onCancel}>{existing || twin ? "Отменить (Esc)" : "Исправить название (Esc)"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+type Merged = { kept: string; dropped: string; entries: number; cases: number; filled: string[]; differs: string[] };
+
+const CARD_FIELDS = [["np_type", "тип"], ["guberniya", "губерния"], ["uyezd", "уезд"], ["volost", "волость"],
+                     ["familio_url", "ссылка Familio"]] as const;
+
+/** Подробности карточки одной строкой: «д., Макарьевский уезд, Котельская волость». */
+function cardLine(p: PlaceInfo): string {
+  const parts = [p.np_type, p.uyezd && `${p.uyezd} уезд`, p.volost && `${p.volost} волость`,
+                 p.guberniya && `${p.guberniya} губ.`].map((v) => (v ?? "").trim()).filter(Boolean);
+  return parts.length ? parts.join(", ") : "без подробностей";
+}
+
+/**
+ * Объединение пунктов (спека 2026-10-20-obedinenie-punktov.md; Роман
+ * 12.10.2026: «Глиница» и «Глинница» — один пункт; ответ 20.10 — только
+ * кнопкой в карточке, во всех приходах). Шаги: выбрать второй пункт
+ * (похожие — списком), решить, какой остаётся, объединить, прочитать отчёт.
+ */
+function MergePlaces({ mine, onMerged, onBack, onCancel }: {
+  mine: PlaceInfo; onMerged: (kept: string, dropped: string) => void; onBack: () => void; onCancel: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [like, setLike] = useState<Similar[] | null>(null);
+  const [other, setOther] = useState<{ info: PlaceInfo; usesMine: number; usesOther: number } | null>(null);
+  const [keepMine, setKeepMine] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<Merged | null>(null);
+  const asked = useRef(false);
+  if (!asked.current) {
+    asked.current = true;
+    invoke<Similar[]>("place_merge_candidates", { name: mine.name })
+      .then(setLike)
+      .catch((e) => { setLike([]); report(`Не удалось найти пункты, похожие на «${mine.name}»`, e); });
+  }
+
+  async function choose(value: string) {
+    const typed = value.trim();
+    if (!typed || busy) return;
+    setBusy(true);
+    try {
+      const info = await invoke<PlaceInfo | null>("place_get", { name: typed });
+      if (!info) {
+        warn("Такого пункта нет", `«${typed}» в справочнике нет — выберите пункт из подсказки или из списка похожих`);
+        return;
+      }
+      if (info.id === mine.id || info.name === mine.name) {
+        warn("Это тот же пункт", "выберите другой пункт — тот, с которым объединить этот");
+        return;
+      }
+      const [usesMine, usesOther] = await invoke<[number, number]>("place_merge_uses", { a: mine.name, b: info.name });
+      dismissWarn();
+      // По умолчанию остаётся пункт, у которого больше записей; поровну —
+      // тот, чью карточку открыли.
+      setKeepMine(usesMine >= usesOther);
+      setOther({ info, usesMine, usesOther });
+    } catch (e) {
+      report(`Не удалось открыть пункт «${typed}»`, e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function merge() {
+    if (!other || busy) return;
+    const keep = keepMine ? mine : other.info;
+    const gone = keepMine ? other.info : mine;
+    setBusy(true);
+    try {
+      setDone(await invoke<Merged>("place_merge", { keepId: keep.id, dropId: gone.id }));
+    } catch (e) {
+      report(`Не удалось объединить «${gone.name}» с «${keep.name}»`, e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (done) {
+    return (
+      // Свой key у каждого шага: иначе React берёт тот же экземпляр окна, фокус
+      // на [data-autofocus] не ставится, и Esc/Enter не работают (проверяющий
+      // 03.11.2026).
+      <Modal key="done" title="Пункты объединены" kind="place-merge" onClose={() => onMerged(done.kept, done.dropped)}>
+        <div data-merge-done>
+          <p className="hint">
+            <b>«{done.dropped}» объединён с «{done.kept}».</b> Записей перешло: {done.entries}
+            {done.cases > 0 && `, дел с этим селом: ${done.cases}`}. В подсказках и выгрузках теперь только «{done.kept}»;
+            другие приходы переведут свои записи при открытии. Копии прихода и общего файла до объединения лежат в папке данных.
+          </p>
+          {done.filled.length > 0 && <p className="hint">Взято у «{done.dropped}» в пустые поля: {done.filled.join("; ")}.</p>}
+          {done.differs.length > 0 && (
+            <p className="hint" data-merge-differs>Расходились — оставлено своё, проверьте карточку: {done.differs.join("; ")}.</p>
+          )}
+        </div>
+        <div className="modalbar">
+          <button type="button" className="primary" data-autofocus onClick={() => onMerged(done.kept, done.dropped)}>Готово</button>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (other) {
+    const keep = keepMine ? mine : other.info;
+    const gone = keepMine ? other.info : mine;
+    const filled: string[] = [];
+    const differs: string[] = [];
+    for (const [k, label] of CARD_FIELDS) {
+      const a = (keep[k] ?? "").trim(), b = (gone[k] ?? "").trim();
+      if (!b || a === b) continue;
+      if (!a) filled.push(`${label}: ${b}`);
+      else differs.push(`${label}: «${a}» против «${b}»`);
+    }
+    // Комментарий — часть названия, и название остаётся у оставшегося.
+    if (gone.comment.trim() && gone.comment.trim() !== keep.comment.trim())
+      differs.push(`комментарий «${gone.comment.trim()}» у «${gone.name}» не перейдёт`);
+    const row = (p: PlaceInfo, uses: number, isMine: boolean) => (
+      <label className="mergeopt" data-merge-keep={p.name}>
+        {/* Курсор — на выборе, а не на «Объединить»: двойной Enter после
+            выбора второго пункта объединял, не дав прочитать (ревьюер 03.11.2026). */}
+        <input type="radio" name="merge-keep" checked={keepMine === isMine} onChange={() => setKeepMine(isMine)}
+               {...(keepMine === isMine ? { "data-autofocus": "" } : {})} />
+        {" "}<b>{p.name}</b> — записей: {uses}; {cardLine(p)}
+      </label>
+    );
+    return (
+      <Modal key="choose" title={`Объединить «${mine.name}» и «${other.info.name}»`} kind="place-merge" onClose={onCancel}>
+        <p className="hint">Какой пункт остаётся — его название и карточка? Второй уйдёт из справочника, его записи,
+          подсказки и село в деле перейдут к оставшемуся — в этом приходе сразу, в других — при их открытии.</p>
+        <div className="mergechoice">
+          {row(mine, other.usesMine, true)}
+          {row(other.info, other.usesOther, false)}
+        </div>
+        {filled.length > 0 && <p className="hint">Пустое у «{keep.name}» возьмётся у «{gone.name}»: {filled.join("; ")}.</p>}
+        {differs.length > 0 && <p className="hint">Расходится — у оставшегося останется своё: {differs.join("; ")}.</p>}
+        <p className="hint">Перед объединением программа сделает копии прихода и общего файла.</p>
+        <div className="modalbar">
+          <button type="button" className="primary" data-merge-go disabled={busy} onClick={() => void merge()}>
+            {busy ? "Объединяю…" : `Объединить: остаётся «${keep.name}»`}
+          </button>
+          <button type="button" className="toggle" onClick={() => setOther(null)}>Назад</button>
+          <button type="button" className="toggle" onClick={onCancel}>Отменить (Esc)</button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal key="pick" title={`Объединить «${mine.name}» с другим пунктом`} kind="place-merge" onClose={onCancel}>
+      <p className="hint">Выберите пункт, который на самом деле тот же, что «{mine.name}» (опечатка, «с.» в названии).
+        Следующим шагом вы решите, какое название остаётся.</p>
+      {like && like.length > 0 && (
+        <>
+          <p className="hint">Похожие в справочнике:</p>
+          <ul className="suggest static resolve" data-merge-like>
+            {like.map((s) => (
+              <li key={s.value} onMouseDown={(e) => { e.preventDefault(); void choose(s.value); }}>
+                <span className="val">{s.value}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {like && like.length === 0 && <p className="hint">Похожих названий нет — найдите пункт по названию.</p>}
+      <div data-merge-other onKeyDown={(e) => {
+        // Enter при закрытом списке подсказок — дальше; при открытом его
+        // забирает список (выбор строки).
+        if (e.key === "Enter" && !document.querySelector("[data-merge-other] .suggest:not(.static)")) {
+          e.preventDefault();
+          void choose(text);
+        }
+      }}>
+        <Suggest label="Пункт" kind="place" value={text} onChange={setText} autofocus />
+      </div>
+      <div className="modalbar">
+        <button type="button" className="primary" disabled={busy || !text.trim()} onClick={() => void choose(text)}>Дальше</button>
+        <button type="button" className="toggle" onClick={onBack}>Назад к карточке</button>
+        <button type="button" className="toggle" onClick={onCancel}>Отменить (Esc)</button>
       </div>
     </Modal>
   );

@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS place_renamed (
   renamed_at  TEXT
 );
 
+-- Объединённые пункты (03.11.2026): по ним другие приходы при открытии
+-- переводят свои записи на оставшийся пункт.
+CREATE TABLE IF NOT EXISTS place_merged (
+  old_norm    TEXT PRIMARY KEY,
+  into_norm   TEXT NOT NULL,
+  merged_at   TEXT
+);
+
 -- Пополненное человеком в перечнях (lookup, origin = 'user'): звания,
 -- причины смерти, родство, архивы, церкви, уезды, губернии, типы НП.
 CREATE TABLE IF NOT EXISTS lookup (

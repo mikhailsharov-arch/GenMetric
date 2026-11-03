@@ -517,6 +517,13 @@ export default function PersonBlock({
             }
             placeDone(saved);
           }}
+          onMerged={(kept, dropped) => {
+            // Ушедший пункт мог стоять в любой открытой форме — как при
+            // переименовании, все формы получают оставшийся.
+            onPlaceRenamed?.(dropped, kept);
+            window.dispatchEvent(new CustomEvent(PLACE_RENAMED, { detail: { oldName: dropped, newName: kept } }));
+            placeDone(kept);
+          }}
           onCancel={placeCancel}
         />
       )}

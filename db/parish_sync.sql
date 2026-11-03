@@ -33,6 +33,40 @@ INSERT OR IGNORE INTO main.place_renamed (old_norm, renamed_at)
 SELECT old_norm, coalesce(renamed_at, datetime('now')) FROM common.place_renamed;
 DELETE FROM common.place WHERE name_norm IN (SELECT old_norm FROM common.place_renamed);
 
+-- 1б. Память объединений (03.11.2026) — объединение, из двух записей об одном
+--     названии верна более поздняя. Объединение живо, пока прежнее название
+--     лежит в памяти переименований: пункт, заведённый заново карточкой
+--     после объединения, — снова обычный пункт (шаг 1 выше), и его записи
+--     никуда не переводятся. Сами ссылки переводит apply_merges (parish.rs,
+--     place_merge.rs) после этого файла, в той же транзакции.
+INSERT OR REPLACE INTO common.place_merged (old_norm, into_norm, merged_at)
+SELECT m.old_norm, m.into_norm, m.merged_at FROM main.place_merged m
+ WHERE coalesce(m.merged_at, '') > coalesce((SELECT c.merged_at FROM common.place_merged c
+                                              WHERE c.old_norm = m.old_norm), '')
+    OR NOT EXISTS (SELECT 1 FROM common.place_merged c WHERE c.old_norm = m.old_norm);
+INSERT OR REPLACE INTO main.place_merged (old_norm, into_norm, merged_at)
+SELECT c.old_norm, c.into_norm, coalesce(c.merged_at, datetime('now')) FROM common.place_merged c
+ WHERE coalesce(c.merged_at, '') > coalesce((SELECT m.merged_at FROM main.place_merged m
+                                              WHERE m.old_norm = c.old_norm), '')
+    OR NOT EXISTS (SELECT 1 FROM main.place_merged m WHERE m.old_norm = c.old_norm);
+--    Кольцо из двух приходов: в одном «X → Y», в другом до сверки «Y → X»
+--    (ревьюер 03.11.2026). Верно более позднее; пункт, в который оно
+--    объединило, — живой: прежнее объединение и память его переименования
+--    уходят, иначе ни X, ни Y больше не дошли бы до общего файла.
+DROP TABLE IF EXISTS temp.s_ring;
+CREATE TEMP TABLE s_ring AS
+SELECT a.old_norm FROM main.place_merged a
+  JOIN main.place_merged b ON b.old_norm = a.into_norm AND b.into_norm = a.old_norm
+ WHERE coalesce(a.merged_at, '') < coalesce(b.merged_at, '')
+    OR (coalesce(a.merged_at, '') = coalesce(b.merged_at, '') AND a.old_norm > b.old_norm);
+DELETE FROM main.place_merged WHERE old_norm IN (SELECT old_norm FROM temp.s_ring);
+DELETE FROM common.place_merged WHERE old_norm IN (SELECT old_norm FROM temp.s_ring);
+DELETE FROM main.place_renamed WHERE old_norm IN (SELECT old_norm FROM temp.s_ring);
+DELETE FROM common.place_renamed WHERE old_norm IN (SELECT old_norm FROM temp.s_ring);
+DROP TABLE IF EXISTS temp.s_ring;
+DELETE FROM main.place_merged WHERE old_norm NOT IN (SELECT old_norm FROM main.place_renamed);
+DELETE FROM common.place_merged WHERE old_norm NOT IN (SELECT old_norm FROM common.place_renamed);
+
 -- ---------------------------------------------------------------------------
 -- 1а. Тестовые пункты шаблона Excel («Лодзь», «Котело» — Роман 06.10.2026)
 --     убраны из поставки и из прихода (migrate.sql). В общем файле они

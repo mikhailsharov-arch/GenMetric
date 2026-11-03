@@ -25,21 +25,21 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 90, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 91, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 137, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
     python3 db/test_export.py                                   # → «Итог: успешно 139, ошибок 0» (выгрузка Familio и Excel)
-    python3 db/test_parish.py                                   # → «Итог: успешно 40, ошибок 0» (приходы, общие справочники)
+    python3 db/test_parish.py                                   # → «Итог: успешно 46, ошибок 0» (приходы, общие справочники, объединение пунктов)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 55, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель, имя листа PDF)
     node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 75, ошибок 0» (месяц сам: по дню обряда, первая цифра дня, смена года)
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 446, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 462, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
@@ -54,7 +54,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 65 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 69 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -78,6 +78,12 @@ Familio (`import_familio.rs`: колонки по подписям, нескол
 удаляется (`parish::remove`): файл не стирается, а уходит в папку
 «Удалённые приходы» рядом с папкой данных — не в «приходы», иначе сборка
 перечня по папке вернула бы его. Открытый и первый приход не удаляются.
+С 03.11.2026 пункты объединяются (`place_merge.rs`, кнопка в карточке
+пункта; схема 12): ушедшее название — в `place_renamed` и `place_merged`,
+сверка разносит `place_merged`, а `apply_merges` в её транзакции переводит
+записи и сёла дел других приходов. Перед объединением — копии прихода и
+общего файла (`db::MERGE_MARK`; копии приходами не считаются — `db::is_backup`).
+Новый вид памяти, где пункт хранится названием, — переводить и в `repoint`.
 
 **Импорт из Excel** проверяется синтетическим индексатором
 `db/fixtures/indexer.xlsx` (собирает `python3 scripts/make_indexer_fixture.py`,

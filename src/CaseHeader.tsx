@@ -11,6 +11,7 @@ import ReviewDialog from "./ReviewDialog";
 import NumberField from "./NumberField";
 import Modal from "./Modal";
 import PlaceCard, { type PlaceInfo, type Similar } from "./PlaceCard";
+import { PLACE_RENAMED, usePlaceRenamed } from "./PersonBlock";
 import { placeCase } from "./names";
 import { placeTypes } from "./placetypes";
 
@@ -85,6 +86,12 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
   // Реквизиты поправлены, но не сохранены: смена года или прихода их не
   // должна терять молча (проверяющий 02.10.2026).
   const [edited, setEdited] = useState(false);
+  // Пункт переименовали или объединили в карточке НП формы, а в «Селе»
+  // стоит прежнее название: иначе «Сохранить дело» записало бы его обратно
+  // (ревьюер 03.11.2026). Дело в базе объединение уже поправило — поле
+  // меняется без пометки «изменено».
+  usePlaceRenamed((oldName, newName) =>
+    setC((prev) => ((prev.village ?? "").trim() === oldName ? { ...prev, village: newName } : prev)));
   const editedRef = useRef(false);
   // Несохранённым считается и изменённый год: перечитывание его не выбрасывает.
   editedRef.current = edited || c.year !== loadedYear;
@@ -491,6 +498,14 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
                    defaults={villageCard.defaults} defaultType="с." fillBare
                    onPick={(name) => { setVillageCard(null); set("village")(name); void fillFromVillage(name, false); }}
                    onSaved={villageSaved}
+                   onMerged={(kept, dropped) => {
+                     setVillageCard(null);
+                     // Село дел в базе объединение уже поправило — здесь
+                     // только поле, без «дело изменено».
+                     setC((prev) => ((prev.village ?? "").trim() === dropped ? { ...prev, village: kept } : prev));
+                     window.dispatchEvent(new CustomEvent(PLACE_RENAMED, { detail: { oldName: dropped, newName: kept } }));
+                     void fillFromVillage(kept, false);
+                   }}
                    onCancel={() => setVillageCard(null)} />
       )}
       <Suggest label="Уезд" kind="uyezd" browse value={c.uyezd ?? ""} onChange={set("uyezd")} />

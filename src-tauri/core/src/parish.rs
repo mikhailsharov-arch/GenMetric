@@ -108,7 +108,7 @@ fn adopt_orphans(common: &Connection, dir: &Path) -> Result<(), String> {
     let mut found: Vec<String> = files
         .filter_map(|f| f.ok().map(|f| f.file_name().to_string_lossy().to_string()))
         // Не приходы: прежний файл заменённого прихода и копии перед обновлением.
-        .filter(|n| n.ends_with(".sqlite") && !n.contains("-заменён-") && !n.contains(crate::db::BACKUP_MARK))
+        .filter(|n| n.ends_with(".sqlite") && !n.contains("-заменён-") && !crate::db::is_backup(n))
         .collect();
     found.sort();
     for file in found {
@@ -224,11 +224,13 @@ pub fn sync(conn: &Connection) -> Result<(), String> {
         return Err("общий файл не подключён".into());
     }
     conn.execute_batch("BEGIN IMMEDIATE").map_err(s)?;
-    match conn.execute_batch(SYNC_SQL) {
+    // Объединения пунктов из других приходов (03.11.2026) — после сверки:
+    // она приносит и память объединений, и оставшийся пункт.
+    match conn.execute_batch(SYNC_SQL).map_err(s).and_then(|()| crate::place_merge::apply_merges(conn).map(|_| ())) {
         Ok(()) => conn.execute_batch("COMMIT").map_err(s),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            Err(e.to_string())
+            Err(e)
         }
     }
 }
@@ -734,6 +736,67 @@ mod tests {
                                         |conn| crate::import_familio::import_into(conn, &files)).unwrap();
         assert_eq!(imported_from(&dir, "familio.xlsx", fam[0].1.len() as i64).unwrap().map(|x| x.0), Some(again_id));
         assert!(list(&dir).unwrap().iter().all(|r| r.id != fam_id), "прежний приход ушёл из перечня");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Объединение пунктов во всех приходах (ответ Романа 5.3, 03.11.2026):
+    /// объединили в первом — второй при открытии переводит свои записи, а
+    /// сверка и повторное открытие ушедший пункт не возвращают.
+    #[test]
+    fn merge_reaches_other_parish() {
+        let Some(seed) = seed() else {
+            crate::seed_missing("тест объединения пунктов пропущен");
+            return;
+        };
+        let dir = temp_dir("merge");
+        let add = |conn: &Connection, name: &str| -> i64 {
+            conn.execute("INSERT INTO place (name, name_norm, np_type, origin, updated_at)
+                           VALUES (?1, ?2, 'д.', 'user', strftime('%Y-%m-%d %H:%M:%f', 'now', '-1 day'))",
+                         rusqlite::params![name, normalize(name)]).unwrap();
+            conn.last_insert_rowid()
+        };
+        let mention = |conn: &Connection, place_id: i64| {
+            conn.execute("INSERT OR IGNORE INTO mk_case (id, village) VALUES (1, NULL)", []).unwrap();
+            conn.execute("INSERT INTO entry (case_id, section) VALUES (1, 1)", []).unwrap();
+            let entry = conn.last_insert_rowid();
+            conn.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, place_id)
+                          VALUES (?1, (SELECT code FROM role LIMIT 1), 1, ?2)", rusqlite::params![entry, place_id]).unwrap();
+        };
+        let first = open_current(&dir, &seed).unwrap();
+        let keep = add(&first.conn, "Глиница");
+        let gone = add(&first.conn, "Глинница");
+        mention(&first.conn, gone);
+        sync(&first.conn).unwrap();
+        drop(first);
+
+        let id = create(&dir, &seed, "Второй").unwrap();
+        let second = open(&dir, &seed, id).unwrap();
+        let their: i64 = second.conn
+            .query_row("SELECT id FROM place WHERE name = 'Глинница'", [], |r| r.get(0)).unwrap();
+        mention(&second.conn, their);
+        drop(second);
+
+        let first = open(&dir, &seed, 1).unwrap();
+        crate::place_merge::merge(&first.conn, keep, gone).unwrap();
+        sync(&first.conn).unwrap();
+        drop(first);
+        let common = open_common(&dir).unwrap();
+        let n = |c: &Connection, sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(n(&common, "SELECT count(*) FROM place WHERE name_norm = 'глинница'"), 0);
+        assert_eq!(n(&common, "SELECT count(*) FROM place_merged WHERE into_norm = 'глиница'"), 1);
+        drop(common);
+
+        for _ in 0..2 {
+            let second = open(&dir, &seed, id).unwrap();
+            assert!(second.warning.is_none(), "{:?}", second.warning);
+            assert_eq!(n(&second.conn, "SELECT count(*) FROM place WHERE name_norm = 'глинница'"), 0);
+            assert_eq!(n(&second.conn, "SELECT count(*) FROM person_mention m JOIN place p ON p.id = m.place_id
+                                         WHERE p.name = 'Глиница'"), 1);
+            drop(second);
+        }
+        let first = open(&dir, &seed, 1).unwrap();
+        assert_eq!(n(&first.conn, "SELECT count(*) FROM place WHERE name_norm = 'глинница'"), 0, "сверка не вернула");
+        drop(first);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
