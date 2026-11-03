@@ -1884,6 +1884,9 @@ def incident_20261103_otvet_romana_na_sborku_03_11():
     check("отказ импорта сбрасывает выбор файла — тот же файл выбирается снова после «Очистить»",
           'if (blocked()) { if (filePick.current) filePick.current.value = ""; return; }' in pd
           and 'if (blocked()) { if (famPick.current) famPick.current.value = ""; return; }' in pd)
+    check("окно скана просит состояние только после подписки на ответ (сборка main 41677799727: окно осталось пустым)",
+          'return listen<ScanSync>("scan-sync", setSync, () => send("main", "scan-act", { kind: "ready" } satisfies ScanAct));' in scan
+          and "else { off = unlisten; ready?.(); }" in read("src/scanlink.ts"))
     check("«листов» на «Деле» — оба вида; ключ вида листов — только в Rust (пп. 112–113)",
           "function sheetCount(scan: Scan)" in scan and "scan_kind_" not in scan
           and "fn scan_remember_kind(" in read("src-tauri/src/main.rs"))

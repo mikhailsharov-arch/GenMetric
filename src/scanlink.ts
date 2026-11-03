@@ -34,20 +34,25 @@ export function send(to: "main" | "scan", event: string, payload: unknown): void
     .catch((e) => report(to === "scan" ? "Окно скана не получило, что показать" : "Окно программы не получило действие из окна скана", e));
 }
 
-/** Слушать событие, посланное этому окну. Возвращает отписку. */
-export function listen<T>(event: string, fn: (payload: T) => void): () => void {
+/** Слушать событие, посланное этому окну. Возвращает отписку. `ready` —
+ *  когда подписка уже действует: просьбу «пришли состояние» слать только
+ *  после неё, иначе ответ может прийти раньше подписки и потеряться (сборка
+ *  main 41677799727, 03.11.2026: окно скана осталось пустым, тот же коммит на
+ *  ветке прошёл). */
+export function listen<T>(event: string, fn: (payload: T) => void, ready?: () => void): () => void {
   if (!TAURI) {
     const on = (m: MessageEvent) => {
       if (m.data?.to === ME && m.data.event === event) fn(m.data.payload as T);
     };
     channel?.addEventListener("message", on);
+    ready?.();
     return () => channel?.removeEventListener("message", on);
   }
   let off: (() => void) | undefined;
   let gone = false;
   import("@tauri-apps/api/event")
     .then(({ listen: on }) => on<T>(event, (e) => fn(e.payload)))
-    .then((unlisten) => { if (gone) unlisten(); else off = unlisten; })
+    .then((unlisten) => { if (gone) unlisten(); else { off = unlisten; ready?.(); } })
     .catch((e) => report("Связь окна программы с окном скана не установилась", e));
   return () => { gone = true; off?.(); };
 }

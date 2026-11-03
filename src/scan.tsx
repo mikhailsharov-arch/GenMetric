@@ -1110,9 +1110,8 @@ export function ScanWindow() {
   const [sync, setSync] = useState<ScanSync | null>(null);
   useEffect(() => {
     document.title = "GenMetric — скан";
-    const off = listen<ScanSync>("scan-sync", setSync);
-    send("main", "scan-act", { kind: "ready" } satisfies ScanAct);
-    return off;
+    // «Готово» — только когда подписка на ответ уже действует.
+    return listen<ScanSync>("scan-sync", setSync, () => send("main", "scan-act", { kind: "ready" } satisfies ScanAct));
   }, []);
   useEffect(() => listen<{ dx: number; dy: number; now: boolean }>("scan-pan", (p) => panView(p.dx, p.dy, p.now)), []);
   useEffect(() => {
