@@ -13,7 +13,7 @@ import Suggest from "./Suggest";
 import { dismissWarn, report, warn } from "./errors";
 import { pageOverflow, turnPage } from "./page";
 import { AUTO_RANK_WITNESS, useParishFlag } from "./flags";
-import { setDirty } from "./dirty";
+import { setClearer, setDirty } from "./dirty";
 import { maskFragment, rankForRole, titleCase, dayMonth } from "./names";
 import type { FormProps } from "./formprops";
 import { useFillDown } from "./fill";
@@ -436,6 +436,12 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
   useEffect(() => {
     setDirty("Браки", formDirty() || editingId !== null);
     return () => setDirty("Браки", false);
+  });
+  // «Очистить» в окне «Приходы» (Роман 03.11.2026): правка — как «Отменить»,
+  // новая запись — как «следующая».
+  useEffect(() => {
+    setClearer("Браки", () => (editingId !== null ? restoreAfterEdit() : next()));
+    return () => setClearer("Браки", null);
   });
 
   function formDirty(): boolean {

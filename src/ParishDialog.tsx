@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import { markReviewAfterImport } from "./reviewmark";
-import { dirtyForms } from "./dirty";
+import { clearDirtyForms, dirtyForms } from "./dirty";
 import { report } from "./errors";
 
 /**
@@ -126,9 +126,31 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   function blocked(): boolean {
     const forms = dirtyForms();
     if (!forms.length) return false;
-    setRefused(`Сначала сохраните или очистите набранное: ${forms.join(", ")}. `
-      + "При смене прихода несохранённая запись пропала бы.");
+    const text = `Сначала сохраните или очистите набранное: ${forms.join(", ")}. `
+      + "При смене прихода несохранённая запись пропала бы.";
+    dirtyRefusal.current = text;
+    setRefused(text);
     return true;
+  }
+  /** Текст отказа «есть несохранённое» — при нём в полосе кнопка «Очистить». */
+  const dirtyRefusal = useRef<string | null>(null);
+  /** Пометка «очищено» видна и в виде «новый приход», где нажали «Очистить». */
+  const clearedNotice = useRef<string | null>(null);
+
+  /** «Очистить» в отказе (Роман 03.11.2026): формы очищаются, запись на
+   *  правке закрывается без сохранения — приход можно менять. */
+  function clearAndUnblock() {
+    const forms = dirtyForms();
+    clearDirtyForms();
+    setRefused(null);
+    clearedNotice.current = `Набранное очищено: ${forms.join(", ")}. Теперь приход можно сменить.`;
+    setNotice(clearedNotice.current);
+    // Форма, очищаясь, ставит курсор в своё первое поле — под окном.
+    // Вернуть его в окно, чтобы Esc и Tab работали здесь: в поле названия
+    // нового прихода или на первую кнопку перечня.
+    window.setTimeout(() => {
+      document.querySelector<HTMLElement>('.modal[data-modal="parish"] input:not([type=file]), .modal[data-modal="parish"] button')?.focus();
+    }, 0);
   }
 
   /** Приход сменён — окно перечитывает всё заново. */
@@ -216,7 +238,9 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function pick(file: File) {
-    if (blocked()) return;
+    // Отказ — поле выбора сбросить: тот же файл после «Очистить» иначе не
+    // выбрался бы снова (change не срабатывает; проверяющий 03.11.2026).
+    if (blocked()) { if (filePick.current) filePick.current.value = ""; return; }
     setRefused(null);
     setBusy("Читаю файл…");
     setSeen(null);
@@ -259,7 +283,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
 
   /** Файлы Familio: первый выбор начинает список заново, «Добавить файлы…» — дописывает. */
   async function pickFamilio(files: File[], more: boolean) {
-    if (blocked()) return;
+    if (blocked()) { if (famPick.current) famPick.current.value = ""; return; }
     setRefused(null);
     const errors: string[] = [];
     let list = more ? fam : [];
@@ -362,8 +386,21 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   return (
     <Modal title="Приходы" kind="parish"
            onClose={busy ? () => {} : mode === "list" ? onClose : () => { setRefused(null); setMode("list"); }}>
-      {refused && <p className="refused">{refused}</p>}
-      {notice && mode === "list" && <p className="hint" data-parish-notice>{notice}</p>}
+      {refused && (
+        <p className="refused">
+          {refused}
+          {refused === dirtyRefusal.current && (
+            <>{" "}
+              <button type="button" className="toggle small" data-parish-clear-forms
+                      title="Очистить несохранённое в формах; запись на правке закроется без сохранения"
+                      onClick={clearAndUnblock}>
+                Очистить
+              </button>
+            </>
+          )}
+        </p>
+      )}
+      {notice && (mode === "list" || notice === clearedNotice.current) && <p className="hint" data-parish-notice>{notice}</p>}
       {/* Вне вида «список»: «Добавить файлы…» в виде Familio выбирает через него же. */}
       <input ref={famPick} type="file" hidden multiple data-familio-file
              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -423,15 +460,21 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                                 title="Переименовать приход" onClick={() => { setNotice(null); setDeleting(null); setRenaming({ id: r.id, name: r.name }); }}>
                           Переименовать
                         </button>
-                        {/* Открытый и первый приход не удаляются (parish::remove). */}
-                        {!r.current && r.id !== 1 && (
-                          <>{" "}
-                            <button type="button" className="toggle small" disabled={busy !== null} data-parish-delete-button
-                                    title="Убрать приход из перечня" onClick={() => { setNotice(null); setRenaming(null); setDeleting(r); }}>
-                              Удалить
-                            </button>
-                          </>
-                        )}
+                        {/* Открытый и первый приход не удаляются (parish::remove);
+                            кнопка есть и у них — нажатие объясняет почему (Роман
+                            03.11.2026: «причину программа не сообщает, просто
+                            отсутствует кнопка удаления»). */}
+                        {" "}
+                        <button type="button" className="toggle small" disabled={busy !== null} data-parish-delete-button
+                                title={r.current ? "Открытый приход не удаляется" : r.id === 1 ? "Первый приход программы не удаляется" : "Убрать приход из перечня"}
+                                onClick={() => {
+                                  setNotice(null); setRenaming(null);
+                                  if (r.current) setRefused(`«${r.name}» сейчас открыт — его удалить нельзя. Откройте другой приход, затем удалите этот.`);
+                                  else if (r.id === 1) setRefused(`«${r.name}» — первый приход программы, его удалить нельзя. Его можно переименовать.`);
+                                  else { setRefused(null); setDeleting(r); }
+                                }}>
+                          Удалить
+                        </button>
                       </>
                     )}
                   </td>

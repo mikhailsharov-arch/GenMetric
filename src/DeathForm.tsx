@@ -16,7 +16,7 @@ import { parseAge } from "./age";
 import { focusNextField } from "./focus";
 import NextYear from "./NextYear";
 import { dismissWarn, report, warn } from "./errors";
-import { setDirty } from "./dirty";
+import { setClearer, setDirty } from "./dirty";
 import { maskFragment, titleCase, dayMonth } from "./names";
 import type { FormProps } from "./formprops";
 import { useFillDown } from "./fill";
@@ -713,6 +713,12 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   useEffect(() => {
     setDirty("Смерти", formDirty() || editingId !== null);
     return () => setDirty("Смерти", false);
+  });
+  // «Очистить» в окне «Приходы» (Роман 03.11.2026): правка — как «Отменить»,
+  // новая запись — как «следующая».
+  useEffect(() => {
+    setClearer("Смерти", () => (editingId !== null ? restoreAfterEdit() : next()));
+    return () => setClearer("Смерти", null);
   });
 
   function formDirty(): boolean {

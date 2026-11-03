@@ -1026,8 +1026,10 @@ def incident_20261007_otvet_na_sborku_06_10():
     check("флажки звания — вне обхода клавишами",
           birth.count("tabIndex={-1} data-auto-rank") == 1 and marriage.count("tabIndex={-1} data-auto-rank") == 1)
     iof = read("src/IofField.tsx")
+    # С 03.11.2026 набранное слово, не поднятое первым (словарное «Ив»), —
+    # второй строкой: счёт по exactFound.
     check("подсказка ИОФ: есть персоны — одна словарная строка (и набранное слово, если оно есть в словаре, — 20.10.2026)",
-          "early && foundPersons.length > 0 ? ordered.slice(0, exactAt >= 0 ? 2 : 1) : ordered" in iof)
+          "early && foundPersons.length > 0 ? ordered.slice(0, exactFound >= 0 ? 2 : 1) : ordered" in iof)
     check("НП умершего идёт родственнику у любого умершего, не только у младенца",
           "!/младен/i.test(dead.rank)" not in death and "editingId !== null || relPlaceManual.current" in death)
     check("правило младенца — не у записи на правке и не поверх звания, тронутого руками",
@@ -1820,6 +1822,73 @@ def incident_20261103_tiff_i_pdf_i_dolg_e2e():
           'format!("scan_last_pdf_{y}")' in main and "let last_key = scan_last_key(year, &file);" in main)
 
 
+def incident_20261103_otvet_romana_na_sborku_03_11():
+    """
+    03.11.2026, ответ Романа на сборку 03.11 (пп. 114–119) и долг ревью
+    TIFF/PDF (пп. 109–113): «с.Шишкино» теряло приставку в названии; «+» у
+    «8об» давал «9об», а не «9»; словарное «Ив» вставало над частым «Иван»;
+    у открытого и первого прихода не было ни кнопки «Удалить», ни причины;
+    новое село на «Деле» не открывало карточку; повёрнутая страница PDF —
+    боком; скан со штампом архива — «показать не может»; PDF читался
+    целиком ради списка страниц.
+    """
+    card = read("src/PlaceCard.tsx")
+    check("тип из приставки — в «Тип», название остаётся «с.Шишкино» (п. 114)",
+          "const typed = label;" in card and "typedType?.type ?? defaultType" in card)
+    page = read("src/page.ts")
+    check("«+»/«−» одиночной страницы — по полулистам, разворот — по всем числам (п. 115)",
+          "const half = halfStep(text, delta);" in page and "return stepPage(text, delta) || null;" in page
+          and 'stepPage("8об", 1), "9"' in read("scripts/test_page.mjs")
+          and 'check("«+» на странице 938об-939 даёт 939об-940"' in read("scripts/e2e/windows.py"))
+    iof = read("src/IofField.tsx")
+    check("набранное слово первым — только из записей: «Ив» не над «Иван» (п. 116)",
+          "const used = (w: Item) => w.tier < 4;" in iof
+          and "used(sexed[exactFound]) || !sexed.some(used))" in iof)
+    pd = read("src/ParishDialog.tsx")
+    check("«Удалить» у открытого и первого прихода — с причиной, а не пропажа кнопки (п. 117)",
+          "сейчас открыт — его удалить нельзя" in pd and "первый приход программы, его удалить нельзя" in pd
+          and "{!r.current && r.id !== 1 && (" not in pd)
+    ch = read("src/CaseHeader.tsx")
+    check("новое село на «Деле»: карточка при уходе из поля, уезд и губерния — в дело (п. 118)",
+          "onLeave={(v, related, typed) => void leaveVillage(v, related, typed)}" in ch
+          and "void fillFromVillage(saved, true);" in ch)
+    dirty = read("src/dirty.ts")
+    check("«Очистить» в отказе окна «Приходы» очищает формы (п. 119)",
+          "export function clearDirtyForms()" in dirty and "data-parish-clear-forms" in pd
+          and all('setClearer("' + f + '"' in read(f"src/{n}.tsx")
+                  for f, n in [("Рождения", "BirthForm"), ("Браки", "MarriageForm"), ("Смерти", "DeathForm")]))
+    pdf = read("src-tauri/core/src/pdf.rs")
+    serve = read("src-tauri/src/scanserve.rs")
+    check("повёрнутая страница PDF — пометкой EXIF, без перекодирования (п. 109)",
+          "pub fn oriented(jpeg: Vec<u8>, rotate: u16)" in pdf and "pdf::oriented(b, *rotate)" in serve
+          and "fn rotated_page()" in pdf)
+    check("скан и маленький штамп на странице PDF — показывается скан (п. 110)",
+          "areas[k] * 20.0 <= areas[main]" in pdf and "fn main_image_with_small_stamp()" in pdf)
+    check("большой PDF читается кусками, а не целиком (п. 111)",
+          "fn sparse(" in pdf and "fn big_file_is_read_in_pieces()" in pdf and "if full <= WHOLE {" in pdf)
+    scan = read("src/scan.tsx")
+    # Находки ревьюера 03.11.2026 (до выкладки).
+    check("«Очистить» очищает и «Дело» (перечитывает реквизиты), а не только формы записей",
+          'setClearer("Дело", () => load(loadedYear, c.id || null));' in read("src/CaseHeader.tsx"))
+    check("«Марк» + Enter не даёт «Маркел»: словарное слово не поднимается только при наборе до двух букв",
+          "(typedNorm.length > 2 || used(sexed[exactFound]) || !sexed.some(used))" in iof)
+    check("PDF кусками: оборванная строка <…> просит дочитать; круг без дочитывания — целиком",
+          "fn long_hex_string_at_piece_edge()" in pdf and "if !fresh && total > 0 {" in pdf)
+    check("чужая пометка поворота у JPEG при неповёрнутой странице гасится («как есть»)",
+          "_ if has_exif(&jpeg) => 1," in pdf)
+    check("уезд и губерния села — в пустые поля по текущему делу, не по замыканию",
+          "if (v && (card || !(prev[k] ?? \"\").trim())" in read("src/CaseHeader.tsx"))
+    # Находки проверяющего 03.11.2026.
+    check("«д.Лысое» при «Лысое» того же типа — тот же пункт, не двойник",
+          "for (const spelled of [bare, `${typedType.type}${bare}`, `${typedType.type} ${bare}`])" in card)
+    check("отказ импорта сбрасывает выбор файла — тот же файл выбирается снова после «Очистить»",
+          'if (blocked()) { if (filePick.current) filePick.current.value = ""; return; }' in pd
+          and 'if (blocked()) { if (famPick.current) famPick.current.value = ""; return; }' in pd)
+    check("«листов» на «Деле» — оба вида; ключ вида листов — только в Rust (пп. 112–113)",
+          "function sheetCount(scan: Scan)" in scan and "scan_kind_" not in scan
+          and "fn scan_remember_kind(" in read("src-tauri/src/main.rs"))
+
+
 def incident_20261102_otvet_romana_na_sborku_28_10():
     """
     02.11.2026, ответ Романа на сборку 28.10 и долг ревью 28.10: «с.Шишкино»
@@ -2027,6 +2096,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261103_otvet_romana_na_sborku_03_11,
     incident_20261103_tiff_i_pdf_i_dolg_e2e,
     incident_20261020_otvet_na_sborku_19_10,
     incident_20261027_ui_scan_detached_ne_obshchaya,

@@ -11,6 +11,12 @@
 //! Движка PDF здесь нет — только то, что нужно для поиска картинок:
 //! таблица ссылок (обычная и потоком, сжатые объекты), дерево страниц,
 //! словари. Таблица битая — места объектов ищутся проходом по файлу.
+//!
+//! Большой файл читается не целиком (п. 111, 03.11.2026): сначала хвост с
+//! таблицей ссылок, дальше — только куски, где лежат нужные объекты. Разбор
+//! идёт кругами: наткнулся на непрочитанное — запомнил, что дочитать, круг
+//! отбрасывается, куски дочитываются, разбор заново. Картинки страниц
+//! (почти весь вес файла) при этом не читаются.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -19,17 +25,151 @@ use std::path::Path;
 /// Что показать на странице.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
-    /// Одна картинка JPEG: где в файле лежат её байты.
-    Jpeg { offset: u64, len: u64 },
+    /// Одна картинка JPEG: где в файле лежат её байты и на сколько градусов
+    /// по часовой страница повёрнута (/Rotate: 0, 90, 180, 270).
+    Jpeg { offset: u64, len: u64, rotate: u16 },
     /// Показать нечего; почему — человеку.
     Unsupported(String),
 }
 
-/// Страницы PDF по порядку. Файл читается целиком один раз; дальше
-/// страница берётся из файла по месту (`read_jpeg`), без перечитывания.
+/// Страницы PDF по порядку. Небольшой файл читается целиком, большой —
+/// кусками, которые нужны разбору; дальше страница берётся из файла по
+/// месту (`read_jpeg`), без перечитывания.
 pub fn index_file(path: &Path) -> Result<Vec<Page>, String> {
-    let data = std::fs::read(path).map_err(|e| format!("файл не читается: {e}"))?;
-    pages(&data)
+    let mut f = std::fs::File::open(path).map_err(|e| format!("файл не читается: {e}"))?;
+    let full = f.metadata().map_err(|e| format!("файл не читается: {e}"))?.len() as usize;
+    if full <= WHOLE {
+        let data = std::fs::read(path).map_err(|e| format!("файл не читается: {e}"))?;
+        return pages(&data);
+    }
+    let read = |a: usize, buf: &mut [u8]| -> Result<(), String> {
+        f.seek(SeekFrom::Start(a as u64)).map_err(|e| format!("файл не читается: {e}"))?;
+        f.read_exact(buf).map_err(|e| format!("файл не читается: {e}"))
+    };
+    match sparse(full, read)? {
+        Some((pages, _)) => pages,
+        // Кругов слишком много (странный файл) — прочитать целиком.
+        None => pages(&std::fs::read(path).map_err(|e| format!("файл не читается: {e}"))?),
+    }
+}
+
+/// Разбор кругами по кускам файла длиной `full`; `read` читает кусок с
+/// места. Итог разбора и сколько байт прочитано; None — кругов не хватило.
+#[allow(clippy::type_complexity)]
+fn sparse(full: usize, mut read: impl FnMut(usize, &mut [u8]) -> Result<(), String>)
+    -> Result<Option<(Result<Vec<Page>, String>, usize)>, String> {
+    // Непрочитанное — нули: место под весь файл (как и при чтении целиком —
+    // выигрыш в чтении с диска, не в памяти), байты — только нужные.
+    let mut data = vec![0u8; full];
+    let mut have: Vec<(usize, usize)> = Vec::new();
+    let mut want = vec![(0, BLOCK), (full.saturating_sub(BLOCK), full)];
+    let mut total = 0;
+    for _ in 0..ROUNDS {
+        let mut fresh = false;
+        for (a, b) in want.drain(..) {
+            let a = (a - a % BLOCK).min(full);
+            let b = b.max(a + BLOCK).min(full);
+            if a >= b || covered(&have, a, b) {
+                continue;
+            }
+            read(a, &mut data[a..b])?;
+            total += b - a;
+            fresh = true;
+            have.push((a, b));
+            have = merged(have);
+        }
+        // Круг ничего не дочитал, а разбор снова просит — дальше кругами не
+        // сойдётся: целиком.
+        if !fresh && total > 0 {
+            return Ok(None);
+        }
+        let (result, more) = pages_in(&data, &have);
+        if more.is_empty() {
+            return Ok(Some((result, total)));
+        }
+        want = more;
+    }
+    Ok(None)
+}
+
+/// Есть ли у JPEG своя пометка EXIF: сегменты от начала до картинки (SOS).
+fn has_exif(jpeg: &[u8]) -> bool {
+    let mut i = 2;
+    while i + 4 <= jpeg.len() && jpeg[i] == 0xFF {
+        let marker = jpeg[i + 1];
+        if marker == 0xDA {
+            return false;
+        }
+        let len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+        if marker == 0xE1 && jpeg.get(i + 4..i + 10) == Some(b"Exif\0\0") {
+            return true;
+        }
+        i += 2 + len;
+    }
+    false
+}
+
+/// Файл не больше этого читается целиком.
+const WHOLE: usize = 8 << 20;
+/// Кусок дочитывания.
+const BLOCK: usize = 256 << 10;
+/// Кругов разбора большого файла, потом — целиком.
+const ROUNDS: usize = 64;
+/// Запас до края прочитанного: объект, кончившийся у самого края, мог
+/// оборваться (число «12» от «1234», словарь без слова «stream» после него).
+const MARGIN: usize = 64;
+/// Ошибка круга, которому не хватило прочитанного; человеку не показывается.
+const MORE: &str = "PDF дочитывается";
+
+/// Прочитан ли весь кусок [a, b).
+fn covered(have: &[(usize, usize)], a: usize, b: usize) -> bool {
+    have.iter().any(|&(x, y)| x <= a && b <= y)
+}
+
+/// Прочитанные куски — без наложений, по порядку.
+fn merged(mut have: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    have.sort();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for (a, b) in have {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Страница повёрнута (/Rotate) — картинке пометка EXIF «как повернуть»:
+/// окно (WebView) показывает JPEG с учётом неё, перекодировать не нужно
+/// (п. 109, 03.11.2026). Своя пометка — первой, сразу после начала JPEG:
+/// окно берёт первую (проверено 03.11 в Chromium и WebKit, и в картинке, и в
+/// WebGL просмотрщика). У JPEG своя пометка EXIF, а страница не повёрнута —
+/// пометка «как есть» (1): программы просмотра PDF чужую пометку не
+/// учитывают, и окно не должно (ревьюер 03.11.2026).
+pub fn oriented(jpeg: Vec<u8>, rotate: u16) -> Vec<u8> {
+    if !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return jpeg;
+    }
+    let orientation: u16 = match rotate {
+        90 => 6,
+        180 => 3,
+        270 => 8,
+        _ if has_exif(&jpeg) => 1,
+        _ => return jpeg,
+    };
+    let mut seg = vec![0xFF, 0xE1, 0, 34];
+    seg.extend_from_slice(b"Exif\0\0");
+    // TIFF: порядок байт «MM», 42, первый каталог — со смещения 8.
+    seg.extend_from_slice(&[b'M', b'M', 0, 42, 0, 0, 0, 8]);
+    // Каталог из одной записи: 0x0112 Orientation, SHORT, 1 значение.
+    seg.extend_from_slice(&[0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1]);
+    seg.extend_from_slice(&orientation.to_be_bytes());
+    seg.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    let mut out = Vec::with_capacity(jpeg.len() + seg.len());
+    out.extend_from_slice(&jpeg[..2]);
+    out.extend_from_slice(&seg);
+    out.extend_from_slice(&jpeg[2..]);
+    out
 }
 
 /// Байты JPEG страницы из файла.
@@ -43,25 +183,15 @@ pub fn read_jpeg(path: &Path, offset: u64, len: u64) -> Result<Vec<u8>, String> 
 
 /// Страницы PDF из байтов файла.
 pub fn pages(data: &[u8]) -> Result<Vec<Page>, String> {
-    if !data.starts_with(b"%PDF") && find(data, b"%PDF", 0).map_or(true, |i| i > 1024) {
-        return Err("это не PDF".into());
-    }
-    let mut doc = Doc { data, at: HashMap::new(), streams: HashMap::new(), busy: HashSet::new() };
-    let root = match doc.read_xref() {
-        Ok(root) => root,
-        Err(e) if e == ENCRYPTED => return Err(e),
-        // Таблица ссылок битая или её нет — места объектов по самому файлу.
-        Err(_) => doc.rebuild()?,
-    };
-    let catalog = doc.resolve(&root, 0)?;
-    let pages_ref = catalog.get("Pages").ok_or("в PDF нет перечня страниц")?.clone();
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    doc.walk(&pages_ref, None, &mut out, &mut seen, 0)?;
-    if out.is_empty() {
-        return Err("в PDF нет страниц".into());
-    }
-    Ok(out)
+    pages_in(data, &[(0, data.len())]).0
+}
+
+/// Один круг разбора: `have` — прочитанные куски `data`. Второе — что
+/// дочитать; не пусто — результат круга не в счёт.
+fn pages_in(data: &[u8], have: &[(usize, usize)]) -> (Result<Vec<Page>, String>, Vec<(usize, usize)>) {
+    let mut doc = Doc { data, have, want: Vec::new(), at: HashMap::new(), streams: HashMap::new(), busy: HashSet::new() };
+    let result = doc.all_pages();
+    (result, doc.want)
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +329,12 @@ impl<'a> Lexer<'a> {
                 Ok(Obj::Dict(d))
             }
             b'<' => {
-                let end = find(self.b, b">", self.i).ok_or("строка не закрыта")?;
+                let Some(end) = find(self.b, b">", self.i) else {
+                    // До конца прочитанного: разбор кусками увидит край и
+                    // дочитает (ревьюер 03.11.2026).
+                    self.i = self.b.len();
+                    return Err("строка не закрыта".into());
+                };
                 self.i = end + 1;
                 Ok(Obj::Str)
             }
@@ -335,6 +470,10 @@ enum Loc {
 
 struct Doc<'a> {
     data: &'a [u8],
+    /// Прочитанные куски `data` (у файла в памяти — весь он).
+    have: &'a [(usize, usize)],
+    /// Что дочитать: разбор упёрся в непрочитанное.
+    want: Vec<(usize, usize)>,
     at: HashMap<u32, Loc>,
     /// Распакованные потоки объектов: место первого объекта (/First) и тело.
     streams: HashMap<u32, (usize, Vec<u8>)>,
@@ -344,11 +483,71 @@ struct Doc<'a> {
 }
 
 impl<'a> Doc<'a> {
+    fn all_pages(&mut self) -> Result<Vec<Page>, String> {
+        let data = self.data;
+        if !data.starts_with(b"%PDF") && find(&data[..self.avail(0)], b"%PDF", 0).map_or(true, |i| i > 1024) {
+            return Err("это не PDF".into());
+        }
+        let root = match self.read_xref() {
+            Ok(root) => root,
+            Err(e) if e == ENCRYPTED => return Err(e),
+            // Таблице не хватило прочитанного — дочитать, а не искать объекты
+            // проходом по всему файлу.
+            Err(_) if !self.want.is_empty() => return Err(MORE.into()),
+            // Таблица ссылок битая или её нет — места объектов по самому файлу.
+            Err(_) => self.rebuild()?,
+        };
+        let catalog = self.resolve(&root, 0)?;
+        let pages_ref = catalog.get("Pages").ok_or("в PDF нет перечня страниц")?.clone();
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        self.walk(&pages_ref, None, None, &mut out, &mut seen, 0)?;
+        if out.is_empty() {
+            return Err("в PDF нет страниц".into());
+        }
+        Ok(out)
+    }
+
+    /// Конец прочитанного куска, где лежит `at` (не прочитан — сам `at`).
+    fn avail(&self, at: usize) -> usize {
+        self.have.iter().find(|&&(a, b)| a <= at && at < b).map_or(at, |&(_, b)| b)
+    }
+
+    /// Чтение с места `at` — только по прочитанному: дальше — «конец файла».
+    fn lex(&self, at: usize) -> Lexer<'a> {
+        let data: &'a [u8] = self.data;
+        let end = self.avail(at).max(at).min(data.len());
+        Lexer::new(&data[..end], at)
+    }
+
+    /// Чтение с `at` дошло до края прочитанного (`reached` — где встало):
+    /// дочитать следующий кусок. true — круг не в счёт.
+    fn short(&mut self, at: usize, reached: usize) -> bool {
+        let end = self.avail(at).max(at);
+        if end < self.data.len() && reached + MARGIN > end {
+            self.want.push((end, end + BLOCK));
+            return true;
+        }
+        false
+    }
+
+    /// Кусок [a, b) прочитан; нет — запомнить, что дочитать.
+    fn ensure(&mut self, a: usize, b: usize) -> bool {
+        if self.avail(a) >= b {
+            return true;
+        }
+        self.want.push((a, b));
+        false
+    }
+
     /// Таблица ссылок от «startxref» по цепочке /Prev; возвращает /Root.
     fn read_xref(&mut self) -> Result<Obj, String> {
         let tail = self.data.len().saturating_sub(4096);
+        if !self.ensure(tail, self.data.len()) {
+            return Err(MORE.into());
+        }
         let sx = rfind(&self.data[tail..], b"startxref").ok_or("нет startxref")? + tail;
-        let mut lx = Lexer::new(self.data, sx + 9);
+        let mut lx = self.lex(sx + 9);
         let mut next = Some(lx.int().ok_or("startxref без числа")? as usize);
         let mut root = None;
         let mut seen = HashSet::new();
@@ -379,7 +578,15 @@ impl<'a> Doc<'a> {
     /// Одна таблица ссылок; возвращает её словарь (trailer). Уже известные
     /// объекты не перезаписываются: первой читается самая новая таблица.
     fn xref_section(&mut self, off: usize) -> Result<Obj, String> {
-        let mut lx = Lexer::new(self.data, off);
+        let mut lx = self.lex(off);
+        let r = self.xref_parse(&mut lx);
+        if self.short(off, lx.i) {
+            return Err(MORE.into());
+        }
+        r
+    }
+
+    fn xref_parse(&mut self, lx: &mut Lexer<'a>) -> Result<Obj, String> {
         lx.skip_ws();
         if lx.starts(b"xref") {
             lx.i += 4;
@@ -446,6 +653,10 @@ impl<'a> Doc<'a> {
     /// Таблицы нет или она битая: объекты — по «N G obj» в самом файле,
     /// каталог — по /Root последнего trailer или по /Type /Catalog.
     fn rebuild(&mut self) -> Result<Obj, String> {
+        // Проход по всему файлу — нужен весь файл.
+        if !self.ensure(0, self.data.len()) {
+            return Err(MORE.into());
+        }
         self.at.clear();
         let d = self.data;
         let mut i = 0;
@@ -493,7 +704,12 @@ impl<'a> Doc<'a> {
                 if off >= self.data.len() {
                     return Err(format!("объект {num} за концом файла"));
                 }
-                let (got, obj) = Lexer::new(self.data, off).indirect()?;
+                let mut lx = self.lex(off);
+                let r = lx.indirect();
+                if self.short(off, lx.i) {
+                    return Err(MORE.into());
+                }
+                let (got, obj) = r?;
                 if got != num {
                     return Err(format!("на месте объекта {num} — объект {got}"));
                 }
@@ -502,7 +718,14 @@ impl<'a> Doc<'a> {
             Loc::In(stm, idx) => {
                 if !self.streams.contains_key(&stm) {
                     let holder = match self.at.get(&stm) {
-                        Some(Loc::At(off)) => Lexer::new(self.data, *off).indirect()?.1,
+                        Some(&Loc::At(off)) => {
+                            let mut lx = self.lex(off);
+                            let r = lx.indirect();
+                            if self.short(off, lx.i) {
+                                return Err(MORE.into());
+                            }
+                            r?.1
+                        }
                         _ => return Err(format!("нет потока объектов {stm}")),
                     };
                     if !self.busy.insert(stm) {
@@ -560,9 +783,16 @@ impl<'a> Doc<'a> {
         // /Length 1e30 — не сложение с переполнением, а «длина врёт» (ревьюер 03.11).
         match len {
             Some(n) if start.checked_add(n).is_some_and(|e| e <= buf.len()) => Ok(n),
-            // Длины нет или она врёт — до «endstream».
+            // Длины нет или она врёт — до «endstream» (в прочитанном).
             _ => {
-                let end = find(buf, b"endstream", start).ok_or("поток не закрыт")?;
+                let seen = self.avail(start).max(start).min(buf.len());
+                let Some(end) = find(&buf[..seen], b"endstream", start) else {
+                    if seen < buf.len() {
+                        self.want.push((seen, seen + BLOCK));
+                        return Err(MORE.into());
+                    }
+                    return Err("поток не закрыт".into());
+                };
                 let mut e = end;
                 while e > start && matches!(buf[e - 1], b'\r' | b'\n') { e -= 1; }
                 Ok(e - start)
@@ -574,6 +804,9 @@ impl<'a> Doc<'a> {
     fn stream_bytes(&mut self, s: &Obj, buf: &[u8]) -> Result<Vec<u8>, String> {
         let Obj::Stream(_, start) = s else { return Err("не поток".into()) };
         let n = self.stream_len(s, *start, buf)?;
+        if !self.ensure(*start, *start + n) {
+            return Err(MORE.into());
+        }
         let raw = &buf[*start..*start + n];
         let filters: Vec<String> = match s.get("Filter") {
             Some(Obj::Name(f)) => vec![f.clone()],
@@ -603,8 +836,8 @@ impl<'a> Doc<'a> {
         Ok(out)
     }
 
-    /// Обход дерева страниц; /Resources наследуются от родителей.
-    fn walk(&mut self, node: &Obj, inherited: Option<Obj>, out: &mut Vec<Page>,
+    /// Обход дерева страниц; /Resources и /Rotate наследуются от родителей.
+    fn walk(&mut self, node: &Obj, inherited: Option<Obj>, turn: Option<f64>, out: &mut Vec<Page>,
             seen: &mut HashSet<u32>, depth: usize) -> Result<(), String> {
         if depth > 64 {
             return Err("дерево страниц слишком глубокое".into());
@@ -616,23 +849,32 @@ impl<'a> Doc<'a> {
         }
         let d = self.resolve(node, 0)?;
         let res = d.get("Resources").cloned().or(inherited);
+        let turn = match d.get("Rotate") {
+            Some(r) => self.resolve(&r.clone(), 0).ok().and_then(|o| o.num()).or(turn),
+            None => turn,
+        };
         if let Some(Obj::Arr(kids)) = d.get("Kids").map(|k| self.resolve(k, 0)).transpose()? {
             for kid in kids {
                 // Битая ссылка на одну страницу — лист с пометкой, а не весь
                 // PDF нечитаемым (ревьюер 03.11.2026).
-                if let Err(why) = self.walk(&kid, res.clone(), out, seen, depth + 1) {
+                if let Err(why) = self.walk(&kid, res.clone(), turn, out, seen, depth + 1) {
                     if depth + 1 > 64 { return Err(why); }
                     out.push(Page::Unsupported(format!("страница не читается: {why}")));
                 }
             }
             return Ok(());
         }
-        out.push(self.page(res).unwrap_or_else(Page::Unsupported));
+        // /Rotate — кратно 90, может быть отрицательным: −90 — то же, что 270.
+        // Не кратный 90 (так писать нельзя) округляется к нулю: 135 → 90.
+        let rotate = (turn.unwrap_or(0.0) as i64 / 90 * 90).rem_euclid(360) as u16;
+        out.push(self.page(res, rotate).unwrap_or_else(Page::Unsupported));
         Ok(())
     }
 
-    /// Картинка страницы — если она одна и в JPEG.
-    fn page(&mut self, res: Option<Obj>) -> Result<Page, String> {
+    /// Картинка страницы — если она одна и в JPEG. Рядом с ней может быть
+    /// мелкий значок (штамп архива): картинка, у которой все остальные меньше
+    /// двадцатой доли её площади, — та самая (п. 110, 03.11.2026).
+    fn page(&mut self, res: Option<Obj>, rotate: u16) -> Result<Page, String> {
         let none = || "на странице нет картинки".to_string();
         let res = self.resolve(&res.ok_or_else(none)?, 0)?;
         let xobj = self.resolve(res.get("XObject").ok_or_else(none)?, 0)?;
@@ -647,10 +889,21 @@ impl<'a> Doc<'a> {
                 None => {}
             }
         }
-        if images.len() != 1 {
-            return Err(if images.is_empty() { none() } else { format!("на странице {} картинки", images.len()) });
+        if images.is_empty() {
+            return Err(none());
         }
-        let img = &images[0];
+        let mut areas = Vec::new();
+        for im in &images {
+            let side = |doc: &mut Self, k: &str| im.get(k).cloned().and_then(|v| doc.resolve(&v, 0).ok()).and_then(|o| o.num()).unwrap_or(0.0);
+            let area = side(self, "Width") * side(self, "Height");
+            areas.push(area);
+        }
+        let main = (0..images.len()).max_by(|&a, &b| areas[a].total_cmp(&areas[b])).unwrap_or(0);
+        let small = (0..images.len()).all(|k| k == main || areas[k] * 20.0 <= areas[main]);
+        if images.len() > 1 && (!small || areas[main] <= 0.0) {
+            return Err(format!("на странице {} картинки", images.len()));
+        }
+        let img = &images[main];
         let jpeg = match img.get("Filter") {
             Some(Obj::Name(f)) => f == "DCTDecode",
             Some(Obj::Arr(a)) => a.len() == 1 && a[0].name() == Some("DCTDecode"),
@@ -662,10 +915,13 @@ impl<'a> Doc<'a> {
         let Obj::Stream(_, start) = img else { return Err(none()) };
         let start = *start;
         let len = self.stream_len(img, start, self.data)?;
+        if !self.ensure(start, start + 2) {
+            return Err(MORE.into());
+        }
         if self.data.get(start..start + 2) != Some(&[0xFF, 0xD8][..]) {
             return Err("картинка страницы — не JPEG".into());
         }
-        Ok(Page::Jpeg { offset: start as u64, len: len as u64 })
+        Ok(Page::Jpeg { offset: start as u64, len: len as u64, rotate })
     }
 }
 
@@ -771,10 +1027,115 @@ pub(crate) mod tests {
         let got = pages(&pdf).unwrap();
         assert_eq!(got.len(), 3);
         for k in [0, 2] {
-            let Page::Jpeg { offset, len } = got[k] else { panic!("страница {} — {:?}", k + 1, got[k]) };
+            let Page::Jpeg { offset, len, .. } = got[k] else { panic!("страница {} — {:?}", k + 1, got[k]) };
             assert_eq!(&pdf[offset as usize..(offset + len) as usize], JPEG, "байты JPEG страницы {}", k + 1);
         }
         assert_eq!(got[1], Page::Unsupported("на странице нет картинки".into()));
+    }
+
+    /// Страница с картинками заданных размеров (ширина, высота) и /Rotate.
+    fn page_with(sizes: &[(u32, u32)], rotate: Option<i32>, parent_rotate: Option<i32>) -> Vec<u8> {
+        let mut objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            format!("<< /Type /Pages /Count 1 /Kids [3 0 R] {} >>",
+                    parent_rotate.map(|r| format!("/Rotate {r}")).unwrap_or_default()).into_bytes(),
+        ];
+        let names: Vec<String> = (0..sizes.len()).map(|k| format!("/I{k} {} 0 R", 4 + k)).collect();
+        objs.push(format!("<< /Type /Page /Parent 2 0 R {} /Resources << /XObject << {} >> >> >>",
+                          rotate.map(|r| format!("/Rotate {r}")).unwrap_or_default(), names.join(" ")).into_bytes());
+        for (w, h) in sizes {
+            let mut b = format!("<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /Filter /DCTDecode /Length {} >>\nstream\r\n", JPEG.len()).into_bytes();
+            b.extend_from_slice(JPEG);
+            b.extend_from_slice(b"\r\nendstream");
+            objs.push(b);
+        }
+        sample_pdf(&objs, 1)
+    }
+
+    #[test]
+    fn rotated_page() {
+        // п. 109: /Rotate у страницы и от родителя, −90 — то же, что 270.
+        for (own, parent, want) in [(Some(90), None, 90), (None, Some(-90), 270), (Some(180), Some(90), 180), (None, None, 0)] {
+            let got = pages(&page_with(&[(100, 100)], own, parent)).unwrap();
+            assert!(matches!(got[0], Page::Jpeg { rotate, .. } if rotate == want), "{own:?}/{parent:?}: {:?}", got[0]);
+        }
+        // Пометка EXIF: 90 → 6, сразу после начала JPEG; без поворота — как было.
+        let o = oriented(JPEG.to_vec(), 90);
+        assert_eq!(&o[..4], &[0xFF, 0xD8, 0xFF, 0xE1]);
+        assert_eq!(&o[6..12], b"Exif\0\0");
+        // Значение — после SOI, маркера, длины, «Exif», заголовка TIFF, числа записей, тега, типа и счёта.
+        assert_eq!(u16::from_be_bytes([o[30], o[31]]), 6);
+        assert_eq!(&o[2 + 36..], &JPEG[2..]);
+        assert_eq!(oriented(JPEG.to_vec(), 0), JPEG);
+        // Своя пометка у JPEG, страница не повёрнута — «как есть» первой.
+        let theirs = oriented(JPEG.to_vec(), 90);
+        let kept = oriented(theirs.clone(), 0);
+        assert_eq!(u16::from_be_bytes([kept[30], kept[31]]), 1);
+        assert_eq!(&kept[38..], &theirs[2..]);
+        assert_eq!(oriented(JPEG.to_vec(), 270)[31], 8);
+    }
+
+    #[test]
+    fn main_image_with_small_stamp() {
+        // п. 110: скан и маленький штамп архива — показывается скан.
+        let pdf = page_with(&[(40, 30), (2000, 1500)], None, None);
+        let got = pages(&pdf).unwrap();
+        let Page::Jpeg { offset, .. } = got[0] else { panic!("{:?}", got[0]) };
+        let big = find(&pdf, b"/Width 2000", 0).unwrap();
+        assert!(offset as usize > big, "взята не большая картинка");
+        // Две соизмеримые картинки — по-прежнему «показать не может».
+        let got = pages(&page_with(&[(1000, 1500), (2000, 1500)], None, None)).unwrap();
+        assert_eq!(got[0], Page::Unsupported("на странице 2 картинки".into()));
+    }
+
+    #[test]
+    fn big_file_is_read_in_pieces() {
+        // п. 111: файл из многих страниц с тяжёлыми картинками — разбор
+        // читает таблицу и словари, а не картинки.
+        let pad = vec![0x55u8; 3 << 20];
+        let mut jpeg = JPEG[..JPEG.len() - 2].to_vec();
+        jpeg.extend_from_slice(&pad);
+        jpeg.extend_from_slice(&[0xFF, 0xD9]);
+        let n = 12;
+        let mut objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            format!("<< /Type /Pages /Count {n} /Kids [{}] >>",
+                    (0..n).map(|k| format!("{} 0 R", 3 + 2 * k)).collect::<Vec<_>>().join(" ")).into_bytes(),
+        ];
+        for k in 0..n {
+            objs.push(format!("<< /Type /Page /Parent 2 0 R /Resources << /XObject << /I0 {} 0 R >> >> >>", 4 + 2 * k).into_bytes());
+            let mut b = format!("<< /Subtype /Image /Width 9 /Height 9 /Filter /DCTDecode /Length {} >>\nstream\r\n", jpeg.len()).into_bytes();
+            b.extend_from_slice(&jpeg);
+            b.extend_from_slice(b"\r\nendstream");
+            objs.push(b);
+        }
+        let pdf = sample_pdf(&objs, 1);
+        let (got, read) = sparse(pdf.len(), |a, buf| { buf.copy_from_slice(&pdf[a..a + buf.len()]); Ok(()) })
+            .unwrap().expect("кругов хватило");
+        assert_eq!(got.unwrap(), pages(&pdf).unwrap(), "кусками — то же, что целиком");
+        assert!(read * 4 < pdf.len(), "прочитано {read} из {}", pdf.len());
+    }
+
+    #[test]
+    fn long_hex_string_at_piece_edge() {
+        // Ревьюер 03.11.2026: строка <…> длиннее запаса, оборванная краем
+        // прочитанного, давала «строка не закрыта» вместо дочитывания.
+        let body = format!("<< /Type /Page /Y <{}> /Resources << >> >>", "0".repeat(300));
+        let pdf = sample_pdf(&[b"<< /Type /Catalog >>".to_vec(), body.into_bytes()], 1);
+        let obj = find(&pdf, b"2 0 obj", 0).unwrap();
+        let cut = find(&pdf, b"/Y <", 0).unwrap() + 150;
+        let have = [(0, cut)];
+        let mut doc = Doc { data: &pdf, have: &have, want: Vec::new(), at: HashMap::new(),
+                            streams: HashMap::new(), busy: HashSet::new() };
+        doc.at.insert(2, Loc::At(obj));
+        assert!(doc.load(2).is_err());
+        assert!(!doc.want.is_empty(), "оборванная строка не попросила дочитать");
+        // Всё прочитано — объект читается.
+        let full = [(0, pdf.len())];
+        let mut doc = Doc { data: &pdf, have: &full, want: Vec::new(), at: HashMap::new(),
+                            streams: HashMap::new(), busy: HashSet::new() };
+        doc.at.insert(2, Loc::At(obj));
+        assert!(doc.load(2).is_ok());
     }
 
     #[test]
@@ -844,7 +1205,7 @@ pub(crate) mod tests {
         out.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
         let got = pages(&out).unwrap();
         assert_eq!(got.len(), 1);
-        let Page::Jpeg { offset, len } = got[0] else { panic!("{:?}", got[0]) };
+        let Page::Jpeg { offset, len, .. } = got[0] else { panic!("{:?}", got[0]) };
         assert_eq!(&out[offset as usize..(offset + len) as usize], JPEG);
     }
 
@@ -857,7 +1218,7 @@ pub(crate) mod tests {
         let xref = out.len();
         out.extend_from_slice(format!("xref\n0 4\n0000000000 65535 f \n0000000000 00000 f \n0000000000 00000 f \n{at3:010} 00000 n \n").as_bytes());
         out.extend_from_slice(format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
-        let mut doc = Doc { data: &out, at: HashMap::new(), streams: HashMap::new(), busy: HashSet::new() };
+        let mut doc = Doc { data: &out, have: &[(0, out.len())], want: Vec::new(), at: HashMap::new(), streams: HashMap::new(), busy: HashSet::new() };
         doc.at.insert(1, Loc::In(3, 0));
         doc.at.insert(2, Loc::In(3, 0));
         doc.at.insert(3, Loc::At(at3));
@@ -881,7 +1242,7 @@ pub(crate) mod tests {
         let pdf = sample_pdf(&objs, 1);
         let got = pages(&pdf).unwrap();
         assert_eq!(got.len(), 2, "{got:?}");
-        let Page::Jpeg { offset, len } = got[0] else { panic!("{:?}", got[0]) };
+        let Page::Jpeg { offset, len, .. } = got[0] else { panic!("{:?}", got[0]) };
         assert_eq!(&pdf[offset as usize..(offset + len) as usize], JPEG, "длина — до endstream");
         assert!(matches!(got[1], Page::Unsupported(_)), "битая ссылка — одна страница с пометкой");
     }
@@ -923,7 +1284,7 @@ pub(crate) mod tests {
         eprintln!("{} страниц за {:?}", got.len(), t.elapsed());
         assert_eq!(got.len(), 43);
         assert!(got.iter().all(|p| matches!(p, Page::Jpeg { .. })), "{got:?}");
-        let Page::Jpeg { offset, len } = got[0] else { unreachable!() };
+        let Page::Jpeg { offset, len, .. } = got[0] else { unreachable!() };
         let jpeg = read_jpeg(&path, offset, len).unwrap();
         assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
         assert_eq!(&jpeg[jpeg.len() - 2..], &[0xFF, 0xD9]);

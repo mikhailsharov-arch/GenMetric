@@ -15,3 +15,22 @@ export function setDirty(form: string, value: boolean): void {
 export function dirtyForms(): string[] {
   return [...dirty].filter(([, v]) => v).map(([k]) => k);
 }
+
+/**
+ * «Очистить» прямо в отказе окна «Приходы» (Роман 03.11.2026: «добавить
+ * кнопку „Очистить“…, которая одним кликом очистит несохраненные поля в форме
+ * и сразу разблокирует смену/создание прихода»). Форма отдаёт сюда, как себя
+ * очистить: новая запись — как «следующая», правка — как «Отменить» (запись
+ * в базе не тронута).
+ */
+const clearers = new Map<string, () => void>();
+
+export function setClearer(form: string, clear: (() => void) | null): void {
+  if (clear) clearers.set(form, clear);
+  else clearers.delete(form);
+}
+
+/** Очищает формы с несохранённым. */
+export function clearDirtyForms(): void {
+  for (const form of dirtyForms()) clearers.get(form)?.();
+}

@@ -79,7 +79,9 @@ impl Sheets {
         if let Some(n) = page {
             let pages = self.pdf_pages(path).map_err(|e| (404, e))?;
             return match pages.get(n - 1) {
-                Some(Page::Jpeg { offset, len }) => pdf::read_jpeg(path, *offset, *len).map(|b| ("image/jpeg", b)).map_err(|e| (404, e)),
+                Some(Page::Jpeg { offset, len, rotate }) => pdf::read_jpeg(path, *offset, *len)
+                    .map(|b| ("image/jpeg", pdf::oriented(b, *rotate)))
+                    .map_err(|e| (404, e)),
                 Some(Page::Unsupported(why)) => Err((415, why.clone())),
                 None => Err((404, format!("в файле нет страницы {n}"))),
             };

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Suggest from "./Suggest";
 import { focusNextField } from "./focus";
 import { dismissWarn, report, warn } from "./errors";
-import { dirtyForms, setDirty } from "./dirty";
+import { dirtyForms, setClearer, setDirty } from "./dirty";
 import ExportPanel from "./ExportPanel";
 import ParishDialog from "./ParishDialog";
 import { takeReviewMark } from "./reviewmark";
@@ -93,6 +93,12 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
     setDirty("Дело", edited || yearChanged);
     return () => setDirty("Дело", false);
   }, [edited, yearChanged]);
+  // «Очистить» в окне «Приходы» (ревьюер 03.11.2026): поправленные
+  // реквизиты — как были в базе, дело перечитывается.
+  useEffect(() => {
+    setClearer("Дело", () => load(loadedYear, c.id || null));
+    return () => setClearer("Дело", null);
+  });
   const [years, setYears] = useState<CaseYear[]>([]);
   const [busy, setBusy] = useState(false);
   const [ok, setOk] = useState(false);
@@ -262,7 +268,63 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
     // находит карточку села (чистое название она выводит сама). Поправили
     // название или комментарий — дело изменено и ждёт «Сохранить дело».
     if (was && (c.village ?? "").trim() !== saved) set("village")(saved);
+    // Уезд и губерния карточки — в поля дела (Роман 03.11.2026: «указанные в
+    // ней „Уезд“ и „Губерния“ должны автоматически подтянуться»). Карточку
+    // только что подтвердили — её значения главнее.
+    void fillFromVillage(saved, true);
   }
+
+  /** Уезд и губерния села из справочника — в поля дела: `card` — из только
+   *  что сохранённой карточки (заменяют), иначе — только в пустые поля. */
+  async function fillFromVillage(name: string, card: boolean) {
+    try {
+      const p = await invoke<PlaceInfo | null>("place_get", { name });
+      if (!p) return;
+      // Пустота — по текущему делу, а не по замыканию: пока шёл запрос,
+      // в «Уезд» могли начать набирать (ревьюер 03.11.2026).
+      setC((prev) => {
+        let next = prev;
+        for (const k of ["uyezd", "guberniya"] as const) {
+          const v = (p[k] ?? "").trim();
+          if (v && (card || !(prev[k] ?? "").trim()) && (prev[k] ?? "") !== v) next = { ...next, [k]: v };
+        }
+        if (next !== prev) setEdited(true);
+        return next;
+      });
+    } catch (e) {
+      report(`Не удалось прочитать карточку села «${name}»`, e);
+    }
+  }
+
+  /**
+   * Уход из поля «Село» (Роман 03.11.2026: «Если введенного в поле „Село“
+   * населенного пункта еще нет в справочнике, программа должна
+   * автоматически открывать модальное окно создания нового НП (как это
+   * работает при вводе неизвестного НП в записях…)»). Известное село — его
+   * уезд и губерния в пустые поля дела. Только набранное в этот заход: проход
+   * клавишами по готовому делу ничего не открывает.
+   */
+  async function leaveVillage(value: string, related: EventTarget | null, typed: boolean) {
+    const text = value.trim();
+    if (!text || !typed || (related === null && !document.hasFocus()) || document.querySelector(".modal")) return;
+    try {
+      const r = await invoke<{ known: boolean; canonical?: string | null; similar: Similar[] }>("place_check", { name: text });
+      // Пока ждали ответ, поле могло измениться или открыться другое окно.
+      if (villageNow.current.trim() !== text || document.querySelector(".modal")) return;
+      if (r.known) {
+        const name = r.canonical || text;
+        if (name !== text) set("village")(name);
+        await fillFromVillage(name, false);
+        return;
+      }
+      setVillageCard({ name: text, similar: r.similar,
+                       defaults: { guberniya: c.guberniya ?? "", uyezd: c.uyezd ?? "" } });
+    } catch (e) {
+      report(`Не удалось проверить село «${text}»`, e);
+    }
+  }
+  const villageNow = useRef("");
+  villageNow.current = c.village ?? "";
 
   async function save(overwrite = false) {
     // Год — четыре цифры в разумных пределах: «189» завело бы дело 189 года.
@@ -422,11 +484,12 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
           ссылка Familio села прихода. */}
       <Suggest label="Село" kind="place" value={c.village ?? ""} onChange={set("village")}
                fix={(text, final) => placeCase(text, placeTypes(), final)}
+               onLeave={(v, related, typed) => void leaveVillage(v, related, typed)}
                action={{ label: "карточка", onClick: () => void openVillageCard(c, false) }} />
       {villageCard && (
         <PlaceCard name={villageCard.name} similar={villageCard.similar} existing={villageCard.existing}
                    defaults={villageCard.defaults} defaultType="с." fillBare
-                   onPick={(name) => { setVillageCard(null); set("village")(name); }}
+                   onPick={(name) => { setVillageCard(null); set("village")(name); void fillFromVillage(name, false); }}
                    onSaved={villageSaved}
                    onCancel={() => setVillageCard(null)} />
       )}

@@ -14,7 +14,7 @@ import { pageOverflow, turnPage } from "./page";
 import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
 import { dismissWarn, report, warn } from "./errors";
-import { setDirty } from "./dirty";
+import { setClearer, setDirty } from "./dirty";
 import { feminineSurname, maskFragment, rankForRole, titleCase, dayMonth } from "./names";
 import type { FormProps } from "./formprops";
 import { useFillDown } from "./fill";
@@ -872,6 +872,12 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   useEffect(() => {
     setDirty("Рождения", formDirty() || editingId !== null);
     return () => setDirty("Рождения", false);
+  });
+  // «Очистить» в окне «Приходы» (Роман 03.11.2026): правка — как «Отменить»,
+  // новая запись — как «следующая».
+  useEffect(() => {
+    setClearer("Рождения", () => (editingId !== null ? cancelEdit() : next()));
+    return () => setClearer("Рождения", null);
   });
 
   function formDirty(): boolean {

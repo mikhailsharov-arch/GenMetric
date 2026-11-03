@@ -78,10 +78,13 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
   // иначе скобки ушли бы в выгрузку как часть названия (ревьюер 08.10.2026).
   // Скобки — часть названия? Человек сотрёт комментарий и допишет название.
   const label = existing ? { name: "", comment: "" } : twin ? { name, comment: "" } : splitPlaceLabel(name);
-  // Тип, набранный приставкой («с.Шишкино»), — в поле «Тип», в названии —
-  // «Шишкино» (Роман 02.11.2026). Тёзке название не меняем.
+  // Тип, набранный приставкой («с.Шишкино»), — в поле «Тип» (Роман
+  // 02.11.2026); название остаётся как набрано (Роман 03.11.2026: «не должна
+  // обрезать исходную строку в поле „Название“… должно оставаться полное
+  // введенное значение — с.Шишкино»). В выгрузку и в поиск Familio приставка
+  // не идёт — её срезает `strip_place_type`. Тёзку не трогаем.
   const typedType = !existing && !twin ? placeTypeOf(label.name, placeTypes()) : null;
-  const typed = typedType ? { name: typedType.name, comment: label.comment } : label;
+  const typed = label;
   const [title, setTitle] = useState(existing?.clean ?? existing?.name ?? typed.name);
   const [commentRaw, setComment] = useState(existing?.comment ?? typed.comment);
   // Название — поле и у нового пункта (Роман 16.10.2026: «при первом
@@ -138,9 +141,29 @@ export default function PlaceCard({ name, similar, defaults, existing, lastVolos
         commentField.current?.focus();
         return;
       }
-      // «с.Шишкино» при уже заведённом «Шишкино»: place_save молча вернул бы
-      // тот пункт, и запись ушла бы к деревне вместо села (ревьюер 02.11.2026).
-      // Тот же тип — это он и есть; другой тип — человек решает сам.
+      // Название поправили на уже заведённое («Шишкино» другого типа):
+      // place_save молча вернул бы тот пункт, и запись ушла бы к деревне
+      // вместо села (ревьюер 02.11.2026). Тот же тип — это он и есть; другой
+      // тип — человек решает сам. С 03.11.2026 название с приставкой
+      // («с.Шишкино») — своё, и уже заведённое «Шишкино» здесь не находится:
+      // так хотел Роман, двойник «Шишкино» / «с.Шишкино» сливается
+      // объединением пунктов.
+      if (typedType && !twin && !existing) {
+        // Тот же пункт тем же типом под другим написанием приставки:
+        // «д.Лысое» при «Лысое» (д.), «с. Шишкино» при «с.Шишкино» — это он,
+        // а не двойник (проверяющий 03.11.2026: Роман пишет то с приставкой,
+        // то без).
+        const bare = typedType.name;
+        for (const spelled of [bare, `${typedType.type}${bare}`, `${typedType.type} ${bare}`]) {
+          if (spelled === cleanName) continue;
+          const same = await invoke<PlaceInfo | null>("place_get", { name: placeLabel(spelled, comment) });
+          if (same && (same.np_type ?? "") === npType) {
+            dismissWarn();
+            onPick(same.name);
+            return;
+          }
+        }
+      }
       if (typedType && !twin) {
         const known = await invoke<PlaceInfo | null>("place_get", { name: placeLabel(cleanName, comment) });
         if (known && (known.np_type ?? "") !== npType) {

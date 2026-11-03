@@ -1911,6 +1911,17 @@ fn scan_set_kind(handle: tauri::AppHandle, app: State<App>, year: Option<i64>, k
     scan_state(handle, app, year)
 }
 
+/// Запомнить вид листов, не перечитывая папку: вид уже показан окном
+/// (работают на листе другого вида, открытом по ссылке). Ключ настройки —
+/// только здесь, в `scan_kind_key` (долг п. 113: окно собирало его само).
+#[tauri::command]
+fn scan_remember_kind(app: State<App>, year: Option<i64>, kind: String) -> Result<(), String> {
+    if kind != "images" && kind != "pdf" {
+        return Err(format!("Вид сканов «{kind}» неизвестен"));
+    }
+    with_conn(&app, "Вид сканов", |conn| parish::setting_set(conn, &scan_kind_key(year), &kind))
+}
+
 /// Системное окно «Выберите папку» и выбранная в нём папка. Окно открывает
 /// Rust, а не страница: команда плагина разрешила бы окну выбранную папку
 /// вместе со всеми вложенными (выбрали домашнюю папку — открыт весь диск), а
@@ -2547,6 +2558,7 @@ fn main() {
             scan_pick_dir,
             scan_remember,
             scan_set_kind,
+            scan_remember_kind,
             scan_window,
             windows::scan_detach,
             windows::scan_focus_main,

@@ -49,6 +49,8 @@ type Scan = {
   year: number | null;
   dir: string | null;
   files: string[];
+  /** Листов другого вида (в папке и картинки, и PDF), иначе 0. */
+  otherCount: number;
   /** В папке и картинки, и PDF — какой вид показан; null — вид один. */
   kind: SheetKind | null;
   /** Показать картинки или листы PDF (выбор помнится по году дела). */
@@ -343,12 +345,13 @@ export function ScanProvider({ year, ready, children }: { year: number | null; r
       setAway(null);
       if (heldFlipped.current && state.kind) {
         heldFlipped.current = false;
-        invoke("set_setting", { key: `scan_kind_${year ?? ""}`, value: state.kind })
+        invoke("scan_remember_kind", { year, kind: state.kind })
           .catch((e) => report("Вид сканов не запомнен", e));
       }
     };
     return {
-      on, setOn, detached, showIn, year, dir: state.dir, files: state.files, missing: state.missing, index: at, file, away,
+      on, setOn, detached, showIn, year, dir: state.dir, files: state.files, otherCount: state.other.length,
+      missing: state.missing, index: at, file, away,
       url: (name) => sheetUrl(state.dir, state.sep, name),
       step: (by) => {
         // Листают после ссылки «скан» — значит, работают уже здесь: место
@@ -1089,7 +1092,7 @@ export function ScanCaseBlock() {
       </button>
       <p className="hint">
         {scan.dir
-          ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, листов: ${scan.files.length}`}. </>
+          ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, ${sheetCount(scan)}`}. </>
           : "Сканы дела — файлы JPG, PNG, TIFF или PDF в одной папке. Папку можно и перетащить мышью на окно программы. "}
         Листать, не уходя из поля: Alt+PageDown и Alt+PageUp; двигать лист — Alt+стрелки (и когда скан в
         отдельном окне). Запись запоминает разворот, с которого набрана.
@@ -1154,7 +1157,7 @@ export function ScanWindow() {
     const index = Math.min(sync.index, Math.max(0, count - 1));
     return {
       on: sync.on, setOn: (v) => { if (!v) act({ kind: "hide" }); }, detached: true, showIn: () => undefined,
-      year: sync.year, dir: sync.dir, files: sync.files, missing: sync.missing, index,
+      year: sync.year, dir: sync.dir, files: sync.files, otherCount: 0, missing: sync.missing, index,
       file: count > 0 && !sync.missing ? sync.files[index] : null,
       url: (name) => sheetUrl(sync.dir, sync.sep, name),
       kind: sync.kind, bad: sync.bad, setKind: (k) => act({ kind: "sheets", value: k }),
@@ -1175,4 +1178,13 @@ export function ScanWindow() {
       ) : <p className="scanwait">Окно скана ждёт программу…</p>}
     </div>
   );
+}
+
+/** Сколько листов в папке. Картинки и PDF вместе — оба счёта и какой вид
+ *  показан: «листов: 43» при 43 картинках и 43 листах PDF вводило в
+ *  заблуждение (долг п. 112, 03.11.2026). */
+function sheetCount(scan: Scan): string {
+  if (scan.kind === null) return `листов: ${scan.files.length}`;
+  const [images, pdf] = scan.kind === "pdf" ? [scan.otherCount, scan.files.length] : [scan.files.length, scan.otherCount];
+  return `картинок: ${images}, листов PDF: ${pdf}; показаны ${scan.kind === "pdf" ? "листы PDF" : "картинки"}`;
 }

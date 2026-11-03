@@ -177,22 +177,32 @@ def fill(driver, label, value, scope="//"):
 
 
 def village_card(driver, wait, name):
-    """Карточка села прихода: открывается сама после первого сохранения дела
-    нового прихода (Роман 06.10.2026). Сохраняем её — это и проверка того,
-    что карточка с новым полем комментария проходит через настоящий Rust."""
+    """Карточка села прихода: открывается сама, когда новое село набрано в
+    «Село» и из поля ушли (Роман 03.11.2026; до того — после первого
+    сохранения дела, 06.10.2026). Сохраняем её — это и проверка того, что
+    карточка с полем комментария проходит через настоящий Rust; её уезд и
+    губерния встают в поля дела."""
+    field(driver, "Село").send_keys(Keys.TAB)
     try:
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".modal[data-modal='place']")))
         time.sleep(0.5)  # окно первые 350 мс не принимает набор (Modal.GUARD_MS)
         opened = True
     except TimeoutException:
         opened = False
-    check(f"после первого сохранения дела открылась карточка села «{name}»", opened, error_details(driver))
+    check(f"ушли из «Село» — открылась карточка нового села «{name}»", opened, error_details(driver))
     if not opened:
         return
     modal = "//div[contains(@class,'modal')]//"
     kind = field(driver, "Тип", modal).get_attribute("value")
-    gub = field(driver, "Губерния", modal).get_attribute("value")
-    check("в карточке села тип «с.», губерния из дела", kind == "с." and gub == "Костромская", f"«{kind}», «{gub}»")
+    uyezd = field(driver, "Уезд", modal).get_attribute("value")
+    check("в карточке села тип «с.», уезд из дела", kind == "с." and uyezd == "Макарьевский", f"«{kind}», «{uyezd}»")
+    # Губерния дела пуста — её дают в карточке: в деле она должна появиться
+    # из карточки (ревьюер 03.11.2026: иначе проверка ниже ничего не значит).
+    # Не fill(): его Esc при закрытом списке закрыл бы саму карточку. Tab —
+    # уход в следующее поле карточки, список подсказок закрывается.
+    gub_field = field(driver, "Губерния", modal)
+    gub_field.send_keys("Костромская")
+    gub_field.send_keys(Keys.TAB)
     click(driver, modal + "button[normalize-space()='Сохранить населённый пункт']")
     try:
         wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal")))
@@ -207,6 +217,8 @@ def village_card(driver, wait, name):
           bool(got) and "error" not in got and got.get("np_type") == "с." and got.get("clean") == name
           and got.get("comment") == "" and not driver.find_elements(By.CSS_SELECTOR, ".modal"),
           str(got)[:300] + " | " + error_details(driver))
+    gub = wait_until(lambda: field(driver, "Губерния").get_attribute("value") == "Костромская", 5)
+    check("губерния карточки — в поле «Губерния» дела", gub, field(driver, "Губерния").get_attribute("value"))
 
 
 def run(driver, wait, archive):
@@ -241,9 +253,10 @@ def run(driver, wait, archive):
           f"семейство «{fonts[0][:40]}», загружено начертаний {fonts[1]}, с ошибкой {fonts[2]}")
 
     print("\n2. Дело")
+    # Уезд — до села: уход из «Село» открывает карточку нового села (Роман
+    # 03.11.2026), и она берёт его из дела; губернию дело получит из карточки.
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Христорождественская"),
-                         ("Село", "Борисоглебское"), ("Уезд", "Макарьевский"),
-                         ("Губерния", "Костромская")]:
+                         ("Уезд", "Макарьевский"), ("Село", "Борисоглебское")]:
         fill(driver, label, value)
     # Чистая поставка (08.10.2026): пунктов в установщике нет — чужая деревня
     # прежней поставки программе неизвестна.
@@ -257,10 +270,11 @@ def run(driver, wait, archive):
     check("поставка чистая: пунктов нет, мужских званий 51",
           "error" not in clean and clean["check"].get("known") is False and clean["places"] == 0 and clean["ranks"] == 51,
           str(clean)[:300])
+    village_card(driver, wait, "Борисоглебское")
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
-    check("дело сохранено", True)
-    village_card(driver, wait, "Борисоглебское")
+    check("дело сохранено, карточка села второй раз не открылась",
+          not wait_until(lambda: bool(driver.find_elements(By.CSS_SELECTOR, ".modal[data-modal='place']")), 1.5))
 
     print("\n3. Архив через настоящий IPC")
     # С 05.10.2026 блок архива — на экране «ⓘ О программе», не на «Деле».
@@ -1675,11 +1689,11 @@ def parishes(driver, wait):
     body = driver.find_element(By.TAG_NAME, "body").text
     check("новый приход пуст: дело не заполнено", "Дело за" not in body, body[:200].replace("\n", " | "))
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Никольская"),
-                         ("Село", "Николо-Макарово"), ("Уезд", "Макарьевский"), ("Губерния", "Костромская")]:
+                         ("Уезд", "Макарьевский"), ("Село", "Николо-Макарово")]:
         fill(driver, label, value)
+    village_card(driver, wait, "Николо-Макарово")
     driver.find_element(By.XPATH, "//button[normalize-space()='Сохранить дело']").click()
     wait.until(EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Сохранено"))
-    village_card(driver, wait, "Николо-Макарово")
     tab(driver, 'Рождения')
     b = "//div[contains(@class,'birth')]//"
     year = field(driver, "Год", b).get_attribute("value")

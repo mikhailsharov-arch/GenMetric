@@ -346,11 +346,23 @@ export default function IofField({
         // Набранное слово само есть в списке — оно первым: «Александр» в
         // записи о смерти уступал первую строку частой «Александре», и выбрать
         // мужское имя было нечем (Роман 20.10.2026). В свёрнутом виде тогда —
-        // оно и самое частое из остальных.
+        // оно и самое частое из остальных. Набрано две буквы и меньше —
+        // только слово из записей (приход, база, связанное в сверке — ярусы
+        // 1–3) или когда из записей в списке ничего нет: словарное «Ив», ни
+        // разу не встречавшееся, вставало над частым «Иван», и Enter
+        // подставлял его (Роман 03.11.2026). Длиннее — как раньше: «Марк» +
+        // Enter не должен давать «Маркел» (ревьюер 03.11.2026; грабля
+        // «подсказка шире набранного»).
         const typedNorm = currentWord.toLowerCase().replace(/ъ$/, "");
-        const exactAt = sexed.findIndex((w) => w.value.toLowerCase().replace(/ъ$/, "") === typedNorm);
-        const ordered = exactAt > 0 ? [sexed[exactAt], ...sexed.filter((_, i) => i !== exactAt)] : sexed;
-        const shownWords = early && foundPersons.length > 0 ? ordered.slice(0, exactAt >= 0 ? 2 : 1) : ordered;
+        const used = (w: Item) => w.tier < 4;
+        const exactFound = sexed.findIndex((w) => w.value.toLowerCase().replace(/ъ$/, "") === typedNorm);
+        const exactAt = exactFound >= 0 && (typedNorm.length > 2 || used(sexed[exactFound]) || !sexed.some(used)) ? exactFound : -1;
+        // Не поднятое словарное слово в свёрнутом виде — второй строкой: его
+        // можно выбрать стрелкой.
+        const ordered = exactAt > 0 ? [sexed[exactAt], ...sexed.filter((_, i) => i !== exactAt)]
+          : exactFound > 1 ? [sexed[0], sexed[exactFound], ...sexed.filter((_, i) => i !== 0 && i !== exactFound)]
+          : sexed;
+        const shownWords = early && foundPersons.length > 0 ? ordered.slice(0, exactFound >= 0 ? 2 : 1) : ordered;
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);
