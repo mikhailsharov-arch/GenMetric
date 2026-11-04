@@ -356,6 +356,12 @@ type Merged = { kept: string; dropped: string; entries: number; cases: number; f
 const CARD_FIELDS = [["np_type", "тип"], ["guberniya", "губерния"], ["uyezd", "уезд"], ["volost", "волость"],
                      ["familio_url", "ссылка Familio"]] as const;
 
+/** «2 строки», «5 строк». */
+function rowsWord(n: number): string {
+  const tail = n % 100;
+  return n % 10 >= 2 && n % 10 <= 4 && (tail < 10 || tail >= 20) ? "строки" : "строк";
+}
+
 /** Подробности карточки одной строкой: «д., Макарьевский уезд, Котельская волость». */
 function cardLine(p: PlaceInfo): string {
   const parts = [p.np_type, p.uyezd && `${p.uyezd} уезд`, p.volost && `${p.volost} волость`,
@@ -374,7 +380,8 @@ function MergePlaces({ mine, onMerged, onBack, onCancel }: {
 }) {
   const [text, setText] = useState("");
   const [like, setLike] = useState<Similar[] | null>(null);
-  const [other, setOther] = useState<{ info: PlaceInfo; usesMine: number; usesOther: number } | null>(null);
+  const [other, setOther] = useState<{ info: PlaceInfo; usesMine: number; usesOther: number;
+                                       rowsMine: number; rowsOther: number } | null>(null);
   const [keepMine, setKeepMine] = useState(true);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<Merged | null>(null);
@@ -401,11 +408,13 @@ function MergePlaces({ mine, onMerged, onBack, onCancel }: {
         return;
       }
       const [usesMine, usesOther] = await invoke<[number, number]>("place_merge_uses", { a: mine.name, b: info.name });
+      const [rowsMine, rowsOther] = await Promise.all([invoke<number>("place_rows", { name: mine.name }),
+                                                       invoke<number>("place_rows", { name: info.name })]);
       dismissWarn();
       // По умолчанию остаётся пункт, у которого больше записей; поровну —
       // тот, чью карточку открыли.
       setKeepMine(usesMine >= usesOther);
-      setOther({ info, usesMine, usesOther });
+      setOther({ info, usesMine, usesOther, rowsMine, rowsOther });
     } catch (e) {
       report(`Не удалось открыть пункт «${typed}»`, e);
     } finally {
@@ -465,6 +474,12 @@ function MergePlaces({ mine, onMerged, onBack, onCancel }: {
     // Комментарий — часть названия, и название остаётся у оставшегося.
     if (gone.comment.trim() && gone.comment.trim() !== keep.comment.trim())
       differs.push(`комментарий «${gone.comment.trim()}» у «${gone.name}» не перейдёт`);
+    // п. 121: у ушедшего несколько строк одного названия (разные уезды) —
+    // уйдут все. п. 122: тёзки — комментарий обычно отличает разные деревни.
+    const goneRows = keepMine ? other.rowsOther : other.rowsMine;
+    const key = (v: string) => v.trim().toLowerCase().replace(/ё/g, "е");
+    const twins = key(keep.clean) !== "" && key(keep.clean) === key(gone.clean)
+      && keep.comment.trim() !== gone.comment.trim();
     const row = (p: PlaceInfo, uses: number, isMine: boolean) => (
       <label className="mergeopt" data-merge-keep={p.name}>
         {/* Курсор — на выборе, а не на «Объединить»: двойной Enter после
@@ -484,6 +499,18 @@ function MergePlaces({ mine, onMerged, onBack, onCancel }: {
         </div>
         {filled.length > 0 && <p className="hint">Пустое у «{keep.name}» возьмётся у «{gone.name}»: {filled.join("; ")}.</p>}
         {differs.length > 0 && <p className="hint">Расходится — у оставшегося останется своё: {differs.join("; ")}.</p>}
+        {goneRows > 1 && (
+          <p className="refused" data-merge-rows>
+            У «{gone.name}» в справочнике {goneRows} {rowsWord(goneRows)} с этим названием (разные уезды или типы). Уйдут все,
+            их записи перейдут к «{keep.name}». Если это разные пункты — отмените и поправьте название у лишней.
+          </p>
+        )}
+        {twins && (
+          <p className="refused" data-merge-twin>
+            «{keep.name}» и «{gone.name}» — тёзки: комментарий обычно отличает разные деревни. Объединяйте, только
+            если это одна и та же деревня.
+          </p>
+        )}
         <p className="hint">Перед объединением программа сделает копии прихода и общего файла.</p>
         <div className="modalbar">
           <button type="button" className="primary" data-merge-go disabled={busy} onClick={() => void merge()}>

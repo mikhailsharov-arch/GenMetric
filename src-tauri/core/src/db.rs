@@ -14,10 +14,39 @@ pub const BACKUP_MARK: &str = "-до-обновления-";
 
 /// Признак копии перед объединением пунктов (03.11.2026).
 pub const MERGE_MARK: &str = "-до-объединения-пунктов-";
+/// Копия прихода перед очисткой справочников (04.11.2026).
+pub const CLEANUP_MARK: &str = "-до-очистки-справочников-";
+/// Сколько копий одной метки остаётся рядом с файлом (п. 123, 04.11.2026):
+/// копии перед объединением и очисткой копились без уборки.
+pub const KEEP_COPIES: usize = 5;
 
 /// Копия, а не приход: файлы с этими метками в перечень приходов не идут.
 pub fn is_backup(name: &str) -> bool {
-    name.contains(BACKUP_MARK) || name.contains(MERGE_MARK)
+    name.contains(BACKUP_MARK) || name.contains(MERGE_MARK) || name.contains(CLEANUP_MARK)
+}
+
+/// Оставить `keep` последних копий файла `db_path` с меткой `mark` (по
+/// времени в имени: «имя-метка-секунды[-n].sqlite»), старшие — удалить.
+/// Копии перед обновлением базы не трогаются: у них своя история.
+pub fn prune_copies(db_path: &Path, mark: &str, keep: usize) -> std::io::Result<usize> {
+    let Some(dir) = db_path.parent() else { return Ok(0) };
+    let stem = db_path.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+    let head = format!("{stem}{mark}");
+    let mut copies: Vec<((u64, u64), std::path::PathBuf)> = Vec::new();
+    for e in std::fs::read_dir(dir)? {
+        let path = e?.path();
+        let name = path.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+        let Some(rest) = name.strip_prefix(&head).and_then(|r| r.strip_suffix(".sqlite")) else { continue };
+        let (secs, n) = rest.split_once('-').unwrap_or((rest, "1"));
+        let (Ok(secs), Ok(n)) = (secs.parse::<u64>(), n.parse::<u64>()) else { continue };
+        copies.push(((secs, n), path));
+    }
+    copies.sort();
+    let extra = copies.len().saturating_sub(keep);
+    for (_, path) in copies.iter().take(extra) {
+        std::fs::remove_file(path)?;
+    }
+    Ok(extra)
 }
 
 /// Обновление справочников. Тот же файл прогоняет тест db/test_upgrade.py —
@@ -118,6 +147,10 @@ pub fn backup_marked(conn: &Connection, db_path: &Path, mark: &str) -> Result<st
         target = db_path.with_file_name(format!("{stem}{mark}{seconds}-{n}.sqlite"));
     }
     std::fs::copy(db_path, &target)?;
+    // Уборка старых копий не должна отменять то, ради чего копия делалась.
+    if mark != BACKUP_MARK {
+        let _ = prune_copies(db_path, mark, KEEP_COPIES);
+    }
     Ok(target)
 }
 
@@ -203,6 +236,35 @@ pub fn upgrade(conn: &Connection, bundled: &Path, from: i64) -> Result<(), Box<d
     conn.execute("DETACH DATABASE seed", [])?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_last_copies_of_one_mark() {
+        let dir = std::env::temp_dir().join(format!("genmetric-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("2-Жары.sqlite");
+        std::fs::write(&db, b"x").unwrap();
+        let names = ["2-Жары-до-объединения-пунктов-100.sqlite", "2-Жары-до-объединения-пунктов-100-2.sqlite",
+                     "2-Жары-до-объединения-пунктов-90.sqlite", "2-Жары-до-объединения-пунктов-200.sqlite",
+                     "2-Жары-до-объединения-пунктов-300.sqlite", "2-Жары-до-объединения-пунктов-400.sqlite",
+                     "2-Жары-до-обновления-50.sqlite", "3-Другой-до-объединения-пунктов-10.sqlite"];
+        for n in names {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        assert_eq!(prune_copies(&db, MERGE_MARK, 5).unwrap(), 1);
+        assert!(!dir.join("2-Жары-до-объединения-пунктов-90.sqlite").exists(), "самая старая ушла");
+        for n in ["2-Жары-до-объединения-пунктов-100.sqlite", "2-Жары-до-объединения-пунктов-100-2.sqlite",
+                  "2-Жары-до-обновления-50.sqlite", "3-Другой-до-объединения-пунктов-10.sqlite", "2-Жары.sqlite"] {
+            assert!(dir.join(n).exists(), "«{n}» не должна уходить");
+        }
+        assert!(is_backup("2-Жары-до-очистки-справочников-1.sqlite"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

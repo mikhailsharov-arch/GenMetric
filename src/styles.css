@@ -461,7 +461,7 @@ button.linkish {
 .suggest li.empty:hover { background: transparent; }
 
 /* Загрузка архива подсказок — на экране дела, ниже кнопки сохранения. */
-.archive {
+.archive, .cleanupblock {
   margin-top: 0.8em;
   padding-top: 0.5em;
   border-top: 1px solid var(--line);
@@ -1121,3 +1121,10 @@ body.withscan .overlay { right: auto; width: var(--formw); }
 .scanwin { height: 100vh; display: flex; flex-direction: column; }
 .scanwin > .scanpane { flex: 1 1 auto; position: static; height: auto; min-height: 0; }
 .scanwait { margin: auto; color: var(--muted); }
+
+/* Очистка справочников (04.11.2026): список с отметками, прокручивается. */
+.cleanuplist { max-height: calc(100vh - 16em); overflow-y: auto; margin-bottom: 0.5em; }
+.cleanuphead { font-size: 0.9rem; margin: 0.6em 0 0.2em; }
+.cleanupitem { display: block; font-size: 0.85rem; padding: 0.1em 0; }
+/* Флажок — в строке со значением: общее правило полей растягивает input на всю ширину. */
+.cleanupitem input[type="checkbox"] { display: inline-block; width: auto; margin: 0 0.3em 0 0; vertical-align: middle; }

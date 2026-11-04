@@ -1498,6 +1498,16 @@ fn place_merge_uses(app: State<App>, a: String, b: String) -> Result<(i64, i64),
     })
 }
 
+/// Сколько строк справочника с этим названием (п. 121, 04.11.2026):
+/// «Лукино» двух уездов — две строки, объединение уберёт обе.
+#[tauri::command]
+fn place_rows(app: State<App>, name: String) -> Result<i64, String> {
+    with_conn(&app, "Объединение пунктов: строки названия", |conn| {
+        conn.query_row("SELECT count(*) FROM place WHERE name_norm = ?1", [normalize(&name)], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    })
+}
+
 /// Пункты, похожие на этот, — кандидаты в объединение: «Глинница» к
 /// «Глинице», «Шишкино» к «с.Шишкино» (приставка типа не считается).
 #[tauri::command]
@@ -1545,8 +1555,74 @@ fn place_merge(app: State<App>, keep_id: i64, drop_id: i64) -> Result<genmetric_
             }
             std::fs::copy(&common, &target)
                 .map_err(|e| format!("копия общего файла не сделана, объединение отменено: {e}"))?;
+            // Копий общего файла — тоже не больше пяти (п. 123).
+            if let Err(e) = genmetric_core::db::prune_copies(&common, genmetric_core::db::MERGE_MARK, genmetric_core::db::KEEP_COPIES) {
+                write_log(&app.log_path, &format!("Старые копии общего файла не убраны: {e}"));
+            }
         }
         genmetric_core::place_merge::merge(conn, keep_id, drop_id)
+    })
+}
+
+/// Файлы других приходов — для очистки справочников: значение общего
+/// перечня, занятое там, не предлагается. None — другие приходы неизвестны
+/// (нет общего файла, файл прихода пропал): перечни тогда не предлагаются
+/// вовсе (ревьюер 04.11.2026).
+fn other_parish_files(conn: &Connection, dir: &std::path::Path, own: &str) -> Option<Vec<std::path::PathBuf>> {
+    if !parish::has_common(conn) {
+        return None;
+    }
+    let own = std::fs::canonicalize(own).unwrap_or_else(|_| std::path::PathBuf::from(own));
+    let files: Vec<String> = conn.prepare("SELECT file FROM common.parish")
+        .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0))?.collect())
+        .ok()?;
+    let mut out = Vec::new();
+    for f in files {
+        let p = dir.join(f);
+        let same = std::fs::canonicalize(&p).map(|c| c == own).unwrap_or(false);
+        if same {
+            continue;
+        }
+        if !p.exists() {
+            return None;
+        }
+        out.push(p);
+    }
+    Some(out)
+}
+
+/// Неиспользуемые значения справочников открытого прихода (З3.4, спека
+/// 2026-11-04-ochistka-spravochnikov-i-dolg.md): только список, ничего не
+/// удаляется.
+#[tauri::command(async)]
+fn cleanup_find(app: State<App>) -> Result<Vec<genmetric_core::cleanup::Unused>, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = app.data_dir.clone();
+    with_conn(&app, "Поиск неиспользуемых значений", |conn| {
+        genmetric_core::cleanup::find(conn, other_parish_files(conn, &dir, &db_path).as_deref())
+    })
+}
+
+#[derive(Serialize)]
+struct Cleaned {
+    removed: usize,
+    copy: String,
+}
+
+/// Убрать отмеченное: перед этим — копия файла прихода рядом с ним. Перечни
+/// уходят и из общего файла (сверка после удаления).
+#[tauri::command(async)]
+fn cleanup_remove(app: State<App>, keys: Vec<String>) -> Result<Cleaned, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = app.data_dir.clone();
+    with_conn_shared(&app, "Очистка справочников", |conn| {
+        let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::CLEANUP_MARK)
+            .map_err(|e| format!("копия прихода не сделана, очистка отменена: {e}"))?;
+        let (removed, problems) = genmetric_core::cleanup::remove(conn, &keys, other_parish_files(conn, &dir, &db_path).as_deref())?;
+        for p in &problems {
+            write_log(&app.log_path, &format!("Очистка справочников: перечень другого прихода не поправлен — {p}"));
+        }
+        Ok(Cleaned { removed, copy: copy.to_string_lossy().to_string() })
     })
 }
 
@@ -2634,6 +2710,9 @@ fn main() {
             place_get,
             place_update,
             place_merge,
+            place_rows,
+            cleanup_find,
+            cleanup_remove,
             place_merge_uses,
             place_merge_candidates,
             set_always_on_top,

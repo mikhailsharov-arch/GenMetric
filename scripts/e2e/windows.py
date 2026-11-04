@@ -295,6 +295,22 @@ def run(driver, wait, archive):
     check("надпись сменилась на «Загружен:»", "Загружен:" in block)
     check("полосы ошибок нет", not errorbar, " | ".join(errorbar))
 
+    # Очистка справочников (04.11.2026) через настоящий IPC: память только что
+    # загруженного архива записей не имеет, но мусором не считается; копия
+    # прихода перед удалением ложится рядом с ним.
+    driver.set_script_timeout(30)
+    unused = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('cleanup_find').then(done, (e) => done({error: String(e)}));")
+    check("очистка: память архива не предложена к удалению", unused == [], str(unused)[:300])
+    cleaned = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('cleanup_remove', {keys: []}).then(done, (e) => done({error: String(e)}));")
+    copy = Path(cleaned.get("copy", "")) if isinstance(cleaned, dict) else Path("")
+    check("очистка: ничего не убрано, копия прихода «-до-очистки-справочников-» на месте",
+          isinstance(cleaned, dict) and cleaned.get("removed") == 0 and copy.exists()
+          and "-до-очистки-справочников-" in copy.name, str(cleaned)[:300])
+
     print("\n4. Подсказка видит архив")
     tab(driver, 'Рождения')
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))

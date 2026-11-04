@@ -278,7 +278,7 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
     // Уезд и губерния карточки — в поля дела (Роман 03.11.2026: «указанные в
     // ней „Уезд“ и „Губерния“ должны автоматически подтянуться»). Карточку
     // только что подтвердили — её значения главнее.
-    void fillFromVillage(saved, true);
+    void fillFromVillage(saved, true).then(villageCardClosed);
   }
 
   /** Уезд и губерния села из справочника — в поля дела: `card` — из только
@@ -324,6 +324,12 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
         await fillFromVillage(name, false);
         return;
       }
+      // Ушли из «Село» щелчком по «Сохранить дело»: щелчок достаётся
+      // карточке — дело сохраняется само, когда её закроют (п. 120).
+      // По нажатию мыши на кнопке, не по relatedTarget: на macOS щелчок не
+      // переводит на неё фокус. Щелчок успел дойти до кнопки (дело уже
+      // сохраняется) — отметку снял onClick, второй раз не сохраняем.
+      saveAfterCard.current = performance.now() - savePressed.current < 1000;
       setVillageCard({ name: text, similar: r.similar,
                        defaults: { guberniya: c.guberniya ?? "", uyezd: c.uyezd ?? "" } });
     } catch (e) {
@@ -332,6 +338,21 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
   }
   const villageNow = useRef("");
   villageNow.current = c.village ?? "";
+  /** Карточку села открыл щелчок по «Сохранить дело» (п. 120, 04.11.2026):
+   *  после неё дело сохраняется само — уже с уездом и губернией карточки. */
+  const saveAfterCard = useRef(false);
+  const savePressed = useRef(-Infinity);
+  const [saveNow, setSaveNow] = useState(0);
+  function villageCardClosed() {
+    if (!saveAfterCard.current) return;
+    saveAfterCard.current = false;
+    // После перерисовки: сохранение должно видеть село, уезд и губернию из
+    // карточки, а не значения до неё.
+    setSaveNow((n) => n + 1);
+  }
+  useEffect(() => {
+    if (saveNow > 0) void save();
+  }, [saveNow]);
 
   async function save(overwrite = false) {
     // Год — четыре цифры в разумных пределах: «189» завело бы дело 189 года.
@@ -496,7 +517,7 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
       {villageCard && (
         <PlaceCard name={villageCard.name} similar={villageCard.similar} existing={villageCard.existing}
                    defaults={villageCard.defaults} defaultType="с." fillBare
-                   onPick={(name) => { setVillageCard(null); set("village")(name); void fillFromVillage(name, false); }}
+                   onPick={(name) => { setVillageCard(null); set("village")(name); void fillFromVillage(name, false).then(villageCardClosed); }}
                    onSaved={villageSaved}
                    onMerged={(kept, dropped) => {
                      setVillageCard(null);
@@ -504,9 +525,11 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
                      // только поле, без «дело изменено».
                      setC((prev) => ((prev.village ?? "").trim() === dropped ? { ...prev, village: kept } : prev));
                      window.dispatchEvent(new CustomEvent(PLACE_RENAMED, { detail: { oldName: dropped, newName: kept } }));
-                     void fillFromVillage(kept, false);
+                     // Карточку открыл щелчок «Сохранить дело» — после объединения
+                     // дело сохраняется так же, как после карточки (ревьюер 04.11.2026).
+                     void fillFromVillage(kept, false).then(villageCardClosed);
                    }}
-                   onCancel={() => setVillageCard(null)} />
+                   onCancel={() => { setVillageCard(null); villageCardClosed(); }} />
       )}
       <Suggest label="Уезд" kind="uyezd" browse value={c.uyezd ?? ""} onChange={set("uyezd")} />
       <Suggest label="Губерния" kind="guberniya" browse value={c.guberniya ?? ""} onChange={set("guberniya")} />
@@ -515,7 +538,8 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
           вернулся выше, рядом с фондом, описью и делом. */}
       {text("Кто индексирует", "indexer")}
 
-      <button className="primary" onClick={() => void save()} disabled={busy}>
+      <button className="primary" data-case-save onMouseDown={() => { savePressed.current = performance.now(); }}
+              onClick={() => { savePressed.current = -Infinity; saveAfterCard.current = false; void save(); }} disabled={busy}>
         {busy ? "Сохраняю…" : "Сохранить дело"}
       </button>
       {ok && <p className="hint">{okText}</p>}

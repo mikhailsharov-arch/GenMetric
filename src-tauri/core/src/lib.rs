@@ -6,6 +6,7 @@
 //! оборачивает это в команды окна.
 
 pub mod age;
+pub mod cleanup;
 pub mod db;
 pub mod export;
 pub mod import;

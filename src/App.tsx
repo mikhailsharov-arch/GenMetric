@@ -12,6 +12,7 @@ import { report, warn } from "./errors";
 import { dirtyForms } from "./dirty";
 import { FIELDS } from "./focus";
 import ArchiveBlock from "./ArchiveBlock";
+import CleanupBlock from "./CleanupBlock";
 import { ScanCaseBlock, ScanProvider, ScanShell } from "./scan";
 import SearchScreen, { type SearchRequest } from "./SearchScreen";
 
@@ -463,6 +464,9 @@ export default function App() {
           {/* Архив подсказок — здесь, а не на «Деле»: при наборе не нужен
               (Роман 05.10.2026). */}
           <ArchiveBlock />
+          {/* Очистка неиспользуемых значений (Роман 20.10.2026: «можно скрыть
+              куда-то в настройки»). */}
+          <CleanupBlock />
 
           {lookups.length > 0 && (
             <>

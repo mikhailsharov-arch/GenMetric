@@ -1879,6 +1879,50 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261104_ochistka_spravochnikov_i_dolg():
+    """
+    04.11.2026, спринт 3: очистка неиспользуемых значений справочников (З3.4;
+    Роман 20.10: опечатки «намертво оседают в справочниках») и пп. 120–123.
+    """
+    cl = read("src-tauri/core/src/cleanup.rs")
+    check("очистка: занятое — по записям, делам и карточкам; пустое НП и звание памяти — любое",
+          "fn used(conn: &Connection)" in cl and "fn has_person(&self" in cl
+          and "fn typos_go_used_stays()" in cl)
+    check("очистка: память архива Excel не предлагается (с запасом в сутки), перечень, занятый в другом приходе, — тоже",
+          "SELECT datetime(?1, '+1 day')" in cl and "fn archive_memory_and_other_parish_stay()" in cl
+          and "elsewhere.iter().any(|u| u.has(group, &value))" in cl)
+    check("очистка: перечни — через lookup_dropped (сверка не вернёт), перед удалением — копия прихода",
+          "INSERT OR IGNORE INTO main.lookup_dropped" in cl
+          and "backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::CLEANUP_MARK)" in read("src-tauri/src/main.rs"))
+    block = read("src/CleanupBlock.tsx")
+    check("очистка: окно — список с отметками, по умолчанию курсор на «Закрыть»",
+          'data-cleanup-go' in block and 'className="toggle" data-autofocus onClick={close}>Закрыть (Esc)' in block
+          and "<CleanupBlock />" in read("src/App.tsx"))
+    check("e2e: очистка через настоящий IPC — архив не предложен, копия на месте",
+          "invoke('cleanup_find')" in read("scripts/e2e/windows.py"))
+    # Находки агентов 04.11.2026 (до выкладки).
+    check("очистка: архив, тронутый позже загрузки («Ефим» ×49), — не мусор: охват «вся база» больше прихода; память людей ×2+ — тоже",
+          "(stamp.is_some() && global > parish)" in cl and cl.count("(stamp.is_some() && uses > 1)") == 3)
+    check("очистка: убранное значение перечня уходит и из других приходов; другие неизвестны — перечни не предлагаются",
+          "fn dropped_lookup_leaves_other_parishes()" in cl and "find(&conn, None)" in cl
+          and "fn other_parish_files(conn: &Connection, dir: &std::path::Path, own: &str) -> Option<Vec<std::path::PathBuf>>" in read("src-tauri/src/main.rs"))
+    check("очистка: частое (×5+) не отмечено по умолчанию, флажок — в строке",
+          "const OFTEN = 5;" in block and '.cleanupitem input[type="checkbox"]' in read("src/styles.css"))
+    ch = read("src/CaseHeader.tsx")
+    check("п. 120: щелчок дошёл до кнопки или карточку закрыло объединение — второго сохранения нет",
+          "saveAfterCard.current = false; void save();" in ch and "void fillFromVillage(kept, false).then(villageCardClosed);" in ch)
+    check("п. 120: щелчок «Сохранить дело», отданный карточке села, — дело сохраняется после неё",
+          "saveAfterCard.current = performance.now() - savePressed.current < 1000;" in ch
+          and "if (saveNow > 0) void save();" in ch)
+    card = read("src/PlaceCard.tsx")
+    check("пп. 121–122: окно объединения предупреждает о нескольких строках названия и о тёзках",
+          "data-merge-rows" in card and "data-merge-twin" in card and 'fn place_rows(' in read("src-tauri/src/main.rs"))
+    db = read("src-tauri/core/src/db.rs")
+    check("п. 123: копии перед объединением и очисткой — не больше пяти; копии перед обновлением не трогаются",
+          "pub const KEEP_COPIES: usize = 5;" in db and "if mark != BACKUP_MARK {" in db
+          and "fn keeps_last_copies_of_one_mark()" in db)
+
+
 def incident_20261103_otvet_romana_na_sborku_03_11():
     """
     03.11.2026, ответ Романа на сборку 03.11 (пп. 114–119) и долг ревью
@@ -1908,7 +1952,7 @@ def incident_20261103_otvet_romana_na_sborku_03_11():
     ch = read("src/CaseHeader.tsx")
     check("новое село на «Деле»: карточка при уходе из поля, уезд и губерния — в дело (п. 118)",
           "onLeave={(v, related, typed) => void leaveVillage(v, related, typed)}" in ch
-          and "void fillFromVillage(saved, true);" in ch)
+          and "void fillFromVillage(saved, true)" in ch)
     dirty = read("src/dirty.ts")
     check("«Очистить» в отказе окна «Приходы» очищает формы (п. 119)",
           "export function clearDirtyForms()" in dirty and "data-parish-clear-forms" in pd
@@ -2156,6 +2200,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261104_ochistka_spravochnikov_i_dolg,
     incident_20261103_obedinenie_punktov,
     incident_20261103_otvet_romana_na_sborku_03_11,
     incident_20261103_tiff_i_pdf_i_dolg_e2e,
