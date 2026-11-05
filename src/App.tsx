@@ -13,6 +13,7 @@ import { dirtyForms } from "./dirty";
 import { FIELDS } from "./focus";
 import ArchiveBlock from "./ArchiveBlock";
 import CleanupBlock from "./CleanupBlock";
+import WivesBlock from "./WivesBlock";
 import { ScanCaseBlock, ScanProvider, ScanShell } from "./scan";
 import SearchScreen, { type SearchRequest } from "./SearchScreen";
 
@@ -467,6 +468,8 @@ export default function App() {
           {/* Очистка неиспользуемых значений (Роман 20.10.2026: «можно скрыть
               куда-то в настройки»). */}
           <CleanupBlock />
+          {/* Фамилии жён по мужьям (Роман 12.10.2026, спека 2026-10-20-familii-zhyon). */}
+          <WivesBlock onOpenEntry={openEntry} />
 
           {lookups.length > 0 && (
             <>

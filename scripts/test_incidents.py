@@ -1879,6 +1879,33 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261105_familii_zhyon():
+    """
+    05.11.2026, спринт «Фамилии жён» (З4.4; Роман 12.10: «Нужен инструмент
+    (скрипт) для проверки и массового дозаполнения БД»).
+    """
+    w = read("src-tauri/core/src/wife_surnames.rs")
+    check("фамилии жён: только пустая фамилия; другая, двойная, мужское имя — «Проверьте вручную»; невеста не трогается",
+          "fn plan_and_apply()" in w and '"у жены другая фамилия"' in w and '"у мужа двойная фамилия"' in w
+          and "AND trim(coalesce(surname, '')) = ''" in w and "'bride'" not in w.split("fn pairs")[1].split("fn plan")[0])
+    check("фамилии жён: женская форма — то же правило, что у формы (feminine ↔ feminineSurname)",
+          "pub fn feminine(surname: &str)" in w and "export function feminineSurname" in read("src/names.ts"))
+    check("фамилии жён: память подсказок — как после сохранения (персона, пара, частоты), копия прихода",
+          'statement("person_unremember")' in w and 'statement("spouse_remember")' in w and 'remember(&tx, "surname"' in w
+          and "genmetric_core::db::WIVES_MARK" in read("src-tauri/src/main.rs"))
+    blk = read("src/WivesBlock.tsx")
+    check("фамилии жён: несохранённое в форме — отказ (правка записи перезаписала бы фамилию)",
+          "const forms = dirtyForms();" in blk and "<WivesBlock onOpenEntry={openEntry} />" in read("src/App.tsx"))
+    check("e2e: фамилии жён через настоящий IPC", "invoke('wives_plan')" in read("scripts/e2e/windows.py"))
+    # Находки агентов 05.11.2026 (до выкладки).
+    check("фамилии жён: та же жена без фамилии в памяти пар дополняется (spouse_extend), второй жены у мужа нет",
+          'statement("spouse_extend")' in w and "второй жены у мужа нет" in w)
+    check("фамилии жён: дата изменения записи; пол в смертях — без противоречия; дореформенные написания",
+          "UPDATE entry SET updated_at = datetime('now')" in w and "_ => unclear += 1," in w and "normalize_name(first)" in w)
+    check("фамилии жён: «Открыть» при несохранённом — объяснение в окне, список не теряется",
+          "Чтобы открыть запись, сначала сохраните или очистите набранное" in blk)
+
+
 def incident_20261104_ochistka_spravochnikov_i_dolg():
     """
     04.11.2026, спринт 3: очистка неиспользуемых значений справочников (З3.4;
@@ -2200,6 +2227,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261105_familii_zhyon,
     incident_20261104_ochistka_spravochnikov_i_dolg,
     incident_20261103_obedinenie_punktov,
     incident_20261103_otvet_romana_na_sborku_03_11,

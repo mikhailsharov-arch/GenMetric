@@ -16,13 +16,15 @@ pub const BACKUP_MARK: &str = "-до-обновления-";
 pub const MERGE_MARK: &str = "-до-объединения-пунктов-";
 /// Копия прихода перед очисткой справочников (04.11.2026).
 pub const CLEANUP_MARK: &str = "-до-очистки-справочников-";
+/// Копия прихода перед дозаполнением фамилий жён (05.11.2026).
+pub const WIVES_MARK: &str = "-до-фамилий-жён-";
 /// Сколько копий одной метки остаётся рядом с файлом (п. 123, 04.11.2026):
 /// копии перед объединением и очисткой копились без уборки.
 pub const KEEP_COPIES: usize = 5;
 
 /// Копия, а не приход: файлы с этими метками в перечень приходов не идут.
 pub fn is_backup(name: &str) -> bool {
-    name.contains(BACKUP_MARK) || name.contains(MERGE_MARK) || name.contains(CLEANUP_MARK)
+    name.contains(BACKUP_MARK) || name.contains(MERGE_MARK) || name.contains(CLEANUP_MARK) || name.contains(WIVES_MARK)
 }
 
 /// Оставить `keep` последних копий файла `db_path` с меткой `mark` (по
@@ -263,6 +265,7 @@ mod prune_tests {
             assert!(dir.join(n).exists(), "«{n}» не должна уходить");
         }
         assert!(is_backup("2-Жары-до-очистки-справочников-1.sqlite"));
+        assert!(is_backup("2-Жары-до-фамилий-жён-1.sqlite"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

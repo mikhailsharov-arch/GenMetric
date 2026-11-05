@@ -1626,6 +1626,31 @@ fn cleanup_remove(app: State<App>, keys: Vec<String>) -> Result<Cleaned, String>
     })
 }
 
+/// Фамилии жён по мужьям (З4.4, спека 2026-10-20-familii-zhyon.md):
+/// предпросмотр по открытому приходу, ничего не меняет.
+#[tauri::command(async)]
+fn wives_plan(app: State<App>) -> Result<genmetric_core::wife_surnames::Plan, String> {
+    with_conn(&app, "Фамилии жён: предпросмотр", genmetric_core::wife_surnames::plan)
+}
+
+#[derive(Serialize)]
+struct WivesDone {
+    fixed: usize,
+    copy: String,
+}
+
+/// Дописать отмеченные: перед этим — копия файла прихода рядом с ним.
+#[tauri::command(async)]
+fn wives_apply(app: State<App>, ids: Vec<i64>) -> Result<WivesDone, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    with_conn_shared(&app, "Фамилии жён", |conn| {
+        let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::WIVES_MARK)
+            .map_err(|e| format!("копия прихода не сделана, фамилии не дописаны: {e}"))?;
+        let fixed = genmetric_core::wife_surnames::apply(conn, &ids)?;
+        Ok(WivesDone { fixed, copy: copy.to_string_lossy().to_string() })
+    })
+}
+
 /// Губерния, уезд и волость из карточки — в перечни: следующая карточка их
 /// подскажет (Роман 02.10.2026).
 fn card_lookups(conn: &Connection, card: &PlaceCard) -> Result<(), String> {
@@ -2712,6 +2737,8 @@ fn main() {
             place_merge,
             place_rows,
             cleanup_find,
+            wives_plan,
+            wives_apply,
             cleanup_remove,
             place_merge_uses,
             place_merge_candidates,

@@ -19,6 +19,7 @@ pub mod scans;
 pub mod search;
 pub mod text;
 pub mod tiff_png;
+pub mod wife_surnames;
 pub mod xlsx;
 
 /// Запросы записи и чтения. Тот же файл читает тест db/test_entry.py —

@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 474, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 482, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
@@ -54,7 +54,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 73 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 75 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -99,6 +99,14 @@ Familio (`import_familio.rs`: колонки по подписям, нескол
 вернёт его); другие приходы неизвестны — перечни не предлагаются. На
 настоящей базе: `GENMETRIC_CLEANUP_DB=/путь GENMETRIC_CLEANUP_OTHERS=/a,/b
 cargo test -p genmetric-core cleanup_real -- --ignored --nocapture`.
+
+**Фамилии жён по мужьям** (с 05.11.2026, `src-tauri/core/src/wife_surnames.rs`,
+окно — `src/WivesBlock.tsx` на «ⓘ О программе»): правится только пустая
+фамилия жены, женской формой фамилии мужа (`feminine` — копия
+`feminineSurname` в `src/names.ts`: правишь одно — правь другое); другая
+фамилия, двойная фамилия мужа, мужское имя — «Проверьте вручную». Память
+подсказок — теми же блоками, что сохранение записи. На настоящей базе:
+`GENMETRIC_WIVES_DB=/путь cargo test -p genmetric-core wives_real -- --ignored --nocapture`.
 
 **Импорт из Excel** проверяется синтетическим индексатором
 `db/fixtures/indexer.xlsx` (собирает `python3 scripts/make_indexer_fixture.py`,

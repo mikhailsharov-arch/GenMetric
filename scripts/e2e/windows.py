@@ -311,6 +311,19 @@ def run(driver, wait, archive):
           isinstance(cleaned, dict) and cleaned.get("removed") == 0 and copy.exists()
           and "-до-очистки-справочников-" in copy.name, str(cleaned)[:300])
 
+    # Фамилии жён (05.11.2026) через настоящий IPC: предпросмотр и копия.
+    wives = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('wives_plan').then(done, (e) => done({error: String(e)}));")
+    check("фамилии жён: предпросмотр отвечает", isinstance(wives, dict) and "fill" in wives and "check" in wives, str(wives)[:300])
+    applied = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('wives_apply', {ids: []}).then(done, (e) => done({error: String(e)}));")
+    wcopy = Path(applied.get("copy", "")) if isinstance(applied, dict) else Path("")
+    check("фамилии жён: ничего не дописано, копия «-до-фамилий-жён-» на месте",
+          isinstance(applied, dict) and applied.get("fixed") == 0 and wcopy.exists() and "-до-фамилий-жён-" in wcopy.name,
+          str(applied)[:300])
+
     print("\n4. Подсказка видит архив")
     tab(driver, 'Рождения')
     wait.until(EC.presence_of_element_located((By.XPATH, "//section[.//h2[normalize-space()='Отец']]")))
