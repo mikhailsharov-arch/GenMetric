@@ -194,8 +194,13 @@ export function describe(e: DossierEvent): { what: string; who: Part[] } {
     const tail = [ageWords(me.age), me.death_cause ? `причина: ${me.death_cause}` : ""].filter(Boolean).join(", ");
     return {
       what: "смерть" + (tail ? ` (${tail})` : ""),
-      who: people(of(e, "deceased_relative", "deceased_parent", "deceased_spouse"), kinWord),
+      who: join(people(of(e, "deceased_relative", "deceased_parent", "deceased_spouse"), kinWord),
+                of(e, "death_witness*").length ? ["свидетели: ", ...people(of(e, "death_witness*"))] : []),
     };
+  }
+  // Свидетель смерти (с 06.11.2026) — как поручитель в браке.
+  if (role.startsWith("death_witness")) {
+    return { what: "свидетель смерти", who: named(female(one(e, "deceased")) ? "умершая" : "умерший", one(e, "deceased")) };
   }
   if (role.startsWith("deceased_")) {
     return { what: relWord(me, female(one(e, "deceased")) ? "умершей" : "умершего"), who: named(female(one(e, "deceased")) ? "умершая" : "умерший", one(e, "deceased")) };

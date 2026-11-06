@@ -77,12 +77,14 @@ pub fn suggest_sql(kind: &str) -> Result<(String, bool), String> {
     Ok((sql, !usage_gender.is_empty()))
 }
 
-/// Шаблон «набранное в середине» для подсказки званий: из шаблона «с начала»
-/// (`от%`, уже нормализованного и экранированного) — `%от%`. None — не звание
-/// или набрано меньше двух букв: тогда ищем только с начала.
+/// Шаблон «набранное в середине» для подсказки званий и населённых пунктов:
+/// из шаблона «с начала» (`от%`, уже нормализованного и экранированного) —
+/// `%от%`. None — другой перечень или набрано меньше двух букв: тогда ищем
+/// только с начала. Пункты — с 06.11.2026 (п. 127, Роман: «Черн» не находил
+/// «с.Черняное» — с 03.11 название хранится с приставкой типа).
 pub fn rank_inside_pattern(kind: &str, prefix_pattern: &str) -> Option<String> {
     let typed = prefix_pattern.strip_suffix('%')?;
-    if !kind.starts_with("rank") || typed.chars().count() < 2 {
+    if !(kind.starts_with("rank") || kind == "place") || typed.chars().count() < 2 {
         return None;
     }
     Some(format!("%{typed}%"))
@@ -271,6 +273,8 @@ mod tests {
         assert_eq!(rank_inside_pattern("rank", "от%"), Some("%от%".to_string()));
         assert_eq!(rank_inside_pattern("rank_m", "о%"), None, "одна буква — только с начала");
         assert_eq!(rank_inside_pattern("surname", "от%"), None, "фамилии — только с начала");
+        assert_eq!(rank_inside_pattern("place", "черн%"), Some("%черн%".to_string()), "пункты — и по вхождению (п. 127)");
+        assert_eq!(rank_inside_pattern("place", "ч%"), None);
         add("rank_m", "сын-отрок", 2);
         add("rank_m", "отставной рядовой", 5);
         let ranks = |pattern: &str| -> Vec<String> {

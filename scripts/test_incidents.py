@@ -1030,10 +1030,13 @@ def incident_20261007_otvet_na_sborku_06_10():
     check("флажки звания — вне обхода клавишами",
           birth.count("tabIndex={-1} data-auto-rank") == 1 and marriage.count("tabIndex={-1} data-auto-rank") == 1)
     iof = read("src/IofField.tsx")
-    # С 03.11.2026 набранное слово, не поднятое первым (словарное «Ив»), —
-    # второй строкой: счёт по exactFound.
-    check("подсказка ИОФ: есть персоны — одна словарная строка (и набранное слово, если оно есть в словаре, — 20.10.2026)",
-          "early && foundPersons.length > 0 ? ordered.slice(0, exactFound >= 0 ? 2 : 1) : ordered" in iof)
+    # С 06.11.2026 (п. 128) словарное «Ив», не поднятое первым, не
+    # показывается вовсе (Роман: «фантомное „Ив“ предлагаться не должно»);
+    # вторая строка — только под поднятым набранным словом.
+    check("подсказка ИОФ: есть персоны — одна словарная строка (и набранное слово, если оно поднято первым, — 20.10.2026)",
+          "early && foundPersons.length > 0 ? ordered.slice(0, exactAt > 0 ? 2 : 1) : ordered" in iof)
+    check("п. 128 (06.11.2026): не поднятое словарное слово второй строкой не встаёт",
+          "exactFound > 1 ? [sexed[0], sexed[exactFound]" not in iof)
     check("НП умершего идёт родственнику у любого умершего, не только у младенца",
           "!/младен/i.test(dead.rank)" not in death and "editingId !== null || relPlaceManual.current" in death)
     check("правило младенца — не у записи на правке и не поверх звания, тронутого руками",
@@ -1879,6 +1882,49 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261106_otvet_romana_na_sborki_03_05_11():
+    """
+    06.11.2026, ответ Романа на сборки 03–05.11 (intent/2026-11-06-…): пп.
+    124–129, свидетели в «Смертях», очистка пунктов без записей.
+    """
+    rec = read("src-tauri/core/src/records.rs")
+    forget = rec.split("fn forget_entry", 1)[1].split("fn drop_orphan_lookups", 1)[0]
+    check("п. 124: правка снимает причт и из памяти персон (пересохранение не растит счётчик)",
+          '} else if o.role != "deceased"' not in forget and 'if o.role != "deceased" && !iof.contains(\'*\')' in forget)
+    st = read("db/statements.sql")
+    look = st.split("-- @spouse_lookup", 1)[1].split("-- @", 1)[0]
+    check("п. 126: жена по мужу — последняя набранная, а не самая частая",
+          "last_used_at DESC, uses DESC" in look)
+    lib = read("src-tauri/core/src/lib.rs")
+    check("п. 127: пункты подсказываются и по вхождению («Черн» → «с.Черняное»)",
+          'kind.starts_with("rank") || kind == "place"' in lib
+          and 'kind === "place" && bare(stripPlaceType(v)).startsWith(bare(query))' in read("src/Suggest.tsx"))
+    pd = read("src/ParishDialog.tsx")
+    check("п. 129: «Очистить» в окне «Приходы» сам делает то, что нажимали",
+          "blocked((now) => void now.open(id))" in pd and "blocked((now) => void now.create())" in pd and "if (retry)" in pd)
+    check("п. 129: повтор берёт действие последней отрисовки (выбор «заменить / создать», название — нынешние; ревьюер 06.11.2026)",
+          "retry(actions.current)" in pd and "actions.current = { open, create, runImport, runFamilio };" in pd)
+    check("свидетели смерти не попадают на лист «МК» (кода роли у индексатора нет; ревьюер 06.11.2026)",
+          "AND x.role_code NOT LIKE 'death_witness%'" in st)
+    check("п. 125: «Список на сверку…» — всегда на «Деле», и когда всё сверено",
+          "data-review-open" in read("src/CaseHeader.tsx") and "askedDone" in read("src/ReviewDialog.tsx"))
+    death = read("src/DeathForm.tsx")
+    check("свидетели смерти: две роли раздела 3, блок изначально свёрнут, сохраняются и открываются",
+          "death_witness1,свидетель смерти 1,3" in read("db/seed/role.csv")
+          and 'useFold("death_witnesses", "Свидетели", true)' in death
+          and "payload(`death_witness${i + 1}`" in death and 'by("death_witness2")' in death)
+    check("свидетели смерти: в выгрузке — в «Комментарий» Familio и «Прим.» умершего Excel",
+          "AS witnesses" in st and "coalesce('; ' || t.witnesses, '')" in st and "coalesce('; ' || tw.witnesses, '')" in st)
+    cl = read("src-tauri/core/src/cleanup.rs")
+    check("очистка пунктов: только при известных других приходах, занятость — записи, дела, память; из общего файла и других приходов",
+          "Part::Place {" in cl and "fn unused_places()" in cl and "DELETE FROM common.place WHERE name_norm" in cl
+          and "memory_places" in cl)
+    check("п. 130: пункты прежней поставки (справочник Романа у второго тестировщика) — в очистке подписаны, не отмечены заранее",
+          "coalesce(origin, '') = 'seed'" in cl and "из поставки программы до 08.10.2026" in cl and "e.3 |= filled || seed;" in cl)
+    check("очистка пунктов: перед удалением — копия и общего файла",
+          "copy_common(&app, &dir, genmetric_core::db::CLEANUP_MARK)" in read("src-tauri/src/main.rs"))
+
+
 def incident_20261105_familii_zhyon():
     """
     05.11.2026, спринт «Фамилии жён» (З4.4; Роман 12.10: «Нужен инструмент
@@ -1996,8 +2042,9 @@ def incident_20261103_otvet_romana_na_sborku_03_11():
           "fn sparse(" in pdf and "fn big_file_is_read_in_pieces()" in pdf and "if full <= WHOLE {" in pdf)
     scan = read("src/scan.tsx")
     # Находки ревьюера 03.11.2026 (до выкладки).
-    check("«Очистить» очищает и «Дело» (перечитывает реквизиты), а не только формы записей",
-          'setClearer("Дело", () => load(loadedYear, c.id || null));' in read("src/CaseHeader.tsx"))
+    # С 06.11.2026: дела ещё нет (новый приход) — поля пустеют (стенд s75).
+    check("«Очистить» очищает и «Дело» (перечитывает реквизиты; без дела — пустые поля), а не только формы записей",
+          'load(loadedYear, c.id);' in read("src/CaseHeader.tsx") and "setC(EMPTY);" in read("src/CaseHeader.tsx"))
     check("«Марк» + Enter не даёт «Маркел»: словарное слово не поднимается только при наборе до двух букв",
           "(typedNorm.length > 2 || used(sexed[exactFound]) || !sexed.some(used))" in iof)
     check("PDF кусками: оборванная строка <…> просит дочитать; круг без дочитывания — целиком",
@@ -2130,7 +2177,7 @@ def incident_20261019_oshibki_svyazej():
     family = read("src-tauri/core/src/search/family.rs")
     check("диапазоны возраста по ролям — как у индексатора А.К. (мать 17–55, восприемники 6–60, поручители 17–60; отец до 75 — с 20.10.2026)",
           '"father" => ages(17, 75),' in family and '"mother" => ages(17, 55),' in family and '"godparent" => ages(6, 60),' in family
-          and '"witness" => ages(17, 60),' in family)
+          and '"witness" | "death_witness" => ages(17, 60),' in family)  # свидетели смерти — с 06.11.2026
     check("несовместимые диапазоны делят персону и не дают слить", "split_by_age(&mut persons, &mut owner, rows, &spouse, first_adult, &mut maybe);" in family
           and "let Ok(both) = meet(ranges[a], ranges[b]) else { return false };" in family)
     check("женщина у того же мужа — одна при похожих именах с тем же отчеством (Соломония/Соломонида), но не две жены вдовца (Наталья и Анна Ивановны)",
@@ -2227,6 +2274,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261106_otvet_romana_na_sborki_03_05_11,
     incident_20261105_familii_zhyon,
     incident_20261104_ochistka_spravochnikov_i_dolg,
     incident_20261103_obedinenie_punktov,

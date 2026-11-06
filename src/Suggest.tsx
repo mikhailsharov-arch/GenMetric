@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { focusNextField, scrollInList, toScanNo } from "./focus";
 import { report } from "./errors";
-import { splitPlaceLabel, typedCase } from "./names";
+import { splitPlaceLabel, stripPlaceType, typedCase } from "./names";
 
 export type Item = { value: string; tier: number; count: number };
 
@@ -136,8 +136,12 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         // начинается ни одна строка, заранее не выбрана ни одна: иначе Enter
         // на набранном целиком «вдова» подставил бы «крестьянская вдова» —
         // та же поломка, что «Курынин» → «Курынина» (ревьюер 13.10.2026).
+        // Пункты (п. 127, 06.11.2026) тоже ищутся по вхождению; «Черн» в
+        // начале названия после приставки типа («с.Черняное») — то же, что с
+        // начала: Enter его ставит.
         const bare = (t: string) => t.toLowerCase().replace(/ъ(?=\s|$)/g, "");
-        const inside = kind.startsWith("rank") && rows.length > 0 && !rows.some((r) => bare(r.value).startsWith(bare(query)));
+        const starts = (v: string) => bare(v).startsWith(bare(query)) || (kind === "place" && bare(stripPlaceType(v)).startsWith(bare(query)));
+        const inside = (kind.startsWith("rank") || kind === "place") && rows.length > 0 && !rows.some((r) => starts(r.value));
         setActive(inside ? -1 : 0);
         // Единственный вариант, совпадающий с набранным, показывать незачем.
         const exact = rows.length === 1 && rows[0].value.toLowerCase() === query.toLowerCase();

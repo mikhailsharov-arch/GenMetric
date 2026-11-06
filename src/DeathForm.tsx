@@ -195,6 +195,10 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   const [dead, setDead] = useState<Deceased>(NEW_DECEASED);
   const [nameless, setNameless] = useState(false);
   const [rel, setRel] = useState<Relative>(NEW_RELATIVE);
+  // Свидетели смерти (Роман 06.11.2026): в ранних книгах (1800 год) дат
+  // иногда нет, а два свидетеля есть. Блок изначально свёрнут.
+  const [wit1, setWit1] = useState<Person>(EMPTY_PERSON);
+  const [wit2, setWit2] = useState<Person>(EMPTY_PERSON);
   // Пол умершего руками — только когда по имени его не понять. От него
   // зависит колонка счёта, как у рождений.
   const [sexManual, setSexManual] = useState<Sex | null>(null);
@@ -300,7 +304,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
 
   function renamePlace(oldName: string, newName: string) {
     const fix = <T extends Person>(p: T): T => (p.place === oldName ? { ...p, place: newName } : p);
-    setDead(fix); setRel(fix);
+    setDead(fix); setRel(fix); setWit1(fix); setWit2(fix);
   }
   usePlaceRenamed(renamePlace);
 
@@ -559,17 +563,21 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     // ухода из поля не даёт — решаем сейчас и пишем решённое.
     const months = autoMonths() ? settle(null) : { eventMonth: deathMonth, riteMonth: burialMonth };
     let d = dead, r = rel, cl = [clergy1, clergy2, clergy3];
+    let ws = [wit1, wit2];
     try {
       // Свёрнутый родственник: поля ИОФ на экране нет, разбор мог устареть.
       if (relFolded) r = { ...r, parsed: null };
+      if (witFolded) ws = ws.map((w) => ({ ...w, parsed: null }));
       [d, r] = await Promise.all([withParsed(d), withParsed(r)]) as [Deceased, Relative];
+      ws = await Promise.all(ws.map(withParsed));
       cl = await Promise.all(cl.map(withParsed));
     } catch (e) {
       report("Не удалось разобрать имена перед сохранением", e);
       return;
     }
     const named: [string, Person][] = [
-      ["умершего", d], ["родственника", r], ...cl.map((c) => ["причта", c] as [string, Person]),
+      ["умершего", d], ["родственника", r], ...ws.map((w) => ["свидетеля", w] as [string, Person]),
+      ...cl.map((c) => ["причта", c] as [string, Person]),
     ];
     const unknown = named.find(([, p]) => p.iof.trim() && p.parsed && !p.parsed.known_name);
     if (unknown) {
@@ -619,6 +627,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     // Родственник пишется, только если есть имя: в Excel у 259 из 824 его нет.
     if (r.iof.trim())
       persons.push(payload("deceased_relative", 40, r, { kinship: r.kinship.trim() || null }, kinGender(r.kinship)));
+    ws.forEach((w, i) => { if (w.iof.trim()) persons.push(payload(`death_witness${i + 1}`, 60 + i * 10, w)); });
     cl.forEach((c, i) => { if (c.iof.trim()) persons.push(payload(`clergy${i + 1}`, 100 + i * 10, c, {}, "М")); });
 
     setBusy(true);
@@ -724,7 +733,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   function formDirty(): boolean {
     // День — тоже набранное, как в рождениях и браках (до 10.10.2026 здесь
     // его не было: «Открыть» из поиска молча стирало набранный день смерти).
-    return [dead, rel].some((p) => p.iof.trim() || p.place.trim() || p.rank.trim())
+    return [dead, rel, wit1, wit2].some((p) => p.iof.trim() || p.place.trim() || p.rank.trim())
       || dead.cause.trim().length > 0 || dead.age.trim().length > 0 || nameless
       || deathDay !== null || burialDay !== null;
   }
@@ -766,6 +775,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
       setSexManual((dm?.gender as Sex | null | undefined) ?? null);
       setAskSex(false);
       setRel({ ...person(rm, NEW_RELATIVE), kinship: rm ? rm.kinship ?? "" : KIN_DEFAULT });
+      setWit1(person(by("death_witness1"), EMPTY_PERSON));
+      setWit2(person(by("death_witness2"), EMPTY_PERSON));
       clergyState.open([person(by("clergy1"), EMPTY_PERSON), person(by("clergy2"), EMPTY_PERSON),
                         person(by("clergy3"), EMPTY_PERSON)]);
       setEditingId(e.id);
@@ -813,6 +824,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     setDead({ ...NEW_DECEASED });
     setNameless(false);
     setRel({ ...NEW_RELATIVE });
+    setWit1({ ...EMPTY_PERSON });
+    setWit2({ ...EMPTY_PERSON });
     setSexManual(null);
     setAskSex(false);
     setDeathDay(null);
@@ -909,6 +922,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   // Сворачиваемый блок (Роман 03.10.2026): помнится в приходе. Умерший не
   // сворачивается — без него записи нет.
   const [relFolded, foldRel] = useFold("death_relative", "Родственник");
+  // Свидетели — изначально свёрнуты: в записях конца XIX века их нет (Роман
+  // 06.11.2026: «по умолчанию эти поля должны быть свёрнуты»).
+  const [witFolded, foldWit] = useFold("death_witnesses", "Свидетели", true);
 
   return (
     <div onKeyDown={hotkeys} ref={root} className="death formroot">
@@ -995,6 +1011,18 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                        <Suggest label="Родство" kind="kinship" value={rel.kinship} browse skipFilled
                                 onChange={(kinship) => setRel((s) => ({ ...s, kinship }))} />
                      } />
+      </div>
+
+      {witFolded && (
+        <FoldLine block="death_witnesses" title="Свидетели" summary={foldSummary([wit1, wit2])} onOpen={() => foldWit(false)} />
+      )}
+      <div className="cols" hidden={witFolded} data-death-witnesses>
+        {[wit1, wit2].map((w, i) => (
+          <PersonBlock key={i} title={`Свидетель ${i + 1}`} person={w}
+                       onChange={(p) => (i === 0 ? setWit1 : setWit2)((s) => ({ ...s, ...p }))}
+                       onPickPerson={pickInto(i === 0 ? setWit1 : setWit2)} {...common}
+                       titleAfter={i === 0 ? <FoldLink block="death_witnesses" onFold={() => foldWit(true)} /> : undefined} />
+        ))}
       </div>
 
       <ClergyBlock

@@ -356,6 +356,23 @@ def main() -> int:
         db.execute("UPDATE person_mention SET note = NULL WHERE entry_id = ? AND role_code = 'clergy2'", (did,))
         db.executescript(sql["export_prepare"])
         check("AZ пометки: примечание причта", v("AZ") == "Александр Рождественский: исповедовал", str(v("AZ")))
+        # Свидетели смерти (Роман 06.11.2026): у Familio своих колонок нет —
+        # «должны автоматически переноситься в поле „Комментарий“».
+        aid = db.execute("SELECT entry_id FROM person_mention WHERE role_code = 'deceased' AND first_name = 'Анна'").fetchone()[0]
+        place_id = db.execute("SELECT place_id FROM person_mention WHERE role_code = 'deceased' AND first_name = 'Анна'").fetchone()[0]
+        db.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, patronymic, surname, rank, place_id) "
+                   "VALUES (?, 'death_witness1', 60, 'Пётр', 'Иванов', 'Сидоров', 'крестьянин', ?), "
+                   "(?, 'death_witness2', 70, 'Яков', NULL, 'Ильин', NULL, NULL)", (aid, place_id, aid))
+        db.executescript(sql["export_prepare"])
+        w = rows(db, sql, "familio_death")[0][col("AZ")]
+        check("AZ: свидетели смерти — в «Дополнение, Комментарий»",
+              w == "Александр Рождественский: исповедовал; Свидетели: Пётр Иванов Сидоров (крестьянин, Кнышево); Яков Ильин", str(w))
+        xr = [c for r in db.execute("SELECT * FROM x_row WHERE entry_id = ?", (aid,)).fetchall() for c in r if isinstance(c, str)]
+        check("Excel: свидетели смерти — в «Прим.» умершего", any(c.startswith("понос; Свидетели: Пётр Иванов Сидоров") for c in xr), str(xr))
+        mkw = [r[3] for r in rows(db, sql, "excel_mk") if "свидетель смерти" in str(r[3])]
+        check("Excel «МК»: свидетелей смерти там нет (кода роли у индексатора нет)", mkw == [], str(mkw))
+        db.execute("DELETE FROM person_mention WHERE role_code LIKE 'death_witness%'")
+        db.executescript(sql["export_prepare"])
         check("BA комментарий: «Анна» не отличается, отец — в старой форме", v("BA") == "Имена в МК: Иван Петров",
               str(v("BA")))
         r = deaths[1]

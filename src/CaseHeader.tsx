@@ -80,7 +80,8 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
   const [ask, setAsk] = useState<{ year: number; existing: string } | null>(null);
   const [okText, setOkText] = useState("");
   const [review, setReview] = useState(false);
-  const [toReview, setToReview] = useState(0);
+  // null — ещё не прочитано: кнопка «Список на сверку…» не мигает до ответа.
+  const [toReview, setToReview] = useState<number | null>(null);
   const [c, setC] = useState<Case>(EMPTY);
   const [parishes, setParishes] = useState(false);
   // Реквизиты поправлены, но не сохранены: смена года или прихода их не
@@ -102,8 +103,19 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
   }, [edited, yearChanged]);
   // «Очистить» в окне «Приходы» (ревьюер 03.11.2026): поправленные
   // реквизиты — как были в базе, дело перечитывается.
+  // Дела в приходе ещё нет (новый приход) — перечитывать нечего: поля
+  // пустеют (стенд 06.11.2026: фонд «999» оставался, и смена прихода после
+  // «Очистить» снова отказывала).
   useEffect(() => {
-    setClearer("Дело", () => load(loadedYear, c.id || null));
+    setClearer("Дело", () => {
+      if (c.id) {
+        load(loadedYear, c.id);
+      } else {
+        setC(EMPTY);
+        setLoadedYear(null);
+        setEdited(false);
+      }
+    });
     return () => setClearer("Дело", null);
   });
   const [years, setYears] = useState<CaseYear[]>([]);
@@ -426,11 +438,17 @@ export default function CaseHeader({ onSaved, reload, showYear, parishName, onWo
         {/* Кнопкой, не ссылкой: Роман 03.10.2026 — «не всегда интуитивно
             понятно, что это кликабельные элементы». */}
         <button type="button" className="toggle" onClick={() => setParishes(true)}>Сменить…</button>
+        {/* Список на сверку — всегда под рукой, и когда всё сверено (Роман
+            20.10 и 06.11.2026, п. 125: «кнопка на сверку была доступна всегда,
+            а не только после импорта»): в нём и сделанное, его можно вернуть. */}
+        {toReview === 0 && (
+          <button type="button" className="toggle" data-review-open onClick={() => setReview(true)}>Список на сверку…</button>
+        )}
       </div>
       {parishes && <ParishDialog onClose={() => setParishes(false)} />}
       {/* Заметно и всегда под рукой, пока список не пуст (Роман 20.10.2026: второй
           тестировщик не заметил прежнюю строку, и ошибки импорта осели в базе). */}
-      {toReview > 0 && (
+      {toReview !== null && toReview > 0 && (
         <div className="reviewbar" data-review-bar>
           <span>На сверку после импорта: <b>{toReview}</b> — проверьте, пока ошибки импорта не разошлись по базе.</span>
           <button type="button" className="primary" onClick={() => setReview(true)}>Открыть список на сверку</button>

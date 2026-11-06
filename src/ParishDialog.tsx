@@ -20,6 +20,10 @@ import { report } from "./errors";
  * списки и подсказки принадлежали прежнему приходу. Удаления прихода нет.
  */
 
+/** Действия окна, которые «Очистить» повторяет. */
+type Actions = { open: (id: number) => Promise<void>; create: () => Promise<void>;
+                 runImport: () => Promise<void>; runFamilio: () => Promise<void> };
+
 type ParishRow = {
   id: number; name: string; file: string; opened_at: string | null;
   entries: number | null; missing: boolean; current: boolean; source_name: string | null;
@@ -123,8 +127,9 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   /** Несохранённая запись при смене прихода не теряется молча. */
-  function blocked(): boolean {
+  function blocked(retry?: (now: Actions) => void): boolean {
     const forms = dirtyForms();
+    pending.current = forms.length ? retry ?? null : null;
     if (!forms.length) return false;
     const text = `Сначала сохраните или очистите набранное: ${forms.join(", ")}. `
       + "При смене прихода несохранённая запись пропала бы.";
@@ -136,15 +141,38 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const dirtyRefusal = useRef<string | null>(null);
   /** Пометка «очищено» видна и в виде «новый приход», где нажали «Очистить». */
   const clearedNotice = useRef<string | null>(null);
+  /** Что нажали до отказа — «Открыть» или «Создать и открыть»: после
+   *  «Очистить» оно делается само (Роман 06.11.2026, п. 129: «лучше сразу:
+   *  очистить и открыть»). Выбор файла так не повторить — окно выбора
+   *  открывается только нажатием человека. */
+  const pending = useRef<((now: Actions) => void) | null>(null);
+  // Функции этой отрисовки (объявления функций всплывают — они уже есть).
+  const actions = useRef<Actions>(null!);
+  actions.current = { open, create, runImport, runFamilio };
 
   /** «Очистить» в отказе (Роман 03.11.2026): формы очищаются, запись на
    *  правке закрывается без сохранения — приход можно менять. */
   function clearAndUnblock() {
     const forms = dirtyForms();
+    const retry = pending.current;
+    pending.current = null;
     clearDirtyForms();
     setRefused(null);
     clearedNotice.current = `Набранное очищено: ${forms.join(", ")}. Теперь приход можно сменить.`;
     setNotice(clearedNotice.current);
+    if (retry) {
+      // Формы отмечают «чисто» после перерисовки — дождаться её и сделать
+      // то, что нажимали. Не дождались за секунду — остаётся пометка, и
+      // человек нажмёт сам. Действие — из последней отрисовки: переключатель
+      // «заменить / создать» и название, поправленные после отказа, берутся
+      // нынешние (ревьюер 06.11.2026).
+      let tries = 0;
+      const go = () => {
+        if (dirtyForms().length === 0) retry(actions.current);
+        else if (++tries < 20) window.setTimeout(go, 50);
+      };
+      window.setTimeout(go, 0);
+    }
     // Форма, очищаясь, ставит курсор в своё первое поле — под окном.
     // Вернуть его в окно, чтобы Esc и Tab работали здесь: в поле названия
     // нового прихода или на первую кнопку перечня.
@@ -159,7 +187,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function open(id: number) {
-    if (blocked()) return;
+    if (blocked((now) => void now.open(id))) return;
     setBusy("open");
     try {
       await invoke<string>("parish_open", { id });
@@ -205,7 +233,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function create() {
-    if (blocked()) return;
+    if (blocked((now) => void now.create())) return;
     setRefused(null);
     setBusy("create");
     try {
@@ -262,7 +290,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function runImport() {
-    if (!seen || blocked()) return;
+    if (!seen || blocked((now) => void now.runImport())) return;
     setBusy("import");
     try {
       const d = await invoke<Done>("import_run", {
@@ -317,7 +345,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function runFamilio() {
-    if (!fam.length || blocked()) return;
+    if (!fam.length || blocked((now) => void now.runFamilio())) return;
     setBusy("import");
     try {
       const swap = famReplace && again ? again : null;

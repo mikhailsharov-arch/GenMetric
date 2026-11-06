@@ -25,13 +25,13 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 91, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 92, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 137, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 138, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
-    python3 db/test_export.py                                   # → «Итог: успешно 139, ошибок 0» (выгрузка Familio и Excel)
+    python3 db/test_export.py                                   # → «Итог: успешно 142, ошибок 0» (выгрузка Familio и Excel)
     python3 db/test_parish.py                                   # → «Итог: успешно 46, ошибок 0» (приходы, общие справочники, объединение пунктов)
     node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 55, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель, имя листа PDF)
@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 482, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 495, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
@@ -54,7 +54,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 75 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 76 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -99,6 +99,16 @@ Familio (`import_familio.rs`: колонки по подписям, нескол
 вернёт его); другие приходы неизвестны — перечни не предлагаются. На
 настоящей базе: `GENMETRIC_CLEANUP_DB=/путь GENMETRIC_CLEANUP_OTHERS=/a,/b
 cargo test -p genmetric-core cleanup_real -- --ignored --nocapture`.
+С 06.11.2026 там же пункты без записей (группа «Населённые пункты»): пункт
+общий для всех приходов — предлагается, только если не занят записью, делом
+и памятью подсказок ни в одном приходе, и уходит отовсюду, из общего файла
+тоже (перед этим — копия общего файла, `copy_common` в `main.rs`).
+
+**Свидетели смерти** (с 06.11.2026): роли `death_witness1/2` раздела 3 —
+блок «Свидетели» формы «Смерти», изначально свёрнут. Своих колонок в
+выгрузках нет: Familio — «Дополнение, Комментарий», Excel — «Прим.»
+умершего (`x_text.witnesses` в `export_prepare`). Не путать с поручителями
+браков: `LIKE 'witness%'` их не захватывает — так и задумано.
 
 **Фамилии жён по мужьям** (с 05.11.2026, `src-tauri/core/src/wife_surnames.rs`,
 окно — `src/WivesBlock.tsx` на «ⓘ О программе»): правится только пустая

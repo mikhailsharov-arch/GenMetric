@@ -327,6 +327,16 @@ def main() -> int:
         check("пара не задвоилась", one("SELECT count(*) FROM spouse_index")[0] == 1)
         check("у незнакомого мужа жены нет",
               db.execute(sql["spouse_lookup"], {"husband_norm": norm("Иван Петров"), "place": None}).fetchone() is None)
+        # Роман 06.11.2026 (п. 126): Георгий Кузьмин женат дважды — подставлять
+        # последнюю набранную жену, а не самую частую.
+        geo = norm("Георгий Кузьмин")
+        db.execute("INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, uses, last_used_at) "
+                   "VALUES (?, 'Антонида Петрова', 'Малово', 7, '2026-10-01 10:00:00'), "
+                   "(?, 'Анфиса Ивановна', 'Малово', 2, '2026-11-01 10:00:00'), "
+                   "(?, 'Архивная Жена', 'Малово', 30, NULL)", (geo, geo, geo))
+        last = db.execute(sql["spouse_lookup"], {"husband_norm": geo, "place": "Малово"}).fetchone()
+        check("п. 126: подставляется последняя набранная жена (Анфиса), а не частая (Антонида) и не архивная",
+              last is not None and last[0] == "Анфиса Ивановна", str(last))
 
         print("\n9г. Запрос поиска персоны отдаёт всё, что нужно строке досье (Роман 09.10.2026)")
         cur = db.execute(sql["search_mentions"])

@@ -1204,7 +1204,13 @@ SELECT wife_iof, wife_place, wife_rank, uses
              THEN (SELECT count(DISTINCT nullif(coalesce(x.wife_place, ''), '')) FROM spouse_index x
                     WHERE x.husband_norm = :husband_norm) <= 1
              ELSE coalesce(wife_place, '') IN ('', :place) END)
- ORDER BY (coalesce(wife_place, '') = coalesce(:place, '')) DESC, uses DESC
+ ORDER BY (coalesce(wife_place, '') = coalesce(:place, '')) DESC,
+          -- Последняя набранная жена, а не самая частая: второй брак идёт
+          -- после первого (Роман 06.11.2026, п. 126: «Георгий Кузьмин»
+          -- получал первую жену Антониду вместо второй Анфисы). Время у
+          -- памяти архива — время его сборки; пересохранение старой записи
+          -- делает её жену «последней» — так устроено правило.
+          last_used_at DESC, uses DESC, id DESC
  LIMIT 1;
 
 -- @spouse_husbands_like
@@ -1566,7 +1572,15 @@ SELECT e.id AS entry_id,
             SELECT coalesce(nullif(p.fio_book, ''), r.title) AS lbl, p.note_clean
               FROM x_person p LEFT JOIN role r ON r.code = p.role_code
              WHERE p.entry_id = e.id AND p.note_clean IS NOT NULL
-             ORDER BY p.sort_order, p.id)) AS notes
+             ORDER BY p.sort_order, p.id)) AS notes,
+       -- Свидетели смерти (с 06.11.2026): своих колонок у Familio и у
+       -- индексатора нет — Роман: «должны автоматически переноситься в поле
+       -- „Комментарий“». «Свидетели: Иван Петров Сидоров (крестьянин, Малово); …»
+       (SELECT 'Свидетели: ' || group_concat(txt, '; ') FROM (
+            SELECT p.iof_doc || coalesce(' (' || nullif(trim(coalesce(p.rank, '') || coalesce(', ' || p.place, ''), ', '), '') || ')', '') AS txt
+              FROM x_person p
+             WHERE p.entry_id = e.id AND p.role_code LIKE 'death_witness%' AND p.iof_doc <> ''
+             ORDER BY p.sort_order, p.id)) AS witnesses
   FROM entry e;
 CREATE INDEX ix_x_text ON x_text (entry_id);
 
@@ -1661,8 +1675,9 @@ SELECT d.id, d.section,
        d.no_male, d.no_female, d.event_date, d.rite_date,
        NULL,
        u.place, u.rank, nullif(u.iof_doc, ''), u.confession,
-       -- «Прим.» умершего у индексатора — «от чего умер».
-       nullif(trim(coalesce(u.death_cause, '') || coalesce('; ' || u.note_clean, ''), '; '), ''),
+       -- «Прим.» умершего у индексатора — «от чего умер». Свидетели смерти
+       -- (с 06.11.2026) — туда же: своих колонок у индексатора нет.
+       nullif(trim(coalesce(u.death_cause, '') || coalesce('; ' || u.note_clean, '') || coalesce('; ' || tw.witnesses, ''), '; '), ''),
        coalesce(u.age_text, u.age_years),
        -- «Прим.» родственника в строке 2 шапки — «отец, супруг»: родство.
        r.place, r.rank, nullif(r.iof_doc, ''), r.confession,
@@ -1679,6 +1694,7 @@ SELECT d.id, d.section,
   LEFT JOIN x_person k1 ON k1.entry_id = d.id AND k1.role_code = 'clergy1'
   LEFT JOIN x_person k2 ON k2.entry_id = d.id AND k2.role_code = 'clergy2'
   LEFT JOIN x_person k3 ON k3.entry_id = d.id AND k3.role_code = 'clergy3'
+  LEFT JOIN x_text tw ON tw.entry_id = d.id
  WHERE d.section = 3;
 CREATE INDEX ix_x_row ON x_row (entry_id);
 
@@ -1819,7 +1835,7 @@ SELECT row_number() OVER (ORDER BY e.book_year, e.id),
        k1.rank, k1.fio, NULL, NULL,
        k2.rank, k2.fio, k3.rank, k3.fio,
        NULL,
-       t.notes, t.author
+       nullif(trim(coalesce(t.notes, '') || coalesce('; ' || t.witnesses, ''), '; '), ''), t.author
   FROM x_entry e
   LEFT JOIN x_person u ON u.entry_id = e.id AND u.role_code = 'deceased'
   LEFT JOIN x_person r ON r.entry_id = e.id AND r.role_code IN ('deceased_relative', 'deceased_parent', 'deceased_spouse')
@@ -1972,6 +1988,9 @@ WITH p AS (
       JOIN x_entry e ON e.id = x.entry_id
       LEFT JOIN x_person f ON f.entry_id = x.entry_id AND f.role_code = 'father'
      WHERE x.role_code NOT LIKE 'clergy%'
+       -- Свидетели смерти (06.11.2026) — только в «Прим.» умершего: кода
+       -- роли у индексатора для них нет (ревьюер 06.11.2026).
+       AND x.role_code NOT LIKE 'death_witness%'
        AND (x.iof_b <> '' OR x.role_code = 'deceased')
 ),
 q AS (

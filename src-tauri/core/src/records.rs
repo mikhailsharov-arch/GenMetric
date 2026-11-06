@@ -1076,7 +1076,11 @@ fn forget_entry(conn: &Connection, entry_id: i64, parish: &str) -> Result<Vec<(&
                 .map_err(|e| e.to_string())?;
             conn.execute(&statement("clergy_drop_empty")?, rusqlite::named_params! { ":iof": iof })
                 .map_err(|e| e.to_string())?;
-        } else if o.role != "deceased" && !iof.contains('*') {
+        }
+        // Причт сохранение кладёт и в память персон (как любого живого
+        // человека): снимать оттуда тоже, иначе каждое пересохранение
+        // прибавляло ему единицу (п. 124, ревьюер 05.11.2026).
+        if o.role != "deceased" && !iof.contains('*') {
             conn.execute(&statement("person_unremember")?, rusqlite::named_params! {
                 ":iof": iof, ":place": o.place, ":rank": o.rank,
             }).map_err(|e| e.to_string())?;

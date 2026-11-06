@@ -15,7 +15,7 @@ import { report } from "./errors";
  * не удаляется без «Убрать отмеченные»; перед удалением — копия прихода.
  */
 
-type Unused = { key: string; group: string; value: string; detail: string; uses: number };
+type Unused = { key: string; group: string; value: string; detail: string; uses: number; careful: boolean };
 type Cleaned = { removed: number; copy: string };
 
 /** Столько раз и больше подсказка помнит значение — скорее настоящее, чем
@@ -38,7 +38,7 @@ export default function CleanupBlock() {
     try {
       const list = await invoke<Unused[]>("cleanup_find");
       setFound(list);
-      setOff(new Set(list.filter((u) => u.uses >= OFTEN).map((u) => u.key)));
+      setOff(new Set(list.filter((u) => u.uses >= OFTEN || u.careful).map((u) => u.key)));
       setDone(null);
     } catch (e) {
       report("Не удалось найти неиспользуемые значения", e);
@@ -83,9 +83,9 @@ export default function CleanupBlock() {
       <h2 className="sub-h2">Неиспользуемые значения справочников</h2>
       <p className="hint">
         Опечатки, которых больше нет ни в одной записи этого прихода, могли остаться в подсказках, в списке
-        причта и в перечнях. Программа найдёт их и покажет списком — ничего не убирается, пока вы не нажмёте
+        причта и в перечнях, а в справочнике — населённые пункты без единой записи. Программа найдёт их и покажет списком — ничего не убирается, пока вы не нажмёте
         «Убрать отмеченные». Перед удалением программа делает копию прихода. Память из архива Excel и значения
-        перечней, занятые в других ваших приходах, в список не попадают.
+        перечней и пункты, занятые в других ваших приходах, в список не попадают.
       </p>
       <button type="button" className="toggle" data-cleanup-find disabled={busy} onClick={() => void look()}>
         {busy && !found ? "Ищу…" : "Найти неиспользуемые…"}
@@ -111,9 +111,11 @@ export default function CleanupBlock() {
           ) : (
             <>
               <p className="hint">
-                Этих значений нет ни в одной записи, деле и карточке пункта этого прихода. «Помнит» — сколько раз
+                Этих значений нет ни в одной записи, деле и карточке пункта этого прихода; пунктов — ни в одной
+                записи, деле и подсказке ваших приходов (пункт уйдёт из всех). «Помнит» — сколько раз
                 значение было в подсказке; опечатки обычно единицы. Значения, которые подсказка помнит {OFTEN} раз и
-                больше, не отмечены: скорее всего, это не опечатки — отметьте их сами, если уверены. Снимите отметку с
+                больше, и пункты с заполненной карточкой или из прежней поставки программы не отмечены: скорее
+                всего, это не опечатки — отметьте их сами («отметить все» у группы), если уверены. Снимите отметку с
                 того, что нужно оставить. Перед удалением программа сделает копию прихода.
               </p>
               <div className="cleanuplist">
@@ -137,6 +139,7 @@ export default function CleanupBlock() {
                           {u.detail && <span className="fieldhint"> — {u.detail}</span>}
                           {u.uses > 0 && <span className="fieldhint"> (помнит: {u.uses})</span>}
                           {u.uses >= OFTEN && <span className="fieldhint"> — часто, скорее не опечатка</span>}
+                          {u.careful && u.uses < OFTEN && <span className="fieldhint"> — проверьте: может быть, заведён заранее</span>}
                         </label>
                       ))}
                     </div>

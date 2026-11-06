@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import { report } from "./errors";
@@ -47,9 +47,19 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
 
   function load(done: boolean) {
     invoke<Item[]>("review_list", { done })
-      .then(setItems)
+      .then((rows) => {
+        // Всё сверено — сразу показать сделанное: окно открыли кнопкой
+        // «Список на сверку…», чтобы к нему вернуться (п. 125, 06.11.2026).
+        if (!done && rows.length === 0 && !askedDone.current) {
+          askedDone.current = true;
+          setShowDone(true);
+          return;
+        }
+        setItems(rows);
+      })
       .catch((e) => report("Не удалось прочитать список на сверку", e));
   }
+  const askedDone = useRef(false);
   useEffect(() => { load(showDone); }, [showDone]);
 
   function mark(item: Item, done: boolean) {
@@ -108,7 +118,7 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
           </div>
         );
       })}
-      {items.length === 0 && <p>Список пуст.</p>}
+      {items.length === 0 && <p data-review-empty>Список пуст: на сверке ничего нет.</p>}
       <div className="modalbar">
         <button type="button" className="toggle" aria-pressed={showDone} onClick={() => setShowDone((v) => !v)}>
           {showDone ? "Скрыть сделанные" : "Показать сделанные"}

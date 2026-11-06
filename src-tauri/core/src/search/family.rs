@@ -179,7 +179,7 @@ pub(super) fn born_range(r: &Row) -> Option<(i64, i64)> {
         "father" => ages(17, 75),
         "mother" => ages(17, 55),
         "godparent" => ages(6, 60),
-        "witness" => ages(17, 60),
+        "witness" | "death_witness" => ages(17, 60),
         "groom" | "bride" => match r.age_years {
             Some(a) if a > 0 => ages(a - AGE_SLACK, a + AGE_SLACK),
             _ => ages(15, 70),

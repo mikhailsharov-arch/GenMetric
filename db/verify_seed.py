@@ -110,8 +110,9 @@ def main() -> int:
     print("\n3. Роли и коридоры возраста")
     # 23 с 21.09.2026: восприемники 3 и 4 — «в шаблоне Familio присутствует 4».
     # 25 с 27.09.2026: поручители 5 и 6 — «ещё двух поручителей» (Роман).
-    check("25 ролей", one("SELECT count(*) FROM role") == 25)
-    for section, expected in [(1, 7), (2, 11), (3, 4), (0, 3)]:
+    # 27 с 06.11.2026: свидетели смерти 1 и 2 (Роман: в ранних книгах «два свидетеля»).
+    check("27 ролей", one("SELECT count(*) FROM role") == 27)
+    for section, expected in [(1, 7), (2, 11), (3, 6), (0, 3)]:
         check(f"ролей в разделе {section}",
               one("SELECT count(*) FROM role WHERE section=?", section) == expected)
     check("коридор родителей 17-55",

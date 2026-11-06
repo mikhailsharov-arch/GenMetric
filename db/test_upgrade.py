@@ -406,6 +406,8 @@ def main() -> int:
               one("SELECT count(*) || '/' || max(uses) FROM clergy_index WHERE iof='Иоанн Скворцов'") == "1/3")
         check("роли поручителей 5 и 6 доехали",
               one("SELECT count(*) FROM role WHERE code IN ('witness5','witness6')") == 2)
+        check("роли свидетелей смерти доехали (06.11.2026)",
+              one("SELECT count(*) FROM role WHERE code IN ('death_witness1','death_witness2') AND section = 3") == 2)
         check("появились колонки возраста умершего (age_text, age_weeks)",
               "age_text" in cols and "age_weeks" in cols)
         check("появилась таблица соответствий имён",

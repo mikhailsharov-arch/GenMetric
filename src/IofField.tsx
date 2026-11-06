@@ -357,12 +357,13 @@ export default function IofField({
         const used = (w: Item) => w.tier < 4;
         const exactFound = sexed.findIndex((w) => w.value.toLowerCase().replace(/ъ$/, "") === typedNorm);
         const exactAt = exactFound >= 0 && (typedNorm.length > 2 || used(sexed[exactFound]) || !sexed.some(used)) ? exactFound : -1;
-        // Не поднятое словарное слово в свёрнутом виде — второй строкой: его
-        // можно выбрать стрелкой.
-        const ordered = exactAt > 0 ? [sexed[exactAt], ...sexed.filter((_, i) => i !== exactAt)]
-          : exactFound > 1 ? [sexed[0], sexed[exactFound], ...sexed.filter((_, i) => i !== 0 && i !== exactFound)]
-          : sexed;
-        const shownWords = early && foundPersons.length > 0 ? ordered.slice(0, exactFound >= 0 ? 2 : 1) : ordered;
+        // Не поднятое словарное слово в свёрнутом виде не показывается: «Ив»
+        // второй строкой под «Иваном» Роман назвал фантомным — «алгоритм
+        // должен… выдавать только одно релевантное имя» (06.11.2026, п. 128).
+        // Вторая строка — только у поднятого набранного слова: под ним самое
+        // частое из остальных («Александр» и «Александра»).
+        const ordered = exactAt > 0 ? [sexed[exactAt], ...sexed.filter((_, i) => i !== exactAt)] : sexed;
+        const shownWords = early && foundPersons.length > 0 ? ordered.slice(0, exactAt > 0 ? 2 : 1) : ordered;
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);

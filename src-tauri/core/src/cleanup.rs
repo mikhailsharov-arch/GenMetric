@@ -40,6 +40,9 @@ pub struct Unused {
     pub detail: String,
     /// Сколько раз подсказка его помнит.
     pub uses: i64,
+    /// Изначально не отмечать: пункт с заполненной карточкой (волость,
+    /// ссылка Familio) — скорее заведён заранее, чем опечатка.
+    pub careful: bool,
 }
 
 /// Группа окна и группа «занятости» для вида значения. None — вид, который
@@ -76,6 +79,9 @@ struct Used {
     persons: HashMap<String, HashSet<(String, String)>>,
     clergy: HashSet<(String, String)>,
     spouses: HashSet<(String, String)>,
+    /// Пункты в памяти персон и пар (её здесь не чистят — в других приходах
+    /// она остаётся): пункт, на который она ссылается, занят.
+    memory_places: HashSet<String>,
 }
 
 impl Used {
@@ -164,13 +170,25 @@ fn used(conn: &Connection) -> Result<Used, String> {
         }
     }
     {
-        // Карточки пунктов не трогаем: их название и поля — занятые.
-        let mut stmt = conn.prepare("SELECT name, np_type, uyezd, guberniya, volost FROM place").map_err(s)?;
+        // Поля карточек пунктов — занятые. Само название пункта карточка не
+        // занимает (с 06.11.2026): пункт без записей и дел предлагается к
+        // удалению отдельно (`places` в `scan`).
+        let mut stmt = conn.prepare("SELECT np_type, uyezd, guberniya, volost FROM place").map_err(s)?;
         let mut rows = stmt.query([]).map_err(s)?;
         while let Some(r) = rows.next().map_err(s)? {
-            for (k, g) in [(0, "place"), (1, "np_type"), (2, "uyezd"), (3, "guberniya"), (4, "volost")] {
+            for (k, g) in [(0, "np_type"), (1, "uyezd"), (2, "guberniya"), (3, "volost")] {
                 let v: Option<String> = r.get(k).map_err(s)?;
                 u.add(g, v.as_deref());
+            }
+        }
+    }
+    for sql in ["SELECT place FROM person_index", "SELECT wife_place FROM spouse_index"] {
+        let mut stmt = conn.prepare(sql).map_err(s)?;
+        let mut rows = stmt.query([]).map_err(s)?;
+        while let Some(r) = rows.next().map_err(s)? {
+            let v: Option<String> = r.get(0).map_err(s)?;
+            if let Some(v) = v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+                u.memory_places.insert(normalize_words(&v));
             }
         }
     }
@@ -202,6 +220,8 @@ enum Part {
     Person(i64),
     Clergy(i64),
     Spouse(i64),
+    /// Пункт без записей: его строки `place` (по ключу названия) и частоты.
+    Place { name_norm: String, spellings: Vec<String> },
 }
 
 /// Ключ значения в окне — одинаковый между поиском и удалением.
@@ -229,6 +249,29 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
             _ => elsewhere = None,
         }
     }
+    // Карточки пунктов прихода по ключу названия: (название, name_norm,
+    // тип и уезд, заполнена ли карточка человеком, из прежней поставки ли).
+    // Пункты поставки до 08.10.2026 — справочник Романа, который получал
+    // каждый новый человек (у второго тестировщика 160 таких, 06.11.2026 —
+    // «чужие НП в подсказках», п. 130). Изначально не отмечены: у самого
+    // Романа это его справочник (проверяющий 06.11.2026) — «отметить все» у
+    // группы, если не нужны.
+    let mut cards: HashMap<String, (String, String, String, bool, bool)> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT name, name_norm, trim(coalesce(np_type, '') || ' ' || coalesce(uyezd, '')),
+                    trim(coalesce(volost, '')) <> '' OR trim(coalesce(familio_url, '')) <> '',
+                    coalesce(origin, '') = 'seed'
+               FROM place ORDER BY id").map_err(s)?;
+        let mut rows = stmt.query([]).map_err(s)?;
+        while let Some(r) = rows.next().map_err(s)? {
+            let (name, norm, about, filled, seed): (String, String, String, bool, bool) =
+                (r.get(0).map_err(s)?, r.get(1).map_err(s)?, r.get(2).map_err(s)?, r.get(3).map_err(s)?, r.get(4).map_err(s)?);
+            let e = cards.entry(normalize_words(&name)).or_insert((name, norm, about, false, true));
+            e.3 |= filled || seed;
+            e.4 &= seed;
+        }
+    }
     let stamp = archive_stamp(conn)?;
     let from_archive = |last: &Option<String>| match (&stamp, last) {
         (None, _) => false,
@@ -253,6 +296,10 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
                  r.get(4).map_err(s)?, r.get(5).map_err(s)?);
             let Some((_, group, _)) = kind_groups(&kind) else { continue };
             if own.has(group, &value) {
+                continue;
+            }
+            // Частота пункта с карточкой — часть самого пункта (ниже).
+            if kind == "place" && cards.contains_key(&normalize_words(&value)) {
                 continue;
             }
             let key = (kind.clone(), normalize_words(&value));
@@ -294,7 +341,7 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
         }
         let (group, _, title) = kind_groups(&kind).expect("вид проверен выше");
         let detail = if group == "Прочие перечни" || group == "Звания" { title.to_string() } else { String::new() };
-        out.push((Unused { key: value_key(&kind, &norm), group, value: v.value, detail, uses: v.uses },
+        out.push((Unused { key: value_key(&kind, &norm), group, value: v.value, detail, uses: v.uses, careful: false },
                   Part::Value { kind, spellings: v.spellings, lookup: v.lookup }));
     }
 
@@ -313,7 +360,7 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
                 continue;
             }
             let detail = [place.trim(), rank.trim()].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(", ");
-            out.push((Unused { key: format!("p\u{1f}{id}"), group: "Персоны в подсказке", value: who, detail, uses },
+            out.push((Unused { key: format!("p\u{1f}{id}"), group: "Персоны в подсказке", value: who, detail, uses, careful: false },
                       Part::Person(id)));
         }
     }
@@ -328,7 +375,7 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
                 || own.clergy.contains(&(normalize_words(&who), normalize_words(&rank))) {
                 continue;
             }
-            out.push((Unused { key: format!("c\u{1f}{id}"), group: "Причт", value: who, detail: rank.trim().to_string(), uses },
+            out.push((Unused { key: format!("c\u{1f}{id}"), group: "Причт", value: who, detail: rank.trim().to_string(), uses, careful: false },
                       Part::Clergy(id)));
         }
     }
@@ -348,8 +395,66 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
                 c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default()
             }).collect::<Vec<_>>().join(" ");
             out.push((Unused { key: format!("s\u{1f}{id}"), group: "Пары «муж — жена»", value: husband_shown,
-                               detail: format!("жена {wife}"), uses },
+                               detail: format!("жена {wife}"), uses, careful: false },
                       Part::Spouse(id)));
+        }
+    }
+
+    // Пункты без записей (Роман 06.11.2026: НП, которые «больше не привязаны
+    // ни к одной существующей записи», — убирать). Пункты общие для всех
+    // приходов: только если другие приходы известны и ни в одном пункт не
+    // занят записью, делом или памятью подсказок. Память этого прихода,
+    // которую предлагают убрать здесь же, пункт не занимает — `remove`
+    // проверит это заново после её удаления.
+    if let Some(elsewhere) = &elsewhere {
+        let offered_people: HashSet<i64> = out.iter().filter_map(|(_, p)| match p {
+            Part::Person(id) => Some(*id), _ => None }).collect();
+        let offered_pairs: HashSet<i64> = out.iter().filter_map(|(_, p)| match p {
+            Part::Spouse(id) => Some(*id), _ => None }).collect();
+        let kept = memory_places_except(conn, &offered_people, &offered_pairs)?;
+        let mut usage: HashMap<String, (Vec<String>, i64)> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT value, max(count) FROM usage_stat WHERE kind = 'place' GROUP BY value").map_err(s)?;
+            let mut rows = stmt.query([]).map_err(s)?;
+            while let Some(r) = rows.next().map_err(s)? {
+                let (value, n): (String, i64) = (r.get(0).map_err(s)?, r.get(1).map_err(s)?);
+                let e = usage.entry(normalize_words(&value)).or_default();
+                e.0.push(value);
+                e.1 += n.max(0);
+            }
+        }
+        let mut list: Vec<_> = cards.into_iter().collect();
+        list.sort_by(|a, b| a.1.0.cmp(&b.1.0));
+        for (key, (name, name_norm, about, filled, seed)) in list {
+            if own.has("place", &name) || kept.contains(&key)
+                || elsewhere.iter().any(|u| u.has("place", &name) || u.memory_places.contains(&key)) {
+                continue;
+            }
+            let (spellings, uses) = usage.remove(&key).unwrap_or_default();
+            let detail = [about.as_str(), if seed { "из поставки программы до 08.10.2026 — у автора справочника это свой пункт" } else if filled { "карточка заполнена" } else { "" }]
+                .iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(", ");
+            out.push((Unused { key: format!("n\u{1f}{name_norm}"), group: "Населённые пункты", value: name, detail, uses,
+                               careful: filled },
+                      Part::Place { name_norm, spellings }));
+        }
+    }
+    Ok(out)
+}
+
+/// Пункты в памяти персон и пар прихода, кроме строк `people` и `pairs`.
+fn memory_places_except(conn: &Connection, people: &HashSet<i64>, pairs: &HashSet<i64>) -> Result<HashSet<String>, String> {
+    let mut out = HashSet::new();
+    for (sql, skip) in [("SELECT id, place FROM person_index", people), ("SELECT id, wife_place FROM spouse_index", pairs)] {
+        let mut stmt = conn.prepare(sql).map_err(s)?;
+        let mut rows = stmt.query([]).map_err(s)?;
+        while let Some(r) = rows.next().map_err(s)? {
+            let (id, v): (i64, Option<String>) = (r.get(0).map_err(s)?, r.get(1).map_err(s)?);
+            if skip.contains(&id) {
+                continue;
+            }
+            if let Some(v) = v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+                out.insert(normalize_words(&v));
+            }
         }
     }
     Ok(out)
@@ -368,11 +473,18 @@ pub fn remove(conn: &Connection, keys: &[String], others: Option<&[PathBuf]>) ->
     let tx = conn.unchecked_transaction().map_err(s)?;
     let mut n = 0;
     let mut dropped: Vec<(String, String)> = Vec::new();
+    let mut places: Vec<(String, Vec<String>)> = Vec::new();
     for (u, part) in now {
         if !wanted.contains(u.key.as_str()) {
             continue;
         }
         match part {
+            // Пункты — после памяти людей: их занимает только память, которая
+            // остаётся.
+            Part::Place { name_norm, spellings } => {
+                places.push((name_norm, spellings));
+                continue;
+            }
             Part::Value { kind, spellings, lookup } => {
                 for v in &spellings {
                     tx.execute("DELETE FROM usage_stat WHERE kind = ?1 AND value = ?2", rusqlite::params![kind, v]).map_err(s)?;
@@ -390,8 +502,55 @@ pub fn remove(conn: &Connection, keys: &[String], others: Option<&[PathBuf]>) ->
         }
         n += 1;
     }
+    let mut gone_places: Vec<String> = Vec::new();
+    if !places.is_empty() {
+        let kept = memory_places_except(&tx, &HashSet::new(), &HashSet::new())?;
+        let common = crate::parish::has_common(&tx);
+        for (name_norm, spellings) in places {
+            let names: Vec<String> = {
+                let mut stmt = tx.prepare("SELECT name FROM place WHERE name_norm = ?1").map_err(s)?;
+                let rows = stmt.query_map([&name_norm], |r| r.get::<_, String>(0)).map_err(s)?;
+                rows.collect::<Result<_, _>>().map_err(s)?
+            };
+            if names.iter().any(|v| kept.contains(&normalize_words(v))) {
+                continue;
+            }
+            let left = tx.execute(
+                "DELETE FROM place WHERE name_norm = ?1
+                   AND id NOT IN (SELECT place_id FROM person_mention WHERE place_id IS NOT NULL)
+                   AND id NOT IN (SELECT place_id FROM person WHERE place_id IS NOT NULL)", [&name_norm]).map_err(s)?;
+            if left == 0 {
+                continue;
+            }
+            for v in &spellings {
+                tx.execute("DELETE FROM usage_stat WHERE kind = 'place' AND value = ?1", [v]).map_err(s)?;
+            }
+            if common {
+                tx.execute("DELETE FROM common.place WHERE name_norm = ?1", [&name_norm]).map_err(s)?;
+            }
+            gone_places.push(name_norm);
+            n += 1;
+        }
+    }
     tx.commit().map_err(s)?;
     let mut problems = Vec::new();
+    // Пункт уходит и из других приходов: иначе их сверка вернула бы его в
+    // общий файл, а оттуда — сюда. Там он не занят — проверено при поиске.
+    if !gone_places.is_empty() {
+        for path in others.unwrap_or_default() {
+            let done = Connection::open(path).map_err(s).and_then(|o| {
+                for norm in &gone_places {
+                    o.execute("DELETE FROM place WHERE name_norm = ?1
+                                 AND id NOT IN (SELECT place_id FROM person_mention WHERE place_id IS NOT NULL)
+                                 AND id NOT IN (SELECT place_id FROM person WHERE place_id IS NOT NULL)", [norm]).map_err(s)?;
+                }
+                Ok(())
+            });
+            if let Err(e) = done {
+                problems.push(format!("{}: {e}", path.display()));
+            }
+        }
+    }
     if !dropped.is_empty() {
         for path in others.unwrap_or_default() {
             let done = Connection::open(path).map_err(s).and_then(|o| {
@@ -554,6 +713,77 @@ mod tests {
         assert!(find(&conn, Some(&[])).unwrap().iter().any(|u| u.value == "Никольская"));
         assert!(!find(&conn, Some(&[missing])).unwrap().iter().any(|u| u.value == "Никольская"));
         assert!(!find(&conn, None).unwrap().iter().any(|u| u.value == "Никольская"), "другие приходы неизвестны");
+        let _ = std::fs::remove_file(&other);
+    }
+
+    /// Пункты без записей (Роман 06.11.2026): предлагаются, если не заняты ни
+    /// здесь, ни в других приходах — записью, делом, памятью подсказок.
+    #[test]
+    fn unused_places() {
+        let conn = base();
+        let place = |c: &Connection, name: &str, volost: Option<&str>| {
+            c.execute("INSERT INTO place (name, name_norm, volost) VALUES (?1, ?2, ?3)",
+                      rusqlite::params![name, normalize(name), volost]).unwrap();
+        };
+        for (name, volost) in [("Бухарино", None), ("Малово", None), ("с.Черняное", None), ("Лукино", Some("Заобнорская")),
+                               ("Глинница", None), ("Чужое", None), ("Пустое", None)] {
+            place(&conn, name, volost);
+        }
+        // Малово — в записи; Глинница — в памяти пары, которую очистка не
+        // предлагает (пара есть в записи); Пустое — только в памяти персоны
+        // без записей, которую очистка предлагает убрать.
+        conn.execute("UPDATE person_mention SET place_id = (SELECT id FROM place WHERE name = 'Малово') WHERE role_code = 'father'", []).unwrap();
+        conn.execute_batch(
+            "INSERT INTO spouse_index (husband_norm, wife_iof, wife_place, uses, last_used_at)
+               VALUES ('павел иванов сидоров', 'Мария Петрова', 'Глинница', 1, '2026-10-01');
+             INSERT INTO person_index (iof, iof_norm, place, rank, uses, last_used_at)
+               VALUES ('Пётр Опечаткин', 'петр опечаткин', 'Пустое', '', 1, '2026-10-01');").unwrap();
+        usage(&conn, "place", "с.Черняное", "2026-10-01 10:00:00");
+        // Другой приход: «Чужое» стоит там в записи.
+        let other = std::env::temp_dir().join(format!("genmetric-cleanup-place-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&other);
+        {
+            let o = Connection::open(&other).unwrap();
+            o.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            o.execute_batch("INSERT INTO role (code, title, section, sort_order) VALUES ('deceased', 'Умерший', 3, 1);
+                             INSERT INTO mk_case (id) VALUES (1); INSERT INTO entry (id, case_id, section) VALUES (1, 1, 3);").unwrap();
+            for name in ["Чужое", "с.Черняное", "Пустое"] {
+                place(&o, name, None);
+            }
+            o.execute("INSERT INTO person_mention (entry_id, role_code, sort_order, first_name, place_id)
+                       VALUES (1, 'deceased', 1, 'Анна', (SELECT id FROM place WHERE name = 'Чужое'))", []).unwrap();
+        }
+        let others = vec![other.clone()];
+        let places: Vec<Unused> = find(&conn, Some(&others)).unwrap().into_iter().filter(|u| u.group == "Населённые пункты").collect();
+        let mut names: Vec<&str> = places.iter().map(|u| u.value.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["Лукино", "Пустое", "с.Черняное"],
+                   "Бухарино (село дела), Малово (запись), Глинница (память пары), Чужое (запись другого прихода) — заняты");
+        assert!(places.iter().find(|u| u.value == "Лукино").unwrap().careful, "заполненная карточка — не отмечена");
+        conn.execute("UPDATE place SET origin = 'seed' WHERE name = 'Лукино'", []).unwrap();
+        let lukino = find(&conn, Some(&others)).unwrap().into_iter().find(|u| u.value == "Лукино").unwrap();
+        assert!(lukino.careful && lukino.detail.contains("из поставки"), "пункт прежней поставки (п. 130) — подписан и не отмечен: {lukino:?}");
+        assert_eq!(places.iter().find(|u| u.value == "с.Черняное").unwrap().uses, 1, "частота — у пункта");
+        assert!(!find(&conn, Some(&others)).unwrap().iter().any(|u| u.group != "Населённые пункты" && u.value == "с.Черняное"),
+                "частота пункта с карточкой — не отдельной строкой");
+        assert!(find(&conn, None).unwrap().iter().all(|u| u.group != "Населённые пункты"), "другие приходы неизвестны — пункты не предлагаются");
+
+        // «Пустое» занято только памятью «Пётр Опечаткин», которую убирают вместе с ним.
+        let keys: Vec<String> = find(&conn, Some(&others)).unwrap().into_iter()
+            .filter(|u| ["с.Черняное", "Пустое", "Пётр Опечаткин"].contains(&u.value.as_str())).map(|u| u.key).collect();
+        assert_eq!(keys.len(), 3);
+        let (n, problems) = remove(&conn, &keys, Some(&others)).unwrap();
+        assert_eq!((n, problems.len()), (3, 0));
+        assert_eq!(num(&conn, "SELECT count(*) FROM place WHERE name IN ('с.Черняное', 'Пустое')"), 0);
+        assert_eq!(num(&conn, "SELECT count(*) FROM place"), 5);
+        assert_eq!(num(&conn, "SELECT count(*) FROM usage_stat WHERE kind = 'place'"), 0);
+        let o = Connection::open(&other).unwrap();
+        let left: i64 = o.query_row("SELECT count(*) FROM place", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1, "и из другого прихода (там остался только занятый «Чужое»)");
+        drop(o);
+        // Пункт, занятый памятью, которую оставили, не уходит, даже если его отметили.
+        let lukino_and_memory: Vec<String> = vec![format!("n\u{1f}{}", normalize("Глинница"))];
+        assert_eq!(remove(&conn, &lukino_and_memory, Some(&others)).unwrap().0, 0);
         let _ = std::fs::remove_file(&other);
     }
 }

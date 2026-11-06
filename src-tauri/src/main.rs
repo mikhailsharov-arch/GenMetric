@@ -488,6 +488,8 @@ fn suggest(
         // увидеть «сын-отрок», а не только «отставной рядовой»). Сначала всё,
         // что начинается с набранного, ниже — где набранное в середине. С
         // двух букв: одна буква в середине есть почти в каждом звании.
+        // Населённые пункты — так же (п. 127, 06.11.2026): «Черн» находит
+        // «с.Черняное», название которого начинается с приставки типа.
         if let Some(inside) = genmetric_core::rank_inside_pattern(&kind, &pattern) {
             if (out.len() as i64) < limit {
                 let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1542,26 +1544,32 @@ fn place_merge(app: State<App>, keep_id: i64, drop_id: i64) -> Result<genmetric_
         genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::MERGE_MARK)
             .map_err(|e| format!("копия прихода не сделана, объединение отменено: {e}"))?;
         if parish::has_common(conn) {
-            let common = parish::common_path(&dir);
-            let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs()).unwrap_or(0);
-            let stem = common.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
-            let mut target = common.with_file_name(format!("{stem}{}{seconds}.sqlite", genmetric_core::db::MERGE_MARK));
-            for n in 2.. {
-                if !target.exists() {
-                    break;
-                }
-                target = common.with_file_name(format!("{stem}{}{seconds}-{n}.sqlite", genmetric_core::db::MERGE_MARK));
-            }
-            std::fs::copy(&common, &target)
+            copy_common(&app, &dir, genmetric_core::db::MERGE_MARK)
                 .map_err(|e| format!("копия общего файла не сделана, объединение отменено: {e}"))?;
-            // Копий общего файла — тоже не больше пяти (п. 123).
-            if let Err(e) = genmetric_core::db::prune_copies(&common, genmetric_core::db::MERGE_MARK, genmetric_core::db::KEEP_COPIES) {
-                write_log(&app.log_path, &format!("Старые копии общего файла не убраны: {e}"));
-            }
         }
         genmetric_core::place_merge::merge(conn, keep_id, drop_id)
     })
+}
+
+/// Копия общего файла рядом с ним, с меткой `mark`; копий этой метки —
+/// не больше пяти (п. 123).
+fn copy_common(app: &State<App>, dir: &std::path::Path, mark: &str) -> Result<std::path::PathBuf, String> {
+    let common = parish::common_path(dir);
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    let stem = common.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+    let mut target = common.with_file_name(format!("{stem}{mark}{seconds}.sqlite"));
+    for n in 2.. {
+        if !target.exists() {
+            break;
+        }
+        target = common.with_file_name(format!("{stem}{mark}{seconds}-{n}.sqlite"));
+    }
+    std::fs::copy(&common, &target).map_err(|e| e.to_string())?;
+    if let Err(e) = genmetric_core::db::prune_copies(&common, mark, genmetric_core::db::KEEP_COPIES) {
+        write_log(&app.log_path, &format!("Старые копии общего файла не убраны: {e}"));
+    }
+    Ok(target)
 }
 
 /// Файлы других приходов — для очистки справочников: значение общего
@@ -1618,6 +1626,11 @@ fn cleanup_remove(app: State<App>, keys: Vec<String>) -> Result<Cleaned, String>
     with_conn_shared(&app, "Очистка справочников", |conn| {
         let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::CLEANUP_MARK)
             .map_err(|e| format!("копия прихода не сделана, очистка отменена: {e}"))?;
+        // Пункты уходят и из общего файла (с 06.11.2026) — его тоже в копию.
+        if parish::has_common(conn) && keys.iter().any(|k| k.starts_with('n')) {
+            copy_common(&app, &dir, genmetric_core::db::CLEANUP_MARK)
+                .map_err(|e| format!("копия общего файла не сделана, очистка отменена: {e}"))?;
+        }
         let (removed, problems) = genmetric_core::cleanup::remove(conn, &keys, other_parish_files(conn, &dir, &db_path).as_deref())?;
         for p in &problems {
             write_log(&app.log_path, &format!("Очистка справочников: перечень другого прихода не поправлен — {p}"));

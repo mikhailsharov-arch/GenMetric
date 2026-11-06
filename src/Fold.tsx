@@ -20,8 +20,8 @@ import { foldKey, useParishFlag } from "./flags";
  *
  * Состояние помнится в приходе (ключ `fold_<блок>`), изначально развёрнут.
  */
-export function useFold(block: string, title: string): [boolean, (folded: boolean) => void] {
-  return useParishFlag(foldKey(block), `свернуть блок «${title}»`, false);
+export function useFold(block: string, title: string, folded = false): [boolean, (folded: boolean) => void] {
+  return useParishFlag(foldKey(block), `свернуть блок «${title}»`, folded);
 }
 
 /**
