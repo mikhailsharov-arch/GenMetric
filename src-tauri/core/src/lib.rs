@@ -11,6 +11,7 @@ pub mod db;
 pub mod export;
 pub mod import;
 pub mod import_familio;
+pub mod merge;
 pub mod parish;
 pub mod pdf;
 pub mod place_merge;

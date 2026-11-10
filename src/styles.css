@@ -686,6 +686,14 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
    растягивает input на всю ширину — здесь ширина своя. */
 .importagain label { display: flex; align-items: flex-start; gap: 0.5em; margin: 0.25em 0; line-height: 1.35; text-align: left; }
 .importagain label input[type="radio"] { flex: none; width: auto; margin: 0.2em 0 0; }
+/* Слияние приходов: таблица «по годам» — числа по правому краю, годы без нового — бледнее. */
+.facts.merge { margin: 0 0 0.6em; }
+.facts.merge th { text-align: right; font-weight: 600; font-size: 0.8rem; color: #5b6b7f; padding: 0.2em 0; }
+.facts.merge th:first-child, .facts.merge.years td:first-child { text-align: left; }
+.facts.merge.years td { text-align: right; font-variant-numeric: tabular-nums; }
+.facts.merge.years { max-height: 14em; overflow-y: auto; display: block; }
+.facts.merge.years thead, .facts.merge.years tbody { display: table; width: 100%; table-layout: fixed; }
+.facts.merge tr.dim td { color: #8a97a8; }
 .importnotes { margin: 0 0 0.5em 1.1em; padding: 0; font-size: 0.8rem; max-height: 9em; overflow-y: auto; }
 .modal:focus { outline: none; }
 .parishrow, .facts.parishes td, .modal p { overflow-wrap: anywhere; }

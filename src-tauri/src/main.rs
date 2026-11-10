@@ -2478,6 +2478,105 @@ async fn import_run(app: State<'_, App>, window: tauri::Window, name: String, fi
 }
 
 // ----------------------------------------------------------------------------
+//  Слияние приходов (спека 2026-10-17-sliyanie-prihodov)
+// ----------------------------------------------------------------------------
+
+/// Файл прихода помощника, присланный частями (`import_chunk`), — во
+/// временный файл, и открыть его. Файл помощника программа только читает;
+/// временная копия лежит вне папки данных и убирается после работы
+/// (`MergeSource::drop`).
+struct MergeSource {
+    conn: Option<Connection>,
+    path: PathBuf,
+}
+
+impl MergeSource {
+    fn open(app: &State<App>) -> Result<MergeSource, String> {
+        let file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
+        if file.is_empty() {
+            return Err("файл не прочитан — выберите его ещё раз".into());
+        }
+        if !file.starts_with(b"SQLite format 3\0") {
+            return Err("это не файл прихода GenMetric. Файл прихода — с расширением .sqlite, из папки данных программы помощника".into());
+        }
+        let path = std::env::temp_dir().join(format!("genmetric-sliyanie-{}.sqlite", std::process::id()));
+        MergeSource::clear(&path);
+        std::fs::write(&path, &*file).map_err(|e| format!("файл помощника не записан во временную папку: {e}"))?;
+        drop(file);
+        let conn = Connection::open(&path).map_err(|e| format!("файл помощника не открылся: {e}"))?;
+        Ok(MergeSource { conn: Some(conn), path })
+    }
+
+    fn clear(path: &std::path::Path) {
+        for tail in ["", "-wal", "-shm"] {
+            let mut side = path.as_os_str().to_owned();
+            side.push(tail);
+            let _ = std::fs::remove_file(PathBuf::from(side));
+        }
+    }
+}
+
+impl Drop for MergeSource {
+    fn drop(&mut self) {
+        // Сначала закрыть соединение: открытый файл Windows удалить не даст.
+        self.conn.take();
+        MergeSource::clear(&self.path);
+    }
+}
+
+#[derive(Serialize)]
+struct MergeSeen {
+    #[serde(flatten)]
+    report: genmetric_core::merge::Report,
+    /// Приход, в который пойдут записи, — открытый.
+    parish_name: String,
+    /// Копия прихода до слияния (после «Слить»).
+    copy: Option<String>,
+}
+
+/// Что сделает слияние с присланным файлом помощника: то же слияние в
+/// транзакции, которая откатывается. В приходе ничего не меняется.
+#[tauri::command(async)]
+fn merge_inspect(app: State<App>, file_name: String) -> Result<MergeSeen, String> {
+    let parish_name = app.parish.lock().map(|p| p.1.clone()).unwrap_or_default();
+    let report = with_conn(&app, &format!("Слияние с файлом «{file_name}»"), |conn| {
+        let src = MergeSource::open(&app)?;
+        genmetric_core::merge::run(conn, src.conn.as_ref().expect("только что открыт"), &file_name, false)
+    })?;
+    Ok(MergeSeen { report, parish_name, copy: None })
+}
+
+/// Слить: перед этим — копия файла прихода рядом с ним. Новые пункты и
+/// значения перечней уходят в общий файл (сверка после слияния).
+#[tauri::command(async)]
+fn merge_run(app: State<App>, file_name: String) -> Result<MergeSeen, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let parish_name = app.parish.lock().map(|p| p.1.clone()).unwrap_or_default();
+    let (report, copy) = with_conn_shared(&app, &format!("Слияние с файлом «{file_name}»"), |conn| {
+        let src = MergeSource::open(&app)?;
+        // Отказ («не тот файл») — до копии: незачем её делать.
+        genmetric_core::merge::check_source(conn, src.conn.as_ref().expect("только что открыт"))?;
+        let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::JOIN_MARK)
+            .map_err(|e| format!("копия прихода не сделана, слияние отменено: {e}"))?;
+        let report = genmetric_core::merge::run(conn, src.conn.as_ref().expect("только что открыт"), &file_name, true)?;
+        Ok((report, copy.to_string_lossy().to_string()))
+    })?;
+    write_log(&app.log_path, &format!(
+        "Слияние с файлом «{file_name}»: добавлено {}, дублей {}, слито раньше {}, на сверку {}",
+        report.added, report.duplicates, report.known, report.to_review()));
+    let mut file = app.import_file.lock().unwrap_or_else(|e| e.into_inner());
+    file.clear();
+    file.shrink_to_fit();
+    Ok(MergeSeen { report, parish_name, copy: Some(copy) })
+}
+
+/// «Взять правку» / «Вернуть запись» в списке на сверку.
+#[tauri::command(async)]
+fn merge_take(app: State<App>, review_id: i64) -> Result<genmetric_core::merge::Taken, String> {
+    with_conn_shared(&app, "Правка помощника", |conn| genmetric_core::merge::take(conn, review_id))
+}
+
+// ----------------------------------------------------------------------------
 //  Импорт из шаблона Familio (спека 2026-10-17-import-iz-shablona-familio)
 // ----------------------------------------------------------------------------
 
@@ -2773,6 +2872,9 @@ fn main() {
             import_chunk,
             import_inspect,
             import_run,
+            merge_inspect,
+            merge_run,
+            merge_take,
             familio_reset,
             search_release,
             search_open,

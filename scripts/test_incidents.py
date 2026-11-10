@@ -1153,9 +1153,9 @@ def incident_20261008_chistaya_postavka():
     check("«законная жена его» вне поля матери — по званию мужа",
           'hint.rank = Some(genmetric_core::records::wife_rank(rank.as_deref()).to_string());' in main_rs
           and "keepWifeRank" in read("src/BirthForm.tsx").split('title="Мать"', 1)[-1][:500])
-    check("версия схемы 12 — в сборщике и в программе (10 — комментарий пункта, 11 — файл скана у записи, "
-          "12 — объединённые пункты)",
-          "SCHEMA_VERSION = 12" in build and "SCHEMA_VERSION: i64 = 12" in read("src-tauri/core/src/db.rs"))
+    check("версия схемы 13 — в сборщике и в программе (10 — комментарий пункта, 11 — файл скана у записи, "
+          "12 — объединённые пункты, 13 — слияние приходов)",
+          "SCHEMA_VERSION = 13" in build and "SCHEMA_VERSION: i64 = 13" in read("src-tauri/core/src/db.rs"))
 
 
 def incident_20261009_otvet_na_sborku_08_10():
@@ -1882,6 +1882,62 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261110_sliyanie_prihodov():
+    """
+    10.11.2026, слияние приходов (спека 2026-10-17-sliyanie-prihodov; Роман
+    19 и 20.10: помощник набирает свои годы, его файл «регулярно, по ходу»
+    вливается в приход; спорное — «обе сохранить и показать в списке на сверку»).
+    """
+    m = read("src-tauri/core/src/merge.rs")
+    schema = read("db/schema.sql")
+    check("слияние: память слитого — merge_origin (метка прихода помощника + номер записи), строка списка на сверку знает её",
+          "CREATE TABLE merge_origin" in schema and "UNIQUE (source_uid, source_entry)" in schema and "origin_id   INTEGER" in schema)
+    check("слияние: метку прихода ставит открытие файла программой, в поставке и в обновлении её нет",
+          'statement("merge_uid_ensure")' in read("src-tauri/core/src/db.rs") and "parish_uid" not in read("db/migrate.sql")
+          and "parish_uid" not in read("db/build_seed.py"))
+    check("слияние: предпросмотр — то же слияние в откатываемой транзакции (числа до и после «Слить» сходятся)",
+          "pub fn run(conn: &Connection, src: &Connection, file: &str, commit: bool)" in m and "if commit {" in m
+          and "fn merge_story()" in m)
+    check("слияние: записи идут путём сохранения (память подсказок, пункты по названию), файл помощника только читается",
+          "save_entry_in_tx(conn, &entry, &parish)" in m and m.split("fn merge_in_tx", 1)[1].split("pub struct Taken", 1)[0].count("src.execute") == 0)
+    check("слияние: не тот файл — отказ словами (не приход, прежняя сборка, тот же приход)",
+          "fn wrong_files_are_refused()" in m and "сливать приход с самим собой нельзя" in m and "прежней сборкой" in m)
+    check("слияние: правка помощника и удалённая у нас запись — на сверку, один раз; «Взять правку» / «Вернуть запись»",
+          '"merge_edit"' in m and '"merge_deleted"' in m and "pending_print.as_deref() == Some(print.as_str())" in m and "pub fn take(" in m)
+    check("слияние: отпечаток записи — по явному перечню полей, без файла скана (новое поле не делает все записи «поправленными»)",
+          "fn fingerprint_ignores_scan_and_spaces()" in m and "FNV-1a" in m)
+    check("слияние: пункт, объединённый у нас, приходит под оставшимся названием; расхождения дел и карточек — в отчёт и на сверку один раз",
+          'statement("place_merged_into")' in m and "merge_note_add" in m and "WHERE NOT EXISTS" in read("db/statements.sql").split("-- @merge_note_add", 1)[1][:500])
+    # Находки ревьюера и проверяющего 11.11.2026 (до выкладки).
+    take = m.split("pub fn take(", 1)[1].split("#[cfg(test)]", 1)[0]
+    check("слияние: «Взять правку» не снимает и не подменяет привязку скана нашей записи",
+          "entry.scan_file = None;" in take and "скан не снят" in m)
+    check("слияние: правка в поле вне списка отличий (пол, современное написание) молча не теряется",
+          "let identical = mine.as_ref().is_some_and(|m| fingerprint(m) == fingerprint(&entry));" in m and "не показаны" in m)
+    check("слияние: «Взять правку» / «Вернуть запись» — пункт под оставшимся названием, без лишнего дела и года у дела без года",
+          "our_place(&tx, &name)?" in take and 'statement("case_drop_empty_after")' in take and 'statement("case_clear_year")' in take)
+    check("слияние: дело, заведённое по файлу и оставшееся без записей, убирается",
+          "fn empty_case_is_not_left()" in m and "-- @merge_case_drop" in read("db/statements.sql"))
+    check("слияние: роль, которой нет в нашей сборке, — отказ словами, а не «FOREIGN KEY»",
+          "которой нет в вашей сборке GenMetric" in m)
+    check("слияние: окно говорит, где взять файл помощника и что копировать его надо при закрытой программе",
+          "data-merge-hint" in read("src/ParishDialog.tsx") and "при закрытой программе" in read("src/ParishDialog.tsx"))
+    main = read("src-tauri/src/main.rs")
+    check("слияние: перед слиянием — копия прихода «-до-слияния-приходов-» (копии приходами не считаются), временный файл убирается",
+          "genmetric_core::db::JOIN_MARK" in main and "name.contains(JOIN_MARK)" in read("src-tauri/core/src/db.rs")
+          and "impl Drop for MergeSource" in main)
+    check("слияние: команды окна зарегистрированы", all(f"            {c}," in main for c in ("merge_inspect", "merge_run", "merge_take")))
+    rd = read("src/ReviewDialog.tsx")
+    check("слияние: «Взять правку» при несохранённом в форме отказывает; после взятого окно перечитывается",
+          "const forms = dirtyForms();" in rd and "tookAny.current && dirtyForms().length === 0" in rd)
+    pd = read("src/ParishDialog.tsx")
+    check("слияние: окно — предпросмотр до «Слить», курсор не на «Слить», после слияния окно перечитывается",
+          "merge_inspect" in pd and "merge_run" in pd and 'mode === "merge" && merged ? reload' in pd
+          and "data-autofocus disabled={busy} onClick={onBack}" in read("src/MergeView.tsx"))
+    check("e2e: слияние — файл помощника настоящим IPC, повторное слияние — новых 0",
+          "def join_parishes(driver, wait):" in read("scripts/e2e/windows.py") and "input[data-merge-file]" in read("scripts/e2e/windows.py"))
+
+
 def incident_20261106_otvet_romana_na_sborki_03_05_11():
     """
     06.11.2026, ответ Романа на сборки 03–05.11 (intent/2026-11-06-…): пп.
@@ -1903,7 +1959,7 @@ def incident_20261106_otvet_romana_na_sborki_03_05_11():
     check("п. 129: «Очистить» в окне «Приходы» сам делает то, что нажимали",
           "blocked((now) => void now.open(id))" in pd and "blocked((now) => void now.create())" in pd and "if (retry)" in pd)
     check("п. 129: повтор берёт действие последней отрисовки (выбор «заменить / создать», название — нынешние; ревьюер 06.11.2026)",
-          "retry(actions.current)" in pd and "actions.current = { open, create, runImport, runFamilio };" in pd)
+          "retry(actions.current)" in pd and "actions.current = { open, create, runImport, runFamilio, runMerge };" in pd)
     check("свидетели смерти не попадают на лист «МК» (кода роли у индексатора нет; ревьюер 06.11.2026)",
           "AND x.role_code NOT LIKE 'death_witness%'" in st)
     check("п. 125: «Список на сверку…» — всегда на «Деле», и когда всё сверено",
@@ -2274,6 +2330,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261110_sliyanie_prihodov,
     incident_20261106_otvet_romana_na_sborki_03_05_11,
     incident_20261105_familii_zhyon,
     incident_20261104_ochistka_spravochnikov_i_dolg,

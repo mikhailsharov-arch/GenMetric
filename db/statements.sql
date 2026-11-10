@@ -1121,6 +1121,149 @@ SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || null
 INSERT INTO review_item (kind, text, sheet, row, entry_id)
 VALUES (:kind, :text, :sheet, :row, :entry_id);
 
+-- @merge_uid_ensure
+-- Слияние приходов (схема 13): метка прихода — случайная, заводится один раз
+-- при открытии файла программой. По ней слияние узнаёт файл помощника при
+-- повторном слиянии, как бы он ни назывался. В поставке метки нет.
+INSERT OR IGNORE INTO setting (key, value) VALUES ('parish_uid', lower(hex(randomblob(16))));
+
+-- @merge_uid
+SELECT value FROM setting WHERE key = 'parish_uid';
+
+-- @merge_cases
+-- Дела прихода с числом записей — и наши, и файла помощника.
+SELECT c.id, c.archive, c.fond, c.opis, c.delo, c.church, c.village, c.uyezd, c.guberniya, c.year, c.indexer,
+       (SELECT count(*) FROM entry e WHERE e.case_id = c.id)
+  FROM mk_case c ORDER BY c.id;
+
+-- @merge_entries
+-- Записи целиком: все (:id пуст) или одна.
+SELECT id, case_id, section, page, no_male, no_female, event_day, event_month, event_year,
+       rite_day, rite_month, rite_year, note, uncertain, scan_file
+  FROM entry
+ WHERE (:id IS NULL OR id = :id)
+ ORDER BY id;
+
+-- @merge_mentions
+-- Упоминания записей: пункт — названием (номера пунктов у каждого файла свои).
+SELECT m.entry_id, m.role_code, m.sort_order, m.surname, m.first_name, m.patronymic,
+       m.surname_modern, m.first_name_modern, m.patronymic_modern, m.maiden_surname,
+       m.gender, m.rank, m.confession,
+       (SELECT p.name FROM place p WHERE p.id = m.place_id),
+       m.note, m.uncertain, m.age_years, m.marriage_order, m.kinship,
+       m.age_months, m.age_weeks, m.age_days, m.age_text, m.death_cause
+  FROM person_mention m
+ WHERE (:id IS NULL OR m.entry_id = :id)
+ ORDER BY m.entry_id, m.sort_order, m.id;
+
+-- @merge_places
+-- Карточки пунктов файла помощника; у названия с несколькими строками первой
+-- идёт лучшая (правило place_find).
+SELECT name, name_norm, coalesce(np_type, ''), coalesce(guberniya, ''), coalesce(uyezd, ''),
+       coalesce(volost, ''), coalesce(familio_url, ''), coalesce(comment, '')
+  FROM place
+ ORDER BY name_norm, (full_location IS NULL OR trim(full_location) = ''),
+          (np_type IS NULL OR trim(np_type) = ''), (origin = 'archive'), id;
+
+-- @merge_place_norms
+SELECT name_norm FROM place;
+
+-- @merge_aliases
+-- Написания имён, которые помощник связал со словарём в окне сверки.
+SELECT kind, form, form_norm, target, gender FROM name_alias;
+
+-- @merge_alias_add
+INSERT OR IGNORE INTO name_alias (kind, form, form_norm, target, gender)
+VALUES (:kind, :form, :form_norm, :target, :gender);
+
+-- @merge_origin_get
+SELECT id, entry_id, fingerprint, pending_fp FROM merge_origin
+ WHERE source_uid = :uid AND source_entry = :source_entry;
+
+-- @merge_origin_by_id
+SELECT id, entry_id, pending, pending_fp FROM merge_origin WHERE id = :id;
+
+-- @merge_origin_add
+INSERT INTO merge_origin (source_uid, source_entry, entry_id, fingerprint)
+VALUES (:uid, :source_entry, :entry_id, :fingerprint);
+
+-- @merge_origin_pending
+-- Правка помощника или его запись, удалённая у нас, — ждёт решения в списке
+-- на сверку. Пустые :pending и :pending_fp — ждать больше нечего.
+UPDATE merge_origin SET pending = :pending, pending_fp = :pending_fp WHERE id = :id;
+
+-- @merge_origin_accept
+-- Запись помощника взята такой: её отпечаток — новая точка отсчёта.
+UPDATE merge_origin
+   SET entry_id = :entry_id, fingerprint = :fingerprint, pending = NULL, pending_fp = NULL,
+       merged_at = datetime('now')
+ WHERE id = :id;
+
+-- @merge_origin_sources
+-- Какие записи этого файла мы уже знаем — чтобы сказать, скольких у
+-- помощника больше нет.
+SELECT source_entry FROM merge_origin WHERE source_uid = :uid;
+
+-- @merge_entry_exists
+SELECT 1 FROM entry WHERE id = :id;
+
+-- @merge_entry_case
+SELECT case_id FROM entry WHERE id = :id;
+
+-- @merge_case_exists
+SELECT 1 FROM mk_case WHERE id = :id;
+
+-- @merge_our_entries
+-- Место наших записей в книге — для поиска дублей.
+SELECT id, section, coalesce(rite_year, event_year), page, no_male, no_female, event_day, event_month
+  FROM entry;
+
+-- @merge_our_main
+-- Главные лица наших записей: ребёнок и отец, жених и невеста, умерший.
+SELECT entry_id, role_code, first_name, patronymic, surname
+  FROM person_mention
+ WHERE role_code IN ('child', 'father', 'groom', 'bride', 'deceased')
+ ORDER BY entry_id, sort_order, id;
+
+-- @merge_review_add
+INSERT INTO review_item (kind, text, sheet, row, entry_id, origin_id)
+VALUES (:kind, :text, NULL, NULL, :entry_id, :origin_id);
+
+-- @merge_review_drop_open
+-- Новая правка той же записи заменяет прежнюю строку списка.
+DELETE FROM review_item WHERE origin_id = :origin_id AND done = 0;
+
+-- @merge_review_close
+UPDATE review_item SET done = 1 WHERE origin_id = :origin_id AND done = 0;
+
+-- @merge_review_origin
+SELECT kind, origin_id FROM review_item WHERE id = :id;
+
+-- @merge_note_add
+-- Расхождение реквизитов дела или карточки пункта — в список на сверку, но
+-- один раз: сливают регулярно, и то же расхождение не должно копиться.
+INSERT INTO review_item (kind, text, sheet, row, entry_id)
+SELECT 'note', :text, NULL, NULL, NULL
+ WHERE NOT EXISTS (SELECT 1 FROM review_item r WHERE r.kind = 'note' AND r.text = :text);
+
+-- @merge_case_drop
+-- Дело, заведённое слиянием по файлу помощника, осталось без записей (все его
+-- записи у нас уже были — в деле другого года): убрать, иначе новые записи
+-- этого года легли бы в пустое дело с чужими реквизитами (ревьюер 11.11.2026).
+DELETE FROM mk_case
+ WHERE id = :id
+   AND NOT EXISTS (SELECT 1 FROM entry e WHERE e.case_id = mk_case.id)
+   AND (SELECT count(*) FROM mk_case) > 1;
+
+-- @merge_roles
+SELECT code, title FROM role;
+
+-- @merge_year_null_cases
+SELECT id FROM mk_case WHERE year IS NULL;
+
+-- @merge_case_max
+SELECT coalesce(max(id), 0) FROM mk_case;
+
 -- @review_list
 -- :done = 0 — только несделанное; 1 — всё. Раздел, год и счёт записи — чтобы
 -- человек понял, о какой записи речь, не открывая её.

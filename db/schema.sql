@@ -420,9 +420,36 @@ CREATE TABLE review_item (
   row         INTEGER,
   entry_id    INTEGER,
   done        INTEGER NOT NULL DEFAULT 0,
-  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  -- Слияние приходов (схема 13): строка merge_origin, о которой эта строка
+  -- списка, — у видов merge_edit и merge_deleted («Взять правку», «Вернуть»).
+  origin_id   INTEGER
 );
 CREATE INDEX ix_review_open ON review_item (done, id);
+
+-- Слияние приходов (схема 13, 10.11.2026; спека 2026-10-17-sliyanie-prihodov):
+-- какая запись файла помощника какой нашей записью стала. source_uid — метка
+-- прихода помощника (setting.parish_uid его файла), source_entry — номер
+-- записи у него. По этой памяти повторное слияние не задваивает записи
+-- (Роман 19.10.2026: сливать «регулярно, по ходу»).
+-- fingerprint — отпечаток записи помощника, какой она была, когда мы её взяли:
+-- изменился — помощник её поправил (на сверку, наша запись не меняется).
+-- pending — запись помощника целиком (JSON), ждущая решения человека в
+-- списке на сверку: его правка или запись, которую у нас удалили;
+-- pending_fp — её отпечаток: о той же правке второй раз не спрашиваем.
+-- entry_id без внешнего ключа: нашу запись могут удалить — это и есть
+-- случай «вы удалили, у помощника есть».
+CREATE TABLE merge_origin (
+  id            INTEGER PRIMARY KEY,
+  source_uid    TEXT    NOT NULL,
+  source_entry  INTEGER NOT NULL,
+  entry_id      INTEGER,
+  fingerprint   TEXT    NOT NULL,
+  pending       TEXT,
+  pending_fp    TEXT,
+  merged_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (source_uid, source_entry)
+);
 
 CREATE TABLE setting (
   key    TEXT PRIMARY KEY,

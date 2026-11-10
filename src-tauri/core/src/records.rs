@@ -583,7 +583,7 @@ pub fn extend_lookup(conn: &Connection, kind: &str, value: Option<&str>) -> Resu
     }).map(|_| ()).map_err(|e| e.to_string())
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PersonInput {
     pub role_code: String,
     pub sort_order: i64,
@@ -625,7 +625,9 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
     Option::<String>::deserialize(d).map(Some)
 }
 
-#[derive(Deserialize)]
+// Serialize — для слияния приходов: запись помощника ждёт решения в списке
+// на сверку целиком (merge_origin.pending).
+#[derive(Serialize, Deserialize, Clone)]
 pub struct EntryInput {
     pub id: Option<i64>,
     pub case_id: i64,
@@ -645,7 +647,7 @@ pub struct EntryInput {
     /// (`None`) — при правке привязка записи остаётся как была; `null`
     /// (`Some(None)`) — привязка снимается; имя — записывается. До 12.10.2026
     /// «поля нет» и «null» не различались, и вызов без поля стёр бы привязку.
-    #[serde(default, deserialize_with = "present")]
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub scan_file: Option<Option<String>>,
     pub persons: Vec<PersonInput>,
 }

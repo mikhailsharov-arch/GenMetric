@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import { markReviewAfterImport } from "./reviewmark";
+import MergeView, { type MergeSeen } from "./MergeView";
 import { clearDirtyForms, dirtyForms } from "./dirty";
 import { report } from "./errors";
 
@@ -22,7 +23,7 @@ import { report } from "./errors";
 
 /** Действия окна, которые «Очистить» повторяет. */
 type Actions = { open: (id: number) => Promise<void>; create: () => Promise<void>;
-                 runImport: () => Promise<void>; runFamilio: () => Promise<void> };
+                 runImport: () => Promise<void>; runFamilio: () => Promise<void>; runMerge: () => Promise<void> };
 
 type ParishRow = {
   id: number; name: string; file: string; opened_at: string | null;
@@ -76,14 +77,21 @@ function yearsText(years: number[]): string {
 
 export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<ParishRow[]>([]);
-  const [mode, setMode] = useState<"list" | "new" | "import" | "familio" | "done">("list");
+  const [mode, setMode] = useState<"list" | "new" | "import" | "familio" | "merge" | "done">("list");
+  /** Слияние с файлом помощника (спека 2026-10-17-sliyanie-prihodov): что
+   *  сделает слияние (предпросмотр) и, после «Слить», что оно сделало. */
+  const mergePick = useRef<HTMLInputElement>(null);
+  const [merge, setMerge] = useState<MergeSeen | null>(null);
+  const [merged, setMerged] = useState(false);
   // Окно меняет вид (список → название → итог): фокус — в первое поле нового вида.
   useEffect(() => {
     // Поля нет (список, итог) — на само окно: иначе фокус остаётся на
     // исчезнувшем поле, и Esc до окна не доходит.
     const box = document.querySelector<HTMLElement>('.modal[data-modal="parish"]');
-    (box?.querySelector<HTMLInputElement>("input[data-field]") ?? box)?.focus();
-  }, [mode]);
+    // Вид слияния сам называет, где стоять курсору: на «Назад» (не на
+    // «Слить» — привычный Enter не должен сливать), после слияния — на «Готово».
+    (box?.querySelector<HTMLElement>("[data-autofocus]") ?? box?.querySelector<HTMLInputElement>("input[data-field]") ?? box)?.focus();
+  }, [mode, merged]);
   const [busy, setBusy] = useState<string | null>(null);
   /** Сколькими частями ушёл выбранный файл — для сквозной проверки. */
   const [parts, setParts] = useState(0);
@@ -148,7 +156,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const pending = useRef<((now: Actions) => void) | null>(null);
   // Функции этой отрисовки (объявления функций всплывают — они уже есть).
   const actions = useRef<Actions>(null!);
-  actions.current = { open, create, runImport, runFamilio };
+  actions.current = { open, create, runImport, runFamilio, runMerge };
 
   /** «Очистить» в отказе (Роман 03.11.2026): формы очищаются, запись на
    *  правке закрывается без сохранения — приход можно менять. */
@@ -309,6 +317,45 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /** Файл прихода помощника: сначала — что сделает слияние, в приходе при
+   *  этом ничего не меняется. */
+  async function pickMerge(file: File) {
+    if (blocked()) { if (mergePick.current) mergePick.current.value = ""; return; }
+    setRefused(null);
+    setBusy("Читаю файл помощника…");
+    try {
+      await upload(file, "Читаю файл помощника…");
+      setBusy("Сверяю файл помощника с приходом…");
+      setMerge(await invoke<MergeSeen>("merge_inspect", { fileName: file.name }));
+      setFileName(file.name);
+      setMerged(false);
+      setMode("merge");
+    } catch (e) {
+      // «Это не файл прихода» — не поломка программы: говорим в окне.
+      setRefused(String(e));
+    } finally {
+      setBusy(null);
+      if (mergePick.current) mergePick.current.value = "";
+    }
+  }
+
+  async function runMerge() {
+    if (!merge || merged || blocked((now) => void now.runMerge())) return;
+    setRefused(null);
+    setBusy("merge");
+    try {
+      const done = await invoke<MergeSeen>("merge_run", { fileName });
+      setMerge(done);
+      setMerged(true);
+      // После перезагрузки окна экран «Дело» сам откроет список на сверку.
+      if (done.edits + done.deleted + done.twins > 0) markReviewAfterImport();
+    } catch (e) {
+      setRefused(`Слияние не прошло, приход не изменён. ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   /** Файлы Familio: первый выбор начинает список заново, «Добавить файлы…» — дописывает. */
   async function pickFamilio(files: File[], more: boolean) {
     if (blocked()) { if (famPick.current) famPick.current.value = ""; return; }
@@ -413,7 +460,9 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal title="Приходы" kind="parish"
-           onClose={busy ? () => {} : mode === "list" ? onClose : () => { setRefused(null); setMode("list"); }}>
+           onClose={busy ? () => {} : mode === "list" ? onClose
+             // После слияния окно перечитывается: формы и списки — уже с новыми записями.
+             : mode === "merge" && merged ? reload : () => { setRefused(null); setMode("list"); }}>
       {refused && (
         <p className="refused">
           {refused}
@@ -526,9 +575,25 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                     onClick={() => { setRefused(null); nameTouched.current = false; famPick.current?.click(); }}>
               {busy && busy.includes("Familio") ? busy : "Импортировать из Familio…"}
             </button>
+            <button type="button" className="toggle" disabled={busy !== null} data-merge-button
+                    title="Записи из файла прихода помощника — в открытый приход: без дублей, сначала предпросмотр"
+                    onClick={() => { setRefused(null); mergePick.current?.click(); }}>
+              {busy && busy.includes("помощника") ? busy : "Слить с файлом помощника…"}
+            </button>
             <button type="button" className="toggle" disabled={busy !== null} onClick={onClose}>Закрыть (Esc)</button>
           </div>
+          <p className="hint" data-merge-hint>
+            «Слить с файлом помощника…» — записи из файла прихода, набранного в другой программе GenMetric, в открытый
+            приход. Файл прихода (.sqlite) помощник берёт из папки данных своей программы — путь показан на экране
+            «ⓘ О программе» — и копирует его при закрытой программе.
+          </p>
+          <input ref={mergePick} type="file" hidden data-merge-file accept=".sqlite,.db,application/x-sqlite3,application/vnd.sqlite3"
+                 onChange={(e) => { const f = e.target.files?.[0]; if (f) void pickMerge(f); }} />
         </>
+      )}
+      {mode === "merge" && merge && (
+        <MergeView seen={merge} fileName={fileName} merged={merged} busy={busy !== null}
+                   onRun={() => void runMerge()} onBack={() => { setRefused(null); setMode("list"); }} onDone={reload} />
       )}
       {mode === "new" && (
         <>

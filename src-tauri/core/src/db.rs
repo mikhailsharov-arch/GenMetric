@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension};
 
 /// Версия схемы, которую понимает эта сборка.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// Признак копии перед обновлением в имени файла.
 pub const BACKUP_MARK: &str = "-до-обновления-";
@@ -18,6 +18,8 @@ pub const MERGE_MARK: &str = "-до-объединения-пунктов-";
 pub const CLEANUP_MARK: &str = "-до-очистки-справочников-";
 /// Копия прихода перед дозаполнением фамилий жён (05.11.2026).
 pub const WIVES_MARK: &str = "-до-фамилий-жён-";
+/// Признак копии перед слиянием с файлом помощника (10.11.2026).
+pub const JOIN_MARK: &str = "-до-слияния-приходов-";
 /// Сколько копий одной метки остаётся рядом с файлом (п. 123, 04.11.2026):
 /// копии перед объединением и очисткой копились без уборки.
 pub const KEEP_COPIES: usize = 5;
@@ -25,6 +27,7 @@ pub const KEEP_COPIES: usize = 5;
 /// Копия, а не приход: файлы с этими метками в перечень приходов не идут.
 pub fn is_backup(name: &str) -> bool {
     name.contains(BACKUP_MARK) || name.contains(MERGE_MARK) || name.contains(CLEANUP_MARK) || name.contains(WIVES_MARK)
+        || name.contains(JOIN_MARK)
 }
 
 /// Оставить `keep` последних копий файла `db_path` с меткой `mark` (по
@@ -64,6 +67,14 @@ pub const MIGRATE_SQL: &str = include_str!("../../../db/migrate.sql");
 /// со старой базой. Именно так вышло 13.08.2026 — у тестировщика не появилась
 /// таблица name_form, и половина сборки молча не работала.
 pub fn open_database(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
+    let conn = open_or_upgrade(bundled, db_path)?;
+    // Метка прихода (схема 13): по ней слияние узнаёт файл при повторном
+    // слиянии. Заводится один раз, при первом открытии файла этой сборкой.
+    conn.execute(&crate::statement("merge_uid_ensure")?, [])?;
+    Ok(conn)
+}
+
+fn open_or_upgrade(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     // Пустой файл (0 байт) — не база: его оставляет, например, sqlite3 или
     // оборванное копирование. Раньше программа открывала его как есть и
     // падала на «no such table: setting» (найдено 10.10.2026) — теперь он
@@ -333,6 +344,13 @@ mod tests {
             ).unwrap();
         }
         let conn = open_database(&seed, &path).expect("обновление прошло");
+        // Метка прихода (схема 13) заводится при открытии и не меняется.
+        let uid: String = conn.query_row("SELECT value FROM setting WHERE key = 'parish_uid'", [], |r| r.get(0)).unwrap();
+        assert_eq!(uid.len(), 32);
+        drop(conn);
+        let conn = open_database(&seed, &path).expect("открылась второй раз");
+        let again: String = conn.query_row("SELECT value FROM setting WHERE key = 'parish_uid'", [], |r| r.get(0)).unwrap();
+        assert_eq!(again, uid, "метка та же");
         let num = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(num("SELECT count(*) FROM lookup WHERE value = 'безземельный крестьянин'"), 1, "занятое осталось");
         assert_eq!(num("SELECT count(*) FROM lookup WHERE value = 'отставной канонир'"), 0, "незанятое убрано");

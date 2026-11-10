@@ -25,7 +25,7 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 92, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 94, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 138, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 43, ошибок 0» (слова досье персоны, блок «Семья», своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 495, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 514, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
@@ -54,7 +54,7 @@ Rust проверяется без сборки приложения, из ко�
 (`statement`), нормализация, заполнение xlsx, сборка файлов выгрузки. Его
 тесты идут и локально, и в быстрой проверке конвейера (Linux, без Tauri):
 
-    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 76 passed»
+    (cd src-tauri && cargo test -p genmetric-core)              # → «test result: ok. 80 passed»
 
 Новая чистая логика — туда же, с тестом; в `src-tauri/src` остаются только
 команды окна. С 02.10.2026 в крейте: открытие и обновление базы (`db.rs`),
@@ -103,6 +103,30 @@ cargo test -p genmetric-core cleanup_real -- --ignored --nocapture`.
 общий для всех приходов — предлагается, только если не занят записью, делом
 и памятью подсказок ни в одном приходе, и уходит отовсюду, из общего файла
 тоже (перед этим — копия общего файла, `copy_common` в `main.rs`).
+
+**Слияние приходов** (с 10.11.2026, схема 13, спека
+2026-10-17-sliyanie-prihodov; `src-tauri/core/src/merge.rs`, окно —
+`src/MergeView.tsx` в окне «Приходы»): записи файла прихода помощника — в
+открытый приход, путём сохранения (`save_entry_in_tx`). Файл помощника
+только читается (в программу приходит частями, открывается из временной
+копии). Что слито, помнит `merge_origin`: метка прихода помощника
+(`setting.parish_uid` — ставит `db::open_database`, в поставке и в
+`migrate.sql` её нет и быть не должно: иначе у всех приходов была бы одна
+метка) + номер записи у него → наша запись и отпечаток его записи.
+Отпечаток (`merge::fingerprint`) — по явному перечню полей: новое поле
+записи добавлять туда осознанно — после этого все слитые записи с этим
+полем выглядят «поправленными». Предпросмотр — то же слияние в
+откатываемой транзакции (`run(…, commit = false)`). Правка помощника и
+запись, удалённая у нас, ждут в списке на сверку (`review_item.origin_id`,
+виды `merge_edit`, `merge_deleted`; `merge::take` — «Взять правку» /
+«Вернуть запись»); «одно место в книге — две записи» — `merge_twin`.
+Перед слиянием — копия «-до-слияния-приходов-» (`db::JOIN_MARK`).
+**Удаления записей в программе нет; когда появится** — `entry.id` без
+AUTOINCREMENT, а `merge_origin.entry_id` без внешнего ключа: номер удалённой
+последней записи достанется новой, и «Взять правку» попала бы в чужую
+запись. Вместе с удалением — AUTOINCREMENT или чистка `merge_origin`. На
+настоящих базах: `GENMETRIC_MERGE_DB=/наш GENMETRIC_MERGE_SRC=/помощника
+cargo test -p genmetric-core --release merge_real -- --ignored --nocapture`.
 
 **Свидетели смерти** (с 06.11.2026): роли `death_witness1/2` раздела 3 —
 блок «Свидетели» формы «Смерти», изначально свёрнут. Своих колонок в

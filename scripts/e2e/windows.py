@@ -1613,6 +1613,104 @@ def resumed(driver, wait):
         validate_xlsx(path, "Excel")
 
     parishes(driver, wait)
+    join_parishes(driver, wait)
+
+
+def join_parishes(driver, wait):
+    """Слияние приходов (спека 2026-10-17-sliyanie-prihodov): файл прихода
+    помощника — настоящим IPC, частями, и настоящим SQLite программы."""
+    print("\n17. Слияние приходов: файл помощника — в пустой приход, повторно — ничего нового")
+    data = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app"
+    # «Файл помощника» — приход, импортированный из Familio шагом 16а: он
+    # открывался этой сборкой (метка прихода есть) и сейчас закрыт.
+    found = sorted((f for f in (data / "приходы").glob("*.sqlite")
+                    if "Familio" in f.name and "-до-" not in f.name and "-заменён-" not in f.name),
+                   key=lambda f: f.stat().st_mtime)
+    check("файл прихода «Никольское (из Familio)» лежит в папке данных", bool(found),
+          str([f.name for f in (data / "приходы").glob("*")])[:400])
+    if not found:
+        return
+    helper = Path(os.environ.get("TEMP", str(data))) / "помощник.sqlite"
+    helper.write_bytes(found[-1].read_bytes())
+
+    def number(css):
+        cells = driver.find_elements(By.CSS_SELECTOR, css)
+        text = cells[0].text.strip() if cells else ""
+        return int(text) if text.isdigit() else None
+
+    def feed():
+        open_parishes(driver, wait)
+        box = driver.find_element(By.CSS_SELECTOR, "input[data-merge-file]")
+        driver.execute_script("arguments[0].hidden = false;", box)
+        box.send_keys(str(helper))
+        try:
+            WebDriverWait(driver, 90).until(lambda d: d.find_elements(By.CSS_SELECTOR, "[data-merge='plan']")
+                                            or d.find_elements(By.CSS_SELECTOR, ".refused"))
+        except TimeoutException:
+            pass
+
+    # Сливаем в новый пустой приход: записи «Борисоглебского» нужны прежними
+    # шагу перезапуска.
+    fresh_window(driver, wait)
+    open_parishes(driver, wait)
+    click(driver, PARISH + "//button[normalize-space()='Новый приход…']")
+    time.sleep(0.6)
+    shown(driver, PARISH + "//input[@data-field]").send_keys("Слияние проба")
+    click(driver, PARISH + "//button[normalize-space()='Создать и открыть']")
+    reloaded(driver, wait, "Слияние проба")
+
+    feed()
+    plan = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-merge='plan']")]
+    total = number("[data-merge-counts] tr:first-child td:last-child")
+    added = number("[data-merge-added]")
+    check("предпросмотр слияния: все записи файла — новые, приход назван",
+          bool(plan) and total is not None and total > 0 and added == total and "Слияние проба" in plan[0],
+          (plan[0].replace("\n", " | ")[:500] if plan else "предпросмотра нет") + " | " + error_details(driver))
+    if not plan:
+        return
+    before = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('entry_list', {section: 1, year: null}).then((r) => done(r.length), () => done(-1));")
+    click(driver, "//button[@data-merge-go]")
+    try:
+        WebDriverWait(driver, 180).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-merge='done']")))
+    except TimeoutException:
+        pass
+    done = [e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-merge-done]")]
+    copies = sorted(f.name for f in (data / "приходы").glob("*-до-слияния-приходов-*.sqlite"))
+    check("слияние прошло: добавлено столько же, копия «-до-слияния-приходов-» на месте",
+          bool(done) and number("[data-merge-added]") == added and bool(copies),
+          f"до слияния рождений в списке: {before}; копии: {copies} | " + (done[0][:300] if done else "итога нет") + " | " + error_details(driver))
+    if done:
+        click(driver, "//button[@data-merge-finish]")
+        reloaded(driver, wait, "Слияние проба")
+    body = driver.find_element(By.TAG_NAME, "body").text
+    check("после слияния у прихода есть дело (реквизиты — из файла помощника)", "Дело за" in body, body[:200].replace("\n", " | "))
+    for modal in driver.find_elements(By.XPATH, "//div[@data-modal='review']"):
+        if modal.is_displayed():
+            click(driver, "//div[@data-modal='review']//button[starts-with(normalize-space(),'Закрыть')]")
+            time.sleep(0.5)
+
+    # Тот же файл второй раз: нового нет.
+    feed()
+    again_added, known = number("[data-merge-added]"), number("[data-merge-known]")
+    go = driver.find_elements(By.CSS_SELECTOR, "[data-merge-go]")
+    check("повторное слияние того же файла: новых 0, все записи «слиты раньше», «Слить» недоступно",
+          again_added == 0 and known == total and bool(go) and not go[0].is_enabled(),
+          f"новых {again_added}, слиты раньше {known}, всего {total} | " + error_details(driver))
+    if driver.find_elements(By.CSS_SELECTOR, "[data-merge='plan']"):
+        click(driver, PARISH + "//button[normalize-space()='Назад']")
+        time.sleep(0.4)
+    # «Взять правку» через настоящий IPC: строки с таким номером нет — отказ словами.
+    taken = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('merge_take', {reviewId: 999999}).then((r) => done({ok: r}), (e) => done({error: String(e)}));")
+    check("merge_take отвечает: строки списка нет — понятный отказ",
+          isinstance(taken, dict) and "уже нет" in str(taken.get("error", "")), str(taken)[:300])
+    if not driver.find_elements(By.XPATH, PARISH):
+        open_parishes(driver, wait)
+    click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+    reloaded(driver, wait, "Борисоглебское")
 
 
 def fresh_window(driver, wait):

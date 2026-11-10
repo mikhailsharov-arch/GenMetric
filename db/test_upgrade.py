@@ -36,7 +36,7 @@ REPO = DB_DIR.parent
 # каждую сборку, поэтому проверять надо переход с предыдущей, а не с самой
 # первой. Слепки схем лежат в db/fixtures.
 FROM_VERSION = 6
-TO_VERSION = 12
+TO_VERSION = 13
 
 ok_count = 0
 fail_count = 0
@@ -367,6 +367,11 @@ def main() -> int:
         db = sqlite3.connect(user)
         one = lambda sql, *a: db.execute(sql, a).fetchone()[0]
         check(f"схема поднялась до версии {TO_VERSION}", one("SELECT max(version) FROM schema_version") == TO_VERSION)
+        check("память слияния приходов появилась (схема 13): таблица и колонка строки списка на сверку",
+              one("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'merge_origin'") == 1
+              and "origin_id" in [r[1] for r in db.execute("PRAGMA table_info(review_item)").fetchall()])
+        check("метки прихода обновление не заводит и из поставки не берёт (её ставит программа при открытии)",
+              one("SELECT count(*) FROM setting WHERE key = 'parish_uid'") == 0)
         check("память объединённых пунктов появилась (схема 12)",
               one("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'place_merged'") == 1)
         check("появилась память о персонах",
