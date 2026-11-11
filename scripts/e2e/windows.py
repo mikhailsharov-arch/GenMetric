@@ -1386,7 +1386,9 @@ def resumed(driver, wait):
     field(driver, "ИОФ", god1).send_keys(Keys.ESCAPE)
     np = field(driver, "НП", god1)
     # С 11.11.2026 восприемник, набранный с нуля, получает НП отца («Бухарино»):
-    # проверяем, что встал он, и набираем свой пункт поверх.
+    # проверяем, что встал он, и набираем свой пункт поверх. Подставляется
+    # при уходе из ИОФ — щелчок в НП и есть уход.
+    np.click()
     wait_until(lambda: np.get_attribute("value") == "Бухарино", 3)
     check("восприемник с нуля — НП отца («Бухарино»)", np.get_attribute("value") == "Бухарино", f"«{np.get_attribute('value')}»")
     np.send_keys(Keys.CONTROL, "a")
