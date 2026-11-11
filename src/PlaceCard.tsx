@@ -486,7 +486,7 @@ function MergePlaces({ mine, onMerged, onBack, onCancel }: {
             выбора второго пункта объединял, не дав прочитать (ревьюер 03.11.2026). */}
         <input type="radio" name="merge-keep" checked={keepMine === isMine} onChange={() => setKeepMine(isMine)}
                {...(keepMine === isMine ? { "data-autofocus": "" } : {})} />
-        {" "}<b>{p.name}</b> — записей: {uses}; {cardLine(p)}
+        <span><b>{p.name}</b> — записей: {uses}; {cardLine(p)}</span>
       </label>
     );
     return (

@@ -101,6 +101,8 @@ type Props = {
   /** Справа в строке заголовка, после «+ примечание» — «убрать» у
    *  пятого и шестого поручителя. */
   titleAfter?: React.ReactNode;
+  /** Звание поменяла программа (снято правило младенца) — подсветить (п. 132). */
+  rankAuto?: boolean;
   /** Поля роли перед ИОФ — родство у родственника в браке (как в Excel). */
   before?: React.ReactNode;
   /** Полное ИОФ умершего младенца — в строке разбора поля ИОФ (Роман
@@ -246,7 +248,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, genderGuessed, compact, placeDefaults, onPlaceRenamed, before, modernOverride, extra, titleExtra, noPlace, titleAfter,
+  inputRef, gender, genderGuessed, compact, placeDefaults, onPlaceRenamed, before, modernOverride, extra, titleExtra, noPlace, titleAfter, rankAuto,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
   defaultRank, enterToEmpty, onIofLeave, keepWifeRank, hidden,
 }: Props) {
@@ -531,6 +533,7 @@ export default function PersonBlock({
         label="Звание"
         kind={ranks}
         value={person.rank}
+        auto={rankAuto}
         onChange={(rank) => {
           // Звание тронуто руками — подстановка по умолчанию больше не вмешивается.
           if (rank !== latest.current.rank) rankTouched.current = true;

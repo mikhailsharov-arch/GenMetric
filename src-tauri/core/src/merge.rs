@@ -923,6 +923,14 @@ fn merge_in_tx(conn: &Connection, src: &Connection, uid: &str, _file: &str) -> R
     Ok(report)
 }
 
+/// Запись целиком одной строкой JSON — в журнал перед удалением, чтобы
+/// удалённое можно было восстановить (11.11.2026).
+pub fn snapshot(conn: &Connection, id: i64) -> Result<String, String> {
+    let entry = read_entries(conn, Some(id))?.into_iter().next().map(|e| e.2)
+        .ok_or("этой записи уже нет — список перечитан")?;
+    serde_json::to_string(&entry).map_err(s)
+}
+
 /// Что сделала кнопка строки списка на сверку.
 #[derive(Serialize, Debug)]
 pub struct Taken {
@@ -1134,6 +1142,18 @@ mod tests {
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 0);
         assert_eq!(num(&ours, "SELECT count(*) FROM entry WHERE scan_file = 'наш лист.jpg'"), 1, "скан не снят");
         assert!(take(&ours, review_id).is_err(), "вторично взять нечего");
+        // Удалили запись, у которой ждала правка помощника, — следующее слияние
+        // говорит «у вас удалено», а не молчит (ревьюер 11.11.2026).
+        let pend_id = num(&ours, "SELECT entry_id FROM merge_origin WHERE source_entry = 3");
+        ours.execute("UPDATE merge_origin SET pending = 'x', pending_fp = fingerprint WHERE source_entry = 3", []).unwrap();
+        crate::records::delete_entry(&ours, pend_id).unwrap();
+        assert_eq!(run(&ours, &theirs, "помощник.sqlite", false).unwrap().deleted, 1);
+        // Вернуть, как было: дальше история идёт с этой записью.
+        let back_id = take(&ours, {
+            run(&ours, &theirs, "помощник.sqlite", true).unwrap();
+            num(&ours, "SELECT id FROM review_item WHERE kind = 'merge_deleted' AND done = 0")
+        }).unwrap();
+        assert!(back_id.restored);
         // Правка в поле, которого нет в списке отличий (пол), молча не теряется.
         theirs.execute("UPDATE person_mention SET gender = 'Ж' WHERE role_code = 'child' AND entry_id = 1", []).unwrap();
         let hidden = run(&ours, &theirs, "помощник.sqlite", true).unwrap();
@@ -1146,15 +1166,25 @@ mod tests {
 
         // У нас запись удалена, у помощника есть: не возвращается молча.
         let gone_id = num(&ours, "SELECT entry_id FROM merge_origin WHERE source_entry = 2");
-        ours.execute("DELETE FROM entry WHERE id = ?1", [gone_id]).unwrap();
+        // Удаление записи кнопкой (11.11.2026): память подсказок снята, память
+        // слияния — без номера, запись не вернётся молча.
+        let before_memory = num(&ours, "SELECT count(*) FROM person_index WHERE iof = 'Павел Петров'");
+        assert_eq!(crate::records::delete_entry(&ours, gone_id).unwrap(), 1);
+        assert_eq!(num(&ours, "SELECT count(*) FROM person_index WHERE iof = 'Павел Петров'"), before_memory - 1);
+        assert_eq!(num(&ours, "SELECT count(*) FROM merge_origin WHERE source_entry = 2 AND entry_id IS NULL"), 1);
+        assert_eq!(num(&ours, &format!("SELECT count(*) FROM person_mention WHERE entry_id = {gone_id}")), 0);
+        assert!(crate::records::delete_entry(&ours, gone_id).is_err(), "второй раз — понятный отказ");
+        // Новая запись не получает номер удалённой в памяти слияния.
+        save_entry(&ours, &birth(1891, "1", 1, false, "Новый", ("Пётр", "", "Новиков"), "")).unwrap();
+        assert_eq!(num(&ours, "SELECT count(*) FROM merge_origin WHERE source_entry = 2 AND entry_id IS NULL"), 1);
         let deleted = run(&ours, &theirs, "помощник.sqlite", true).unwrap();
         assert_eq!((deleted.added, deleted.deleted), (0, 1), "{deleted:?}");
-        assert_eq!(num(&ours, "SELECT count(*) FROM entry"), before + 2);
+        assert_eq!(num(&ours, "SELECT count(*) FROM entry"), before + 3);
         assert_eq!(run(&ours, &theirs, "помощник.sqlite", true).unwrap().deleted, 0, "второй раз не спрашиваем");
         let review_id = num(&ours, "SELECT id FROM review_item WHERE kind = 'merge_deleted' AND done = 0");
         let back = take(&ours, review_id).unwrap();
         assert!(back.restored);
-        assert_eq!(num(&ours, "SELECT count(*) FROM entry"), before + 3);
+        assert_eq!(num(&ours, "SELECT count(*) FROM entry"), before + 4);
         assert_eq!(num(&ours, "SELECT count(*) FROM entry e JOIN mk_case c ON c.id = e.case_id WHERE c.year = 1890"), 2);
         let last = run(&ours, &theirs, "помощник.sqlite", true).unwrap();
         assert_eq!((last.added, last.known, last.to_review()), (0, 4, 0), "{last:?}");

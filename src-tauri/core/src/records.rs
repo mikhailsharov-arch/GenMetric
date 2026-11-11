@@ -1107,6 +1107,34 @@ fn forget_entry(conn: &Connection, entry_id: i64, parish: &str) -> Result<Vec<(&
     Ok(names)
 }
 
+/// Удалить запись (Роман 11.11.2026: «критически нужна» — разбирать
+/// конфликты слияния и свои ошибки). Одной транзакцией: вклад людей записи
+/// в память подсказок снимается, как при правке (`forget_entry`); перечни
+/// чистятся от значений, которых больше нигде нет; упоминания уходят
+/// каскадом. Память слияния не теряется: номер записи в `merge_origin`
+/// обнуляется — следующее слияние покажет «у вас удалено, у помощника есть»,
+/// а не вернёт запись молча; номер, который SQLite может отдать новой записи,
+/// туда не попадёт. Строки списка на сверку об этой записи — в сделанные.
+/// Возвращает раздел удалённой записи.
+pub fn delete_entry(conn: &Connection, entry_id: i64) -> Result<i64, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let (section, case_id): (i64, i64) = conn
+        .query_row("SELECT section, case_id FROM entry WHERE id = ?1", [entry_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional().map_err(e)?
+        .ok_or("этой записи уже нет — список перечитан")?;
+    let parish: String = conn
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": case_id }, |r| r.get::<_, Option<String>>(0))
+        .optional().map_err(e)?.flatten().unwrap_or_default();
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    let forgotten = forget_entry(&tx, entry_id, &parish)?;
+    tx.execute(&statement("entry_delete")?, rusqlite::named_params! { ":id": entry_id }).map_err(e)?;
+    tx.execute(&statement("entry_delete_origin")?, rusqlite::named_params! { ":id": entry_id }).map_err(e)?;
+    tx.execute(&statement("entry_delete_review")?, rusqlite::named_params! { ":id": entry_id }).map_err(e)?;
+    drop_orphan_lookups(&tx, &forgotten)?;
+    tx.commit().map_err(e)?;
+    Ok(section)
+}
+
 /// Значения, которые правка убрала из записи и которых больше нет нигде, —
 /// из перечней, пополненных набором (после сохранения новых людей).
 fn drop_orphan_lookups(conn: &Connection, values: &[(&str, String)]) -> Result<(), String> {

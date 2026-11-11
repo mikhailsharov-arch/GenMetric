@@ -1,3 +1,4 @@
+import DeleteEntry from "./DeleteEntry";
 import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
@@ -361,7 +362,10 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
   /** Какое звание положено по правилу: строка, "" — убрать наше, null — не трогать. */
   function babyRankFor(d: Deceased, sex: Sex | null): string | null {
     if (editingId !== null || nameless || rankManual.current) return null;
-    const ours = autoRank.current !== null && d.rank === autoRank.current;
+    // Наше звание — подставленное программой; и «сын/дочь младенец», если
+    // уход из поля его уже снял, пока шло сохранение (гонка Ctrl+Enter).
+    const ours = (autoRank.current !== null && d.rank === autoRank.current)
+      || (Object.values(BABY).includes(d.rank as never) && latestDead.current.rank === "" && rankCleared);
     if (d.rank.trim() && !ours) return null;
     // Возраст в годах от восьми — уже не младенец («Марфа», 70 лет):
     // подставленное убираем и не возвращаем.
@@ -388,14 +392,17 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     const rank = babyRankFor(d, sex);
     if (rank === null) return;
     autoRank.current = rank || null;
+    // Звание сняла программа — подсветить, чтобы это было видно (п. 132).
+    setRankCleared(rank === "");
     setDead((s) => (s.iof.trim() === text ? { ...s, rank } : s));
   }
+  const [rankCleared, setRankCleared] = useState(false);
 
   // Пол выбрали кнопками (имени нет в словаре) — ухода из ИОФ при этом нет.
   useEffect(() => { if (sexManual) void deadLeft(); }, [sexManual]);
-  // Набрали возраст взрослого — подставленное «младенец» уходит.
-  const grownUp = (parseAge(dead.age)?.years ?? 0) >= BABY_MAX_YEARS;
-  useEffect(() => { if (grownUp) void deadLeft(); }, [grownUp]);
+  // Возраст взрослого — подставленное «младенец» уходит; решается при уходе
+  // из поля «Возраст» (и при сохранении), а не на каждую цифру: «13 дней»
+  // на «13» выглядело как 13 лет, и звание стиралось молча (Роман 11.11.2026, п. 132).
 
   // --- Счёт сам, по полу — как в рождениях (count.ts, nextCount) ---
   const countManual = useRef(false);
@@ -771,6 +778,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
       // Год формы — год книги, то есть год погребения.
       if ((e.rite_year ?? e.event_year) !== null) setYear(e.rite_year ?? e.event_year);
       setDead({ ...person(dm, NEW_DECEASED), cause: dm?.death_cause ?? "", age: dm?.age_text ?? "" });
+      setRankCleared(false);
       setNameless(!!dm && !iof(dm));
       setSexManual((dm?.gender as Sex | null | undefined) ?? null);
       setAskSex(false);
@@ -789,6 +797,14 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     } catch (err) {
       report("Не удалось открыть запись о смерти", err);
     }
+  }
+
+  /** Что за запись — для вопроса «Удалить запись?» (11.11.2026). */
+  function deletedWhat(): string {
+    const e = saved.find((x) => x.id === editingId);
+    if (!e) return "смерть";
+    const no = e.no_male ?? ("no_female" in e ? (e as { no_female: number | null }).no_female : null);
+    return ["смерть", e.page ? `стр. ${e.page}` : "", no !== null ? `№ ${no}` : "", (e.deceased) || ""].filter(Boolean).join(", ");
   }
 
   function restoreAfterEdit() {
@@ -822,6 +838,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     riteFilled.current = false;
     setBurialNextYear(false);
     setDead({ ...NEW_DECEASED });
+    setRankCleared(false);
     setNameless(false);
     setRel({ ...NEW_RELATIVE });
     setWit1({ ...EMPTY_PERSON });
@@ -882,7 +899,12 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
           <input data-field className="age" value={dead.age} autoComplete="off" spellCheck={false}
                  title="Как в книге: 5 (лет), 3 мес, 2 нед, 1,5 мес, 5 дней"
                  onChange={(e) => setDead((s) => ({ ...s, age: e.target.value }))}
+                 onBlur={() => void deadLeft()}
                  onKeyDown={(e) => {
+                   // Ctrl+Enter — сохранение, а не переход к полю: переход
+                   // запускал правило ухода параллельно сохранению, и звание
+                   // младенца при «13» сохранялось (проверяющий 11.11.2026).
+                   if (e.ctrlKey || e.metaKey) return;
                    if (e.key === "Enter" || e.key === "ArrowDown") {
                      e.preventDefault();
                      focusNextField(e.currentTarget, e.shiftKey && e.key === "Enter" ? -1 : 1);
@@ -973,7 +995,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                      onChange={(p) => {
                        // Звание тронуто руками — правило младенца больше не вмешивается.
                        const prev = latestDead.current;
-                       if (p.rank !== prev.rank) rankManual.current = true;
+                       if (p.rank !== prev.rank) { rankManual.current = true; setRankCleared(false); }
                        // Блок отдаёт персону целиком, а звание и НП форма могла
                        // только что подставить сама (ещё до перерисовки): то, что
                        // блок не менял, берём из текущего состояния, а не из его
@@ -995,7 +1017,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                      {...common} extra={deadExtra}
                      // Полное ИОФ младенца по родственнику «отец» — только показ.
                      modernOverride={fullDead}
-                     noIof={nameless} titleAfter={namelessBox} />
+                     noIof={nameless} titleAfter={namelessBox} rankAuto={rankCleared} />
         {relFolded && (
           <FoldLine block="death_relative" title="Родственник" summary={foldSummary([rel])} onOpen={() => foldRel(false)} />
         )}
@@ -1031,11 +1053,15 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
         reloadKey={clergyState.savedTimes}
       />
 
-      <div className="savebar">
+      <div className={editingId !== null ? "savebar editing" : "savebar"}>
         <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
           {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
           <span className="kbd">Ctrl+Enter</span>
         </button>
+        {editingId !== null && (
+          <DeleteEntry id={editingId} what={deletedWhat()}
+                       onDeleted={() => { restoreAfterEdit(); refresh(); }} />
+        )}
       </div>
 
       {saved.length > 0 && (

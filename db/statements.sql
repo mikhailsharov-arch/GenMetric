@@ -577,7 +577,7 @@ SELECT :kind, :value, :value_norm,
 -- Частота использования: на ней держится порядок подсказок.
 -- Считается в трёх охватах сразу — дело, приход и вся база, — потому что
 -- выдача идёт именно в таком порядке (требование А-1).
--- Закрытый перечень (autoextend = 0: каким браком, родство) копит частоту
+-- Закрытый перечень (autoextend = 0: каким браком; родство открыто с 11.11.2026, п. 135) копит частоту
 -- только своим значениям (Роман 16.10.2026: опечатка «29» «намертво
 -- прописалась в выпадающем списке»). Перечни вне lookup_kind (имена,
 -- фамилии, пункты) — как раньше.
@@ -907,6 +907,13 @@ SELECT form, 3, 0 FROM name_alias
 -- губерния, уезд, волость и ссылка на Familio.
 SELECT name, 4, 0 FROM place WHERE name_norm LIKE :prefix ESCAPE '\'
 
+-- @place_volost
+-- Волость пункта для подсказки НП (Роман 11.11.2026) — у лучшей строки
+-- названия (правило place_find).
+SELECT volost FROM place WHERE name_norm = :name_norm
+ ORDER BY (full_location IS NULL OR trim(full_location) = ''),
+          (np_type IS NULL OR trim(np_type) = ''), (origin = 'archive'), id LIMIT 1;
+
 -- @suggest_lookup
 SELECT value, 4, 0 FROM lookup
  WHERE kind = :kind AND value_norm LIKE :prefix ESCAPE '\'
@@ -1115,6 +1122,20 @@ SELECT trim(coalesce(nullif(trim(f.first_name), ''), '') || coalesce(' ' || null
    AND (:place IS NULL OR (SELECT p.name_norm FROM place p WHERE p.id = f.place_id) = :place)
  ORDER BY e.id DESC
  LIMIT 1;
+
+-- @entry_delete
+-- Удаление записи (11.11.2026): упоминания уходят каскадом (ON DELETE CASCADE).
+DELETE FROM entry WHERE id = :id;
+
+-- @entry_delete_origin
+-- Память слияния о записи остаётся без номера: «у вас удалено, у помощника есть».
+-- Ждавшая решения правка помощника снимается: иначе следующее слияние сочло бы
+-- запись «уже спрошенной» и промолчало (ревьюер 11.11.2026).
+UPDATE merge_origin SET entry_id = NULL, pending = NULL, pending_fp = NULL WHERE entry_id = :id;
+
+-- @entry_delete_review
+-- Строки списка на сверку об удалённой записи — сделаны: открыть её нельзя.
+UPDATE review_item SET done = 1, entry_id = NULL WHERE entry_id = :id;
 
 -- @review_add
 -- Список на сверку после импорта (схема 9).

@@ -85,6 +85,10 @@ section.person h2 { color: var(--accent); }
 .hint { margin: 0 0 0.4em; color: var(--muted); font-size: 0.8rem; line-height: 1.35; }
 /* Объединение пунктов: какой остаётся — по строке на пункт. */
 .mergechoice { display: flex; flex-direction: column; gap: 0.3em; margin: 0.4em 0 0.6em; }
+/* Точка выбора — слева от текста, текст варианта — одним блоком справа (Роман 11.11.2026, п. 136). */
+.mergechoice .mergeopt { display: flex; flex-direction: row; align-items: flex-start; gap: 0.5em; text-align: left; font-size: 0.9rem; }
+.mergechoice .mergeopt input { flex: none; width: auto; margin: 0.2em 0 0; }
+.mergechoice .mergeopt span { flex: 1; min-width: 0; }
 .mergeopt { display: block; cursor: pointer; }
 
 .ms { font-variant-numeric: tabular-nums; opacity: 0.7; }
@@ -341,6 +345,8 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
 /* Строка младенца: родитель, НП и дата рождения — целиком, с переносом: дата
    различает тёзок и стоит последней, обрезать её нельзя. */
 .suggest .sub.wrap { white-space: normal; overflow-wrap: anywhere; }
+/* Волость в строке подсказки НП — в той же строке, серым (Роман 11.11.2026). */
+.suggest .sub.placevolost { display: inline; font-size: 0.78rem; }
 .tier.t1 { font-weight: 600; }
 
 /* Причт: три персоны в одной секции, без своих рамок. Каждая рамка — это
@@ -716,6 +722,13 @@ button.toggle { white-space: nowrap; }
 .facts.parishes td input[data-parish-rename] { width: 100%; font-weight: 600; }
 .facts.parishes .parishopen { color: var(--muted); margin-right: 0.3em; }
 .toggle.danger { border-color: #c0392b; color: #c0392b; }
+/* «Удалить запись» (11.11.2026): красная, рядом с «Сохранить изменения», уже неё. */
+button.danger { padding: 0.45em 0.8em; font-family: inherit; font-size: 0.9rem; color: #fff; background: #c0392b;
+                border: 1px solid #a93226; border-radius: 7px; cursor: pointer; }
+button.danger:disabled { opacity: 0.6; cursor: default; }
+.savebar.editing { display: flex; gap: 0.5em; align-items: stretch; }
+.savebar.editing > button.primary { flex: 1; }
+.savebar.editing > button.danger { flex: none; }
 /* Смена прихода — важное действие: строка крупнее и выделена. */
 .parishrow.main {
   font-size: 1rem; padding: 0.45em 0.7em; margin-bottom: 0.5em;
@@ -737,6 +750,8 @@ button.toggle { white-space: nowrap; }
    его, 14.10.2026: прежний бледный «в процессе быстрого набора глаз не
    цепляет». */
 .numrow input.auto { background: #e5bce4; border-color: #a86aa6; }
+/* Звание, которое программа сама сняла (п. 132): тот же цвет, что у месяца. */
+.fieldbody input.auto { background: #e5bce4; border-color: #a86aa6; }
 /* Форма занята, годы-опечатки в файле: заметнее обычной подсказки. */
 .reviewbusy {
   margin: 0 0 0.5em; padding: 0.4em 0.6em; font-size: 0.85rem; line-height: 1.35;
@@ -1136,3 +1151,8 @@ body.withscan .overlay { right: auto; width: var(--formw); }
 .cleanupitem { display: block; font-size: 0.85rem; padding: 0.1em 0; }
 /* Флажок — в строке со значением: общее правило полей растягивает input на всю ширину. */
 .cleanupitem input[type="checkbox"] { display: inline-block; width: auto; margin: 0 0.3em 0 0; vertical-align: middle; }
+
+/* «ⓘ О программе»: сведения для разработчика свёрнуты (Роман 11.11.2026). */
+details.devinfo { margin-top: 1.2em; border-top: 0.0625em solid #e3e8ef; padding-top: 0.6em; }
+details.devinfo > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+details.devinfo[open] > summary { margin-bottom: 0.6em; }

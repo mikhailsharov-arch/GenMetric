@@ -99,6 +99,10 @@ struct Suggestion {
     value: String,
     tier: i64,
     count: i64,
+    /// Волость пункта — серой припиской в подсказке НП (Роман 11.11.2026:
+    /// тёзки разных волостей «при быстром вводе невозможно отличить»).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volost: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -476,7 +480,7 @@ fn suggest(
         }
         let rows = stmt
             .query_map(&params[..], |r| {
-                Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)? })
+                Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)?, volost: None })
             })
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
@@ -490,6 +494,7 @@ fn suggest(
         // двух букв: одна буква в середине есть почти в каждом звании.
         // Населённые пункты — так же (п. 127, 06.11.2026): «Черн» находит
         // «с.Черняное», название которого начинается с приставки типа.
+        let mut out = merge_case_twins(out);
         if let Some(inside) = genmetric_core::rank_inside_pattern(&kind, &pattern) {
             if (out.len() as i64) < limit {
                 let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -500,19 +505,53 @@ fn suggest(
                 }
                 let more = stmt
                     .query_map(&params[..], |r| {
-                        Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)? })
+                        Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)?, volost: None })
                     })
                     .map_err(|e| e.to_string())?;
                 for row in more {
                     let row = row.map_err(|e| e.to_string())?;
-                    if (out.len() as i64) < limit && !out.iter().any(|have: &Suggestion| have.value == row.value) {
+                    let key = genmetric_core::text::normalize(&row.value);
+                    if (out.len() as i64) < limit && !out.iter().any(|have: &Suggestion| genmetric_core::text::normalize(&have.value) == key) {
                         out.push(row);
                     }
                 }
             }
         }
+        if kind == "place" {
+            let find = statement("place_volost")?;
+            for row in &mut out {
+                row.volost = conn
+                    .query_row(&find, rusqlite::named_params! { ":name_norm": genmetric_core::text::normalize(&row.value) },
+                               |r| r.get::<_, Option<String>>(0))
+                    .optional().map_err(|e| e.to_string())?.flatten()
+                    .map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+            }
+        }
         Ok(out)
     })
+}
+
+/// «попов» и «Попов» — одна строка подсказки (Роман 11.11.2026, п. 133:
+/// строчное написание — след импорта из Excel). SQLite регистр кириллицы не
+/// различает (её строчные функции знают только латиницу), поэтому склейка — здесь: остаётся
+/// написание с заглавной, ярус — лучший, частота — сложенная.
+fn merge_case_twins(rows: Vec<Suggestion>) -> Vec<Suggestion> {
+    let mut out: Vec<Suggestion> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let key = genmetric_core::text::normalize(&row.value);
+        match out.iter_mut().find(|have| genmetric_core::text::normalize(&have.value) == key) {
+            Some(have) => {
+                let upper = |v: &str| v.chars().next().is_some_and(char::is_uppercase);
+                if !upper(&have.value) && upper(&row.value) {
+                    have.value = row.value;
+                }
+                have.tier = have.tier.min(row.tier);
+                have.count += row.count;
+            }
+            None => out.push(row),
+        }
+    }
+    out
 }
 
 /// Звание по умолчанию: самое частое в приходе у этой роли и пола.
@@ -2570,6 +2609,18 @@ fn merge_run(app: State<App>, file_name: String) -> Result<MergeSeen, String> {
     Ok(MergeSeen { report, parish_name, copy: Some(copy) })
 }
 
+/// Удалить запись (Роман 11.11.2026). Перед удалением запись целиком
+/// пишется в журнал программы — её можно восстановить по этой строке.
+#[tauri::command]
+fn entry_delete(app: State<App>, id: i64) -> Result<i64, String> {
+    with_conn(&app, "Удаление записи", |conn| {
+        let snapshot = genmetric_core::merge::snapshot(conn, id)?;
+        let section = genmetric_core::records::delete_entry(conn, id)?;
+        write_log(&app.log_path, &format!("Удалена запись № {id}: {snapshot}"));
+        Ok(section)
+    })
+}
+
 /// «Взять правку» / «Вернуть запись» в списке на сверку.
 #[tauri::command(async)]
 fn merge_take(app: State<App>, review_id: i64) -> Result<genmetric_core::merge::Taken, String> {
@@ -2872,6 +2923,7 @@ fn main() {
             import_chunk,
             import_inspect,
             import_run,
+            entry_delete,
             merge_inspect,
             merge_run,
             merge_take,
@@ -2892,7 +2944,18 @@ fn main() {
         .run(|app, event| {
             match event {
                 tauri::RunEvent::ExitRequested { .. } => windows::on_exit_requested(app),
-                tauri::RunEvent::Exit => windows::on_exit(app),
+                tauri::RunEvent::Exit => {
+                    windows::on_exit(app);
+                    // п. 131: набранное — в самом файле прихода, а не в «-wal»
+                    // (Tauri завершает процесс, не освобождая состояние).
+                    if let Some(state) = app.try_state::<App>() {
+                        if let Some(conn) = lock_conn(&state).take() {
+                            if let Err(e) = genmetric_core::db::close_cleanly(conn) {
+                                write_log(&state.log_path, &format!("Закрытие базы при выходе: {e}"));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         });

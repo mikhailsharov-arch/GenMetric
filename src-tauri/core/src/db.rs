@@ -128,6 +128,19 @@ fn open_or_upgrade(bundled: &Path, db_path: &Path) -> Result<Connection, Box<dyn
     Ok(conn)
 }
 
+/// Закрыть базу так, чтобы всё набранное лежало в самом файле (п. 131,
+/// Роман 11.11.2026). База — в режиме WAL: свежие записи сначала пишутся в
+/// соседний файл «-wal» и переносятся в основной контрольной точкой.
+/// Программа при выходе завершается, не освобождая своё состояние, — без
+/// явного закрытия «-wal» оставался, а основной файл, который помощник
+/// присылает для слияния, был без последних записей. Контрольная точка без
+/// имени базы идёт по всем подключённым (и по общему файлу); закрытие
+/// последнего соединения убирает «-wal» и «-shm».
+pub fn close_cleanly(conn: Connection) -> Result<(), String> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| e.to_string())?;
+    conn.close().map_err(|(_, e)| e.to_string())
+}
+
 /// Копия базы перед обновлением. Дёшево и один раз спасёт.
 ///
 /// Сначала — контрольная точка WAL: после сбоя прошлого сеанса часть данных
@@ -313,6 +326,33 @@ mod tests {
         let tables: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('setting', 'entry')", [], |r| r.get(0)).unwrap();
         assert_eq!(tables, 2, "в пустой файл легла база поставки");
         drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// п. 131 (Роман 11.11.2026): после закрытия программы набранное — в
+    /// самом файле, «-wal» нет; копия одного файла видит все записи.
+    #[test]
+    fn close_leaves_one_file() {
+        let Some(seed) = seed() else {
+            crate::seed_missing("тест закрытия базы пропущен");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("genmetric-close-{}", std::process::id()));
+        // Чистая папка: «-wal» от прошлого прогона лёг бы на новую базу.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("приход.sqlite");
+        let conn = open_database(&seed, &path).unwrap();
+        conn.execute_batch("INSERT INTO mk_case (id, year) VALUES (1, 1890);
+                            INSERT INTO entry (case_id, section) VALUES (1, 1);").unwrap();
+        let wal = dir.join("приход.sqlite-wal");
+        assert!(wal.exists(), "база в режиме WAL — запись сначала в «-wal»");
+        let copy = dir.join("копия.sqlite");
+        let seen = |p: &Path| -> i64 { Connection::open(p).unwrap().query_row("SELECT count(*) FROM entry", [], |r| r.get(0)).unwrap() };
+        close_cleanly(conn).unwrap();
+        assert!(!wal.exists(), "после закрытия «-wal» нет");
+        std::fs::copy(&path, &copy).unwrap();
+        assert_eq!(seen(&copy), 1, "копия одного файла — со всеми записями");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

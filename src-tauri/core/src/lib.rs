@@ -220,6 +220,19 @@ mod tests {
         assert_eq!(odd, "https://familio.org/places?title=a%26b%3Dc%23d%2Fe%3Ff&georequisites=%D0%9A%D0%BE%D1%81%D1%82%D1%80%D0%BE%D0%BC%D1%81%D0%BA%D0%B0%D1%8F%20%D0%9C%D0%B0%D0%BA%D0%B0%D1%80%D1%8C%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B9");
     }
 
+    /// Волость пункта для подсказки НП (Роман 11.11.2026) — у лучшей строки.
+    #[test]
+    fn place_volost_runs() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+        conn.execute_batch("INSERT INTO place (name, name_norm, origin) VALUES ('Малово', 'малово', 'archive');
+                            INSERT INTO place (name, name_norm, np_type, volost, full_location, uyezd)
+                              VALUES ('Малово', 'малово', 'д.', 'Завражная', 'д. Малово, Завражная волость', 'Макарьевский');").unwrap();
+        let v: Option<String> = conn.query_row(&crate::statement("place_volost").unwrap(), rusqlite::named_params! { ":name_norm": "малово" },
+                                               |r| r.get(0)).unwrap();
+        assert_eq!(v.as_deref(), Some("Завражная"));
+    }
+
     /// Запрос подсказок собирается и исполняется для каждого вида перечня;
     /// фамилии отбираются по полу (rusqlite строг к лишним параметрам —
     /// Python-тест этого не видит).

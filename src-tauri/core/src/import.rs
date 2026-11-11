@@ -490,6 +490,10 @@ impl Importer<'_> {
                 iof = format!("{} {}", iof[..a].trim(), iof[b + 1..].trim()).trim().to_string();
             }
         }
+        // Заглавные буквы, как при наборе в форме: «попов» со строчной из
+        // Excel копился в подсказке отдельной фамилией (Роман 11.11.2026, п. 133).
+        let iof = crate::text::title_case(&iof);
+        let maiden = maiden.map(|m| crate::text::title_case(&m));
         let parsed = parse_iof_in(self.conn, &iof)?;
         if !iof.is_empty() && !parsed.known_name {
             self.unknown_total += 1;

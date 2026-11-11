@@ -1,3 +1,4 @@
+import DeleteEntry from "./DeleteEntry";
 import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
@@ -515,6 +516,14 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
     }
   }
 
+  /** Что за запись — для вопроса «Удалить запись?» (11.11.2026). */
+  function deletedWhat(): string {
+    const e = saved.find((x) => x.id === editingId);
+    if (!e) return "брак";
+    const no = e.no_male ?? ("no_female" in e ? (e as { no_female: number | null }).no_female : null);
+    return ["брак", e.page ? `стр. ${e.page}` : "", no !== null ? `№ ${no}` : "", ([e.groom, e.bride].filter(Boolean).join(" и ")) || ""].filter(Boolean).join(", ");
+  }
+
   function restoreAfterEdit() {
     const b = beforeEdit.current;
     beforeEdit.current = null;
@@ -733,11 +742,15 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
         reloadKey={clergyState.savedTimes}
       />
 
-      <div className="savebar">
+      <div className={editingId !== null ? "savebar editing" : "savebar"}>
         <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
           {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
           <span className="kbd">Ctrl+Enter</span>
         </button>
+        {editingId !== null && (
+          <DeleteEntry id={editingId} what={deletedWhat()}
+                       onDeleted={() => { restoreAfterEdit(); refresh(); }} />
+        )}
       </div>
 
       {saved.length > 0 && (

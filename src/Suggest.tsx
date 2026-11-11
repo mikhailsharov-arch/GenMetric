@@ -4,7 +4,7 @@ import { focusNextField, scrollInList, toScanNo } from "./focus";
 import { report } from "./errors";
 import { splitPlaceLabel, stripPlaceType, typedCase } from "./names";
 
-export type Item = { value: string; tier: number; count: number };
+export type Item = { value: string; tier: number; count: number; volost?: string };
 
 type Props = {
   label: string;
@@ -37,6 +37,8 @@ type Props = {
   skipFilled?: boolean;
   /** Первое поле окна при открытии (Modal ищет `data-autofocus`). */
   autofocus?: boolean;
+  /** Поле поменяла программа, а не человек — подсветить, как месяц (п. 132). */
+  auto?: boolean;
 };
 
 const TIER_TITLE: Record<number, string> = {
@@ -58,7 +60,7 @@ const TIER_TITLE: Record<number, string> = {
  * где переход шёл клавишей «вниз».
  */
 const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
-  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock, skipFilled, autofocus },
+  { label, kind, value, onChange, placeholder, hint, browse, onLeave, action, fix, lock, skipFilled, autofocus, auto },
   ref,
 ) {
   const [items, setItems] = useState<Item[]>([]);
@@ -240,7 +242,9 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
         readOnly={lock?.on}
         tabIndex={lock?.on || (skipFilled && value.trim()) ? -1 : undefined}
         data-skip={lock?.on || (skipFilled && value.trim()) ? "" : undefined}
-        className={[action && value.trim() ? "withaction" : browse || lock ? "withbrowse" : "", lock?.on ? "locked" : ""]
+        data-auto={auto ? "" : undefined}
+        title={auto ? "Поле изменила программа сама (например, сняла «младенец» по возрасту) — проверьте" : undefined}
+        className={[action && value.trim() ? "withaction" : browse || lock ? "withbrowse" : "", lock?.on ? "locked" : "", auto ? "auto" : ""]
           .filter(Boolean).join(" ") || undefined}
         value={value}
         placeholder={placeholder}
@@ -327,7 +331,10 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
                 pick(it);
               }}
             >
-              <span className="val">{placeShown(it.value)}</span>
+              <span className="val">
+                {placeShown(it.value)}
+                {it.volost && <span className="sub placevolost" data-volost> · {it.volost} вол.</span>}
+              </span>
               <span className={`tier t${it.tier}`}>{TIER_TITLE[it.tier]}</span>
             </li>
           ))}

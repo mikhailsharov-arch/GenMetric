@@ -392,53 +392,20 @@ export default function App() {
       )}
       {screen === "about" && info && (
         <section>
-          <h2>Что внутри сборки</h2>
-          <p className="hint">
-            Если эти числа не изменились после установки новой версии — значит
-            обновление до базы не доехало, и об этом надо сказать.
+          {/* Файл прихода — первым и понятной строкой: его помощник присылает
+              для слияния приходов (Роман 11.11.2026, п. 138). */}
+          <h2>Файл вашего прихода</h2>
+          <p className="hint" data-parish-file>
+            Здесь лежит открытый приход. Помощнику для слияния: закройте программу и пришлите этот файл.
           </p>
-          <table className="facts">
-            <tbody>
-              <tr>
-                <td>Имён в словаре</td>
-                <td>{info.names.toLocaleString("ru-RU")}</td>
-              </tr>
-              <tr>
-                <td>Значений в перечнях</td>
-                <td>{info.lookups.toLocaleString("ru-RU")}</td>
-              </tr>
-              <tr>
-                <td>Написаний имён и отчеств</td>
-                <td>{info.name_forms.toLocaleString("ru-RU")}</td>
-              </tr>
-              {/* Справочник населённых пунктов пришёл в поставке впервые.
-                  Если он не появился — обновление не доехало, и увидеть это
-                  надо здесь, а не гадать над молчащим полем НП. */}
-              <tr>
-                <td>Населённых пунктов</td>
-                <td>{info.places.toLocaleString("ru-RU")}</td>
-              </tr>
-              <tr>
-                <td>Ролей персон</td>
-                <td>{info.roles}</td>
-              </tr>
-              <tr>
-                <td>Версия базы</td>
-                <td>{info.schema_version}</td>
-              </tr>
-              <tr>
-                <td>Отпечаток справочников</td>
-                <td>{info.seed_stamp}</td>
-              </tr>
-            </tbody>
-          </table>
           <p className="path mono">{info.db_path}</p>
-          <p className="hint">
-            Шрифт интерфейса — Inter, © The Inter Project Authors, лицензия SIL Open Font
-            License 1.1 (текст лицензии — файл Inter-OFL.txt в папке программы).
-            Просмотрщик сканов — OpenSeadragon, © OpenSeadragon contributors, лицензия BSD 3-Clause
-            (файл OpenSeadragon-LICENSE.txt там же).
-          </p>
+          <div className="row">
+            <button type="button" className="toggle" data-parish-file-show
+                    onClick={() => void invoke("reveal_path", { path: info.db_path })
+                      .catch((e) => report("Не удалось показать файл прихода", e))}>
+              Показать в папке
+            </button>
+          </div>
           {info.repaired_entries > 0 && (
             <p className="hint">
               При обновлении исправлено записей: {info.repaired_entries} — номер девочек,
@@ -462,34 +429,88 @@ export default function App() {
             </p>
           )}
 
-          {/* Архив подсказок — здесь, а не на «Деле»: при наборе не нужен
-              (Роман 05.10.2026). */}
-          <ArchiveBlock />
           {/* Очистка неиспользуемых значений (Роман 20.10.2026: «можно скрыть
               куда-то в настройки»). */}
           <CleanupBlock />
           {/* Фамилии жён по мужьям (Роман 12.10.2026, спека 2026-10-20-familii-zhyon). */}
           <WivesBlock onOpenEntry={openEntry} />
 
-          {lookups.length > 0 && (
-            <>
-              <h2 className="sub-h2">Что в справочниках</h2>
-              <p className="hint">
-                Если звания, которым вы пользуетесь, здесь не хватает —
-                скажите, каких именно.
-              </p>
-              <table className="facts">
-                <tbody>
-                  {lookups.map((l) => (
-                    <tr key={l.kind}>
-                      <td>{l.title}</td>
-                      <td>{l.count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
+
+          {/* Сведения для разработчика — свёрнуты (Роман 11.11.2026: «нужны
+              разработчику для отладки, но абсолютно бесполезны для конечного
+              пользователя»). Архив подсказок из Excel — тоже здесь: загружается
+              один раз. */}
+          <details className="devinfo" data-devinfo>
+            <summary>Для разработчика: что внутри сборки, архив подсказок из Excel, справочники</summary>
+            <h2>Что внутри сборки</h2>
+            <p className="hint">
+              Если эти числа не изменились после установки новой версии — значит
+              обновление до базы не доехало, и об этом надо сказать.
+            </p>
+            <table className="facts">
+              <tbody>
+                <tr>
+                  <td>Имён в словаре</td>
+                  <td>{info.names.toLocaleString("ru-RU")}</td>
+                </tr>
+                <tr>
+                  <td>Значений в перечнях</td>
+                  <td>{info.lookups.toLocaleString("ru-RU")}</td>
+                </tr>
+                <tr>
+                  <td>Написаний имён и отчеств</td>
+                  <td>{info.name_forms.toLocaleString("ru-RU")}</td>
+                </tr>
+                {/* Справочник населённых пунктов пришёл в поставке впервые.
+                    Если он не появился — обновление не доехало, и увидеть это
+                    надо здесь, а не гадать над молчащим полем НП. */}
+                <tr>
+                  <td>Населённых пунктов</td>
+                  <td>{info.places.toLocaleString("ru-RU")}</td>
+                </tr>
+                <tr>
+                  <td>Ролей персон</td>
+                  <td>{info.roles}</td>
+                </tr>
+                <tr>
+                  <td>Версия базы</td>
+                  <td>{info.schema_version}</td>
+                </tr>
+                <tr>
+                  <td>Отпечаток справочников</td>
+                  <td>{info.seed_stamp}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="hint">
+              Шрифт интерфейса — Inter, © The Inter Project Authors, лицензия SIL Open Font
+              License 1.1 (текст лицензии — файл Inter-OFL.txt в папке программы).
+              Просмотрщик сканов — OpenSeadragon, © OpenSeadragon contributors, лицензия BSD 3-Clause
+              (файл OpenSeadragon-LICENSE.txt там же).
+            </p>
+            {/* Архив подсказок — здесь, а не на «Деле»: при наборе не нужен
+                (Роман 05.10.2026). */}
+            <ArchiveBlock />
+            {lookups.length > 0 && (
+              <>
+                <h2 className="sub-h2">Что в справочниках</h2>
+                <p className="hint">
+                  Если звания, которым вы пользуетесь, здесь не хватает —
+                  скажите, каких именно.
+                </p>
+                <table className="facts">
+                  <tbody>
+                    {lookups.map((l) => (
+                      <tr key={l.kind}>
+                        <td>{l.title}</td>
+                        <td>{l.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </details>
         </section>
       )}
 

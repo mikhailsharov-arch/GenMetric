@@ -279,6 +279,11 @@ def run(driver, wait, archive):
     print("\n3. Архив через настоящий IPC")
     # С 05.10.2026 блок архива — на экране «ⓘ О программе», не на «Деле».
     click(driver, "//button[@aria-label='О программе']")
+    # С 11.11.2026 архив — в свёрнутом разделе «Для разработчика».
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "details[data-devinfo]")))
+    driver.execute_script("document.querySelector('details[data-devinfo]').open = true;")
+    check("«ⓘ О программе»: путь к файлу прихода — первым, отдельной строкой",
+          bool(driver.find_elements(By.CSS_SELECTOR, "[data-parish-file]")) and bool(driver.find_elements(By.CSS_SELECTOR, "[data-parish-file-show]")))
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".archive input[type=file]")))
     file_input = driver.find_element(By.CSS_SELECTOR, ".archive input[type=file]")
     # Поле спрятано (кнопка вместо него); WebDriver кормит файл только видимому.

@@ -1034,7 +1034,7 @@ def incident_20261007_otvet_na_sborku_06_10():
     # показывается вовсе (Роман: «фантомное „Ив“ предлагаться не должно»);
     # вторая строка — только под поднятым набранным словом.
     check("подсказка ИОФ: есть персоны — одна словарная строка (и набранное слово, если оно поднято первым, — 20.10.2026)",
-          "early && foundPersons.length > 0 ? ordered.slice(0, exactAt > 0 ? 2 : 1) : ordered" in iof)
+          "(alex.length > 1 ? alex : ordered.slice(0, exactAt > 0 ? 2 : 1))" in iof)  # 11.11.2026 — исключение «Ал» (п. 134)
     check("п. 128 (06.11.2026): не поднятое словарное слово второй строкой не встаёт",
           "exactFound > 1 ? [sexed[0], sexed[exactFound]" not in iof)
     check("НП умершего идёт родственнику у любого умершего, не только у младенца",
@@ -1882,6 +1882,54 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261111_sprint_131_138():
+    """
+    11.11.2026, ответ Романа на сборки 06–11.11 (intent/2026-11-11-…): п. 131
+    (записи оставались в «-wal» — слияние заблокировано), пп. 132–138,
+    удаление записи, волость в подсказке НП, НП восприемника, «О программе».
+    """
+    main = read("src-tauri/src/main.rs")
+    db = read("src-tauri/core/src/db.rs")
+    check("п. 131: при выходе — контрольная точка WAL и закрытие базы (набранное — в самом файле прихода)",
+          "pub fn close_cleanly(conn: Connection)" in db and "PRAGMA wal_checkpoint(TRUNCATE);" in db
+          and "fn close_leaves_one_file()" in db and "genmetric_core::db::close_cleanly(conn)" in main
+          and "tauri::RunEvent::Exit => {" in main)
+    death = read("src/DeathForm.tsx")
+    check("п. 132: звание младенца решается при уходе из «Возраста», не на каждую цифру; снятое — подсвечено",
+          "useEffect(() => { if (grownUp) void deadLeft(); }, [grownUp]);" not in death
+          and "onBlur={() => void deadLeft()}" in death and "rankAuto={rankCleared}" in death)
+    check("п. 133: «попов» и «Попов» — одна строка подсказки; импорт из Excel — с заглавной",
+          "fn merge_case_twins(rows: Vec<Suggestion>)" in main and "crate::text::title_case(&iof)" in read("src-tauri/core/src/import.rs"))
+    check("п. 134: «Ал» — Александр и Алексей (исключение только для этой группы)",
+          'first_name: ["александр", "алексей", "александра"]' in read("src/IofField.tsx"))
+    check("п. 135: «Родство» пополняется", "kinship,Родственники,1,1" in read("db/seed/lookup_kind.csv"))
+    check("п. 136: в окне объединения точка выбора — слева от текста",
+          ".mergechoice .mergeopt { display: flex; flex-direction: row;" in read("src/styles.css"))
+    app = read("src/App.tsx")
+    check("п. 138 и «О программе»: файл прихода первым; техническое — в свёрнутом «Для разработчика»",
+          "data-parish-file" in app and 'reveal_path", { path: info.db_path }' in app and '<details className="devinfo" data-devinfo>' in app
+          and app.index("data-parish-file") < app.index("Что внутри сборки"))
+    rec = read("src-tauri/core/src/records.rs")
+    check("удаление записи: память подсказок снимается, память слияния — без номера, сверка — в сделанные",
+          "pub fn delete_entry(conn: &Connection, entry_id: i64)" in rec and "forget_entry(&tx, entry_id, &parish)" in rec
+          and "UPDATE merge_origin SET entry_id = NULL," in read("db/statements.sql"))
+    check("удаление записи: только в записи на правке, с подтверждением; запись — в журнал перед удалением",
+          all("<DeleteEntry id={editingId}" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
+          and "безвозвратно" in read("src/DeleteEntry.tsx") and "Удалена запись № {id}: {snapshot}" in main)
+    check("волость в подсказке НП", "-- @place_volost" in read("db/statements.sql") and "data-volost" in read("src/Suggest.tsx"))
+    # Находки ревьюера 11.11.2026 (до выкладки).
+    check("удаление записи с ждущей правкой помощника — следующее слияние говорит «у вас удалено»",
+          "UPDATE merge_origin SET entry_id = NULL, pending = NULL, pending_fp = NULL WHERE entry_id = :id;" in read("db/statements.sql")
+          and "у вас удалено», а не молчит" in read("src-tauri/core/src/merge.rs"))
+    check("звание младенца: Ctrl+Enter из «Возраста» не уводит курсор — правило ухода не спорит с сохранением (проверяющий 11.11.2026)",
+          "if (e.ctrlKey || e.metaKey) return;" in read("src/DeathForm.tsx"))
+    check("НП восприемника от отца — и при Ctrl+Enter из ИОФ (правило ухода — и в save())",
+          "Ctrl+Enter прямо из ИОФ восприемника" in read("src/BirthForm.tsx"))
+    birth = read("src/BirthForm.tsx")
+    check("НП восприемника от отца — только набранного с нуля, в новой записи",
+          "function godPlaceFromFather(" in birth and "if (editingId !== null || godPicked.current[i]) return;" in birth)
+
+
 def incident_20261110_sliyanie_prihodov():
     """
     10.11.2026, слияние приходов (спека 2026-10-17-sliyanie-prihodov; Роман
@@ -2330,6 +2378,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261111_sprint_131_138,
     incident_20261110_sliyanie_prihodov,
     incident_20261106_otvet_romana_na_sborki_03_05_11,
     incident_20261105_familii_zhyon,

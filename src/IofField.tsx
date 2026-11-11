@@ -132,6 +132,13 @@ type Props = {
   onNameSurname?: (on: boolean) => void;
 };
 
+/** п. 134: имена и отчества, которые на «Ал»…«Алекс» показываются вместе. */
+const ALEX: Record<string, string[]> = {
+  first_name: ["александр", "алексей", "александра"],
+  patronymic: ["александров", "алексеев", "александрова", "алексеева",
+               "александрович", "алексеевич", "александровна", "алексеевна"],
+};
+
 export default function IofField({
   label, value, onChange, onPickPerson, placeholder, inputRef, gender, genderGuessed, onResolved, preferInfant, modernOverride,
   infantRows,
@@ -363,7 +370,17 @@ export default function IofField({
         // Вторая строка — только у поднятого набранного слова: под ним самое
         // частое из остальных («Александр» и «Александра»).
         const ordered = exactAt > 0 ? [sexed[exactAt], ...sexed.filter((_, i) => i !== exactAt)] : sexed;
-        const shownWords = early && foundPersons.length > 0 ? ordered.slice(0, exactAt > 0 ? 2 : 1) : ordered;
+        // Исключение для одной группы (Роман 11.11.2026, п. 134: «жёсткое
+        // исключение», «глобальную логику… менять не нужно»): на «Ал»…«Алекс»
+        // — сразу и Александр, и Алексей (пол неизвестен — и Александра), в
+        // отчествах — их пары. Порядок — по частоте, как у остальных строк.
+        const alexPins = ALEX[kind];
+        const alex = alexPins && typedNorm.length >= 2 && "алекс".startsWith(typedNorm)
+          ? ordered.filter((w) => alexPins.includes(w.value.toLowerCase().replace(/ъ$/, "")))
+          : [];
+        const shownWords = early && foundPersons.length > 0
+          ? (alex.length > 1 ? alex : ordered.slice(0, exactAt > 0 ? 2 : 1))
+          : ordered;
         setWords(shownWords);
         const namesFirst = early && shownWords.length > 0;
         setNamesFirstShown(early);

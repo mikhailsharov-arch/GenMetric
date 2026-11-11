@@ -1,3 +1,4 @@
+import DeleteEntry from "./DeleteEntry";
 import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
@@ -236,6 +237,32 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   const [god3Raw, setGod3] = useState<Person>(EMPTY_PERSON);
   const [god4Raw, setGod4] = useState<Person>(EMPTY_PERSON);
   const [godCount, setGodCount] = useState(2);
+  /** Восприемник набран с нуля (не выбран из подсказки) и без НП — НП отца
+   *  (Роман 11.11.2026: «чаще всего восприемники местные»). При уходе из ИОФ,
+   *  только в новой записи; поле НП в обходе клавишами остаётся — его видно
+   *  и можно сразу переписать. */
+  const godPicked = useRef([false, false, false, false]);
+  const fatherNow = useRef<Person>(NEW_FATHER);
+  function godPlaceFromFather(i: number, set: React.Dispatch<React.SetStateAction<Person>>) {
+    return () => {
+      if (editingId !== null || godPicked.current[i]) return;
+      const place = fatherNow.current.place.trim();
+      if (!place) return;
+      set((g) => (g.iof.trim() && !g.place.trim() ? { ...g, place } : g));
+    };
+  }
+  function godChange(i: number, set: React.Dispatch<React.SetStateAction<Person>>) {
+    return (p: Person) => {
+      if (!p.iof.trim()) godPicked.current[i] = false;
+      set(p);
+    };
+  }
+  function godPick(i: number, set: React.Dispatch<React.SetStateAction<Person>>) {
+    return (hint: PersonHint) => {
+      godPicked.current[i] = true;
+      pickInto(set)(hint);
+    };
+  }
 
   // Причт держится между записями: в книге он один на весь разворот, а часто
   // и на всё дело. Очищать его каждую запись — заставлять набирать заново.
@@ -243,6 +270,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   const clergyState = useFormClergy();
   const [clergy1Raw, clergy2Raw, clergy3Raw] = clergyState.people;
   // Вне save() персоны — как есть; save() работает с разобранными копиями.
+  fatherNow.current = fatherRaw;
   const father = fatherRaw, mother = motherRaw, god1 = god1Raw, god2 = god2Raw,
         god3 = god3Raw, god4 = god4Raw, clergy1 = clergy1Raw, clergy2 = clergy2Raw,
         clergy3 = clergy3Raw;
@@ -648,6 +676,15 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
     try {
       [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3] = await Promise.all(
         [father, mother, god1, god2, god3, god4, clergy1, clergy2, clergy3].map(withParsed));
+      // Ctrl+Enter прямо из ИОФ восприемника: ухода из поля не было — НП отца
+      // ставим здесь тем же правилом (ревьюер 11.11.2026: итог не должен
+      // зависеть от клавиши сохранения).
+      {
+        const place = father.place.trim();
+        const fill = (g: Person, i: number) =>
+          editingId === null && !godPicked.current[i] && place && g.iof.trim() && !g.place.trim() ? { ...g, place } : g;
+        [god1, god2, god3, god4] = [god1, god2, god3, god4].map(fill);
+      }
       // Ребёнок — тем же порядком: при открытии записи разбор обнуляется,
       // а сохранить можно раньше, чем поле ответит (ревьюер 22.09.2026).
       // Ctrl+Enter прямо из ИОФ матери: ухода из поля не было, и фамилию отца
@@ -949,6 +986,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
       setMother(person(by("mother"), { ...NEW_MOTHER }));
       copiedPlace.current = null;
       childDocFor.current = {};
+      godPicked.current = [false, false, false, false];
       setGod1(person(by("godparent1"), { ...EMPTY_PERSON }));
       setGod2(person(by("godparent2"), { ...EMPTY_PERSON }));
       setGod3(person(by("godparent3"), { ...EMPTY_PERSON }));
@@ -968,6 +1006,14 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
     } catch (err) {
       report("Не удалось открыть запись", err);
     }
+  }
+
+  /** Что за запись — для вопроса «Удалить запись?» (11.11.2026). */
+  function deletedWhat(): string {
+    const e = saved.find((x) => x.id === editingId);
+    if (!e) return "рождение";
+    const no = e.no_male ?? ("no_female" in e ? (e as { no_female: number | null }).no_female : null);
+    return ["рождение", e.page ? `стр. ${e.page}` : "", no !== null ? `№ ${no}` : "", (e.child) || ""].filter(Boolean).join(", ");
   }
 
   /** Вернуться туда, где стояли до правки. */
@@ -1008,6 +1054,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
    * Страница, месяц и причт остаются: они меняются реже, чем раз в запись.
    */
   function next() {
+    godPicked.current = [false, false, false, false];
     setRiteNextYear(false);
     copiedPlace.current = null;
     surnameDoneFor.current = null;
@@ -1216,33 +1263,33 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
       <PersonBlock
         title="Восприемник 1"
         person={god1}
-        onChange={setGod1}
+        onChange={godChange(0, setGod1)}
         inputRef={god1Iof}
         rankKind="rank"
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
-        onPickPerson={pickInto(setGod1)}
+        onPickPerson={godPick(0, setGod1)} onIofLeave={godPlaceFromFather(0, setGod1)}
           defaultRank={godRank}
       />
       <PersonBlock
         title="Восприемник 2"
         person={god2}
-        onChange={setGod2}
+        onChange={godChange(1, setGod2)}
         rankKind="rank"
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
-        onPickPerson={pickInto(setGod2)}
+        onPickPerson={godPick(1, setGod2)} onIofLeave={godPlaceFromFather(1, setGod2)}
           defaultRank={godRank}
       />
       {godCount >= 3 && (
         <PersonBlock
           title="Восприемник 3"
           person={god3}
-          onChange={setGod3}
+          onChange={godChange(2, setGod3)}
           rankKind="rank"
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
-          onPickPerson={pickInto(setGod3)}
+          onPickPerson={godPick(2, setGod3)} onIofLeave={godPlaceFromFather(2, setGod3)}
           defaultRank={godRank}
         />
       )}
@@ -1250,11 +1297,11 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
         <PersonBlock
           title="Восприемник 4"
           person={god4}
-          onChange={setGod4}
+          onChange={godChange(3, setGod4)}
           rankKind="rank"
         placeDefaults={placeDefaults}
         onPlaceRenamed={renamePlace}
-          onPickPerson={pickInto(setGod4)}
+          onPickPerson={godPick(3, setGod4)} onIofLeave={godPlaceFromFather(3, setGod4)}
           defaultRank={godRank}
         />
       )}
@@ -1290,11 +1337,15 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
           не умещаются по высоте экрана и приходится скролить вниз чтобы нажать
           кнопку сохранить и следующая». Прокрутка на каждой записи — это
           и время, и рука на мыши, которой он просил избегать. */}
-      <div className="savebar">
+      <div className={editingId !== null ? "savebar editing" : "savebar"}>
         <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
           {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
           <span className="kbd">Ctrl+Enter</span>
         </button>
+        {editingId !== null && (
+          <DeleteEntry id={editingId} what={deletedWhat()}
+                       onDeleted={() => { restoreAfterEdit(); refresh(); }} />
+        )}
       </div>
 
       {saved.length > 0 && (

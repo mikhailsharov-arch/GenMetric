@@ -28,6 +28,25 @@ pub fn normalize_name(input: &str) -> String {
     n.strip_suffix('ъ').map(str::to_string).unwrap_or(n)
 }
 
+/// Заглавная первая буква каждого слова: «иван попов» → «Иван Попов».
+/// Копия `titleCase` из `src/names.ts` (правишь одно — правь другое): только
+/// первая буква; слово — после начала, пробела, дефиса, скобки или кавычки.
+/// Импорт из Excel (Роман 11.11.2026, п. 133: «попов» со строчной в подсказке
+/// — след импорта).
+pub fn title_case(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut start = true;
+    for c in text.chars() {
+        if start && c.is_lowercase() {
+            out.extend(c.to_uppercase());
+        } else {
+            out.push(c);
+        }
+        start = c.is_whitespace() || matches!(c, '-' | '(' | '«' | '"');
+    }
+    out
+}
+
 /// normalize_name для каждого слова: «крестьянскій сынъ» → «крестьянский сын».
 pub fn normalize_words(input: &str) -> String {
     input.split_whitespace().map(normalize_name).collect::<Vec<_>>().join(" ")
@@ -113,5 +132,8 @@ mod tests {
         assert_eq!(normalize_name("Иванъ"), "иван");
         assert_eq!(normalize_name("Ѳома"), "фома");
         assert_eq!(normalize_words("крестьянскій сынъ"), "крестьянский сын");
+        assert_eq!(title_case("иван попов"), "Иван Попов");
+        assert_eq!(title_case("анна (петрова) сидорова-кузнецова"), "Анна (Петрова) Сидорова-Кузнецова");
+        assert_eq!(title_case("МакАртур ***"), "МакАртур ***");
     }
 }
