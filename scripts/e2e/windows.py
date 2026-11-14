@@ -307,7 +307,13 @@ def run(driver, wait, archive):
     unused = driver.execute_async_script(
         "const done = arguments[arguments.length - 1];"
         "window.__TAURI_INTERNALS__.invoke('cleanup_find').then(done, (e) => done({error: String(e)}));")
-    check("очистка: память архива не предложена к удалению", unused == [], str(unused)[:300])
+    # С 13.11.2026 в списке и звания с причинами смерти из поставки, не
+    # стоящие ни в одной записи, — без отметки (careful); памяти архива нет.
+    from_seed = lambda u: u.get("careful") and "из поставки программы" in u.get("detail", "")
+    check("очистка: память архива не предложена к удалению, поставка — только без отметки",
+          isinstance(unused, list) and all(from_seed(u) for u in unused)
+          and all(u.get("group") == "Звания" or "причина смерти" in u.get("detail", "") for u in unused),
+          str([u for u in unused if not from_seed(u)][:3] if isinstance(unused, list) else unused)[:300])
     cleaned = driver.execute_async_script(
         "const done = arguments[arguments.length - 1];"
         "window.__TAURI_INTERNALS__.invoke('cleanup_remove', {keys: []}).then(done, (e) => done({error: String(e)}));")
