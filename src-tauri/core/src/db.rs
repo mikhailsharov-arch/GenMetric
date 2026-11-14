@@ -20,6 +20,10 @@ pub const CLEANUP_MARK: &str = "-до-очистки-справочников-";
 pub const WIVES_MARK: &str = "-до-фамилий-жён-";
 /// Признак копии перед слиянием с файлом помощника (10.11.2026).
 pub const JOIN_MARK: &str = "-до-слияния-приходов-";
+/// Копия прихода перед заменой значения во всех записях (13.11.2026).
+pub const REPLACE_MARK: &str = "-до-замены-в-записях-";
+/// Копия прихода перед «Взять правку во всех» (13.11.2026).
+pub const TAKE_MARK: &str = "-до-правок-помощника-";
 /// Сколько копий одной метки остаётся рядом с файлом (п. 123, 04.11.2026):
 /// копии перед объединением и очисткой копились без уборки.
 pub const KEEP_COPIES: usize = 5;
@@ -27,7 +31,7 @@ pub const KEEP_COPIES: usize = 5;
 /// Копия, а не приход: файлы с этими метками в перечень приходов не идут.
 pub fn is_backup(name: &str) -> bool {
     name.contains(BACKUP_MARK) || name.contains(MERGE_MARK) || name.contains(CLEANUP_MARK) || name.contains(WIVES_MARK)
-        || name.contains(JOIN_MARK)
+        || name.contains(JOIN_MARK) || name.contains(REPLACE_MARK) || name.contains(TAKE_MARK)
 }
 
 /// Оставить `keep` последних копий файла `db_path` с меткой `mark` (по
@@ -380,7 +384,12 @@ mod tests {
                  VALUES ('rank_m', 'безземельный крестьянин', 'безземельный крестьянин', 9001, 'user'),
                         ('rank_m', 'отставной канонир', 'отставной канонир', 9002, 'user');
                  INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count)
-                 VALUES ('rank_m', 'global', '', 'отставной канонир', 'отставной канонир', 3);",
+                 VALUES ('rank_m', 'global', '', 'отставной канонир', 'отставной канонир', 3);
+                 -- Звание поставки, убранное очисткой (13.11.2026), — обновление его не вернёт.
+                 INSERT INTO lookup_seed_removed (kind, value_norm)
+                 SELECT kind, value_norm FROM lookup WHERE kind = 'rank_m' AND origin = 'seed' ORDER BY id LIMIT 1;
+                 DELETE FROM lookup WHERE kind = 'rank_m' AND origin = 'seed'
+                    AND value_norm IN (SELECT value_norm FROM lookup_seed_removed);",
             ).unwrap();
         }
         let conn = open_database(&seed, &path).expect("обновление прошло");
@@ -397,7 +406,9 @@ mod tests {
         assert_eq!(num("SELECT count(*) FROM usage_stat WHERE value = 'отставной канонир'"), 0);
         assert_eq!(num("SELECT count(*) FROM lookup_dropped WHERE value_norm = 'отставной канонир'"), 1);
         assert_eq!(num("SELECT count(*) FROM person_mention WHERE rank = 'Безземельный крестьянинъ'"), 1, "запись цела");
-        assert_eq!(num("SELECT count(*) FROM lookup WHERE kind = 'rank_m' AND origin = 'seed'"), 51);
+        assert_eq!(num("SELECT count(*) FROM lookup WHERE kind = 'rank_m' AND origin = 'seed'"), 50,
+                   "убранное из поставки не вернулось");
+        assert_eq!(num("SELECT count(*) FROM lookup_seed_removed"), 1);
         let stamp: String = conn.query_row("SELECT value FROM setting WHERE key = 'seed_stamp'", [], |r| r.get(0)).unwrap();
         assert_ne!(stamp, "прежняя", "отпечаток поставки обновлён");
         assert_eq!(num("SELECT max(version) FROM schema_version"), SCHEMA_VERSION);

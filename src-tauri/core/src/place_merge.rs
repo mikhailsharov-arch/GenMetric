@@ -191,27 +191,25 @@ fn repoint(conn: &Connection, old_norm: &str, keep: &Card) -> Result<i64, String
         rows.collect::<Result<_, _>>().map_err(s)?
     };
     let mut moved = 0;
-    for (id, village, church, uyezd, guberniya, old_key) in cases {
+    for (id, village, _church, _uyezd, _guberniya, old_key) in cases {
         if normalize(&village) != old_norm {
             continue;
         }
-        let new_key = format!("{church}|{}|{uyezd}|{guberniya}", keep.name);
-        // Ключ, собранный не из полей дела (импорт), не трогаем: по нему
-        // частоты и так не найти заново.
-        let key = if old_key == format!("{church}|{village}|{uyezd}|{guberniya}") { new_key } else { old_key.clone() };
+        // В ключе меняется только часть села: церковь у дел разных лет своя
+        // (п. 139), а ключ прихода общий — собирать его из полей этого дела
+        // нельзя. Ключ, где на месте села другое (импорт), не трогаем.
+        let mut parts: Vec<String> = old_key.split('|').map(str::to_string).collect();
+        let key = if parts.len() == 4 && normalize(&parts[1]) == old_norm {
+            parts[1] = keep.name.clone();
+            parts.join("|")
+        } else {
+            old_key.clone()
+        };
         conn.execute(&statement("place_merge_case_set")?, rusqlite::named_params! {
             ":id": id, ":village": keep.name, ":parish_key": key,
         }).map_err(s)?;
         if key != old_key {
-            conn.execute(&statement("place_merge_scope_merge")?, rusqlite::named_params! {
-                ":new_key": key, ":old_key": old_key,
-            }).map_err(s)?;
-            conn.execute(&statement("place_merge_scope_drop")?, rusqlite::named_params! {
-                ":new_key": key, ":old_key": old_key,
-            }).map_err(s)?;
-            conn.execute(&statement("place_merge_scope")?, rusqlite::named_params! {
-                ":new_key": key, ":old_key": old_key,
-            }).map_err(s)?;
+            crate::records::move_parish_stats(conn, &old_key, &key)?;
         }
         moved += 1;
     }

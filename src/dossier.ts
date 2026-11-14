@@ -242,13 +242,26 @@ export function marriageLine(e: DossierEvent): { mine: string; spouseNote: strin
   };
 }
 
+/** Год строки ребёнка в «Семье»: год рождения; у ребёнка, известного по
+ *  смерти, — год смерти минус возраст в годах («6 лет» в 1904 — 1898), а
+ *  младенца в месяцах и днях — год смерти. */
+export function childYear(c: FamilyChild): number | null {
+  const y = c.event.year;
+  if (!c.byDeath || y == null) return y;
+  const years = /^\s*(\d+)\s*(лет|года?|г\.?)?\s*$/i.exec(c.child?.age ?? "");
+  return years ? y - Number(years[1]) : y;
+}
+
 /** Блок «Семья»: родители (из собственного рождения), браки персоны и её
  *  дети — по супругам. */
 export type Family = {
   parents: { event: DossierEvent; father: Mention | undefined; mother: Mention | undefined } | null;
   marriages: { event: DossierEvent; spouse: Mention | undefined }[];
-  spouses: { spouse: Mention | undefined; children: { event: DossierEvent; child: Mention | undefined; godparents: Mention[] }[] }[];
+  spouses: { spouse: Mention | undefined; children: FamilyChild[] }[];
 };
+/** Ребёнок в «Семье». `byDeath` — известен только по записи о смерти: год
+ *  строки — год смерти, рождения в базе нет (п. 149). */
+export type FamilyChild = { event: DossierEvent; child: Mention | undefined; godparents: Mention[]; byDeath?: boolean };
 
 export function family(events: DossierEvent[]): Family {
   const marriages = events
@@ -263,6 +276,31 @@ export function family(events: DossierEvent[]): Family {
     if (!group) spouses.push(group = { spouse, children: [] });
     group.children.push({ event: e, child: one(e, "child"), godparents: of(e, "godparent*") });
   }
+  // Дети, о которых есть только запись о смерти: персона там — «отец» или
+  // «мать» умершего (Роман 12.11.2026, п. 149: у Сильвестра Белянкина в
+  // «Событиях» смерти Елизаветы и Николая, а в «Семье» их не было). Смерть,
+  // уже прикреплённая к рождению (тот же человек), второй строкой не идёт.
+  const known = new Set(spouses.flatMap((g) => g.children.map((c) => c.child?.key)).filter(Boolean));
+  for (const e of events.filter((x) => eventKind(x.me) === "own" && x.me.role_code.startsWith("deceased_"))) {
+    const child = one(e, "deceased");
+    if (!child || known.has(child.key)) continue;
+    known.add(child.key);
+    // Второй родитель в той же записи — по нему группа; нет — группа той
+    // жены (мужа), чьи дети родились раньше этой смерти, а если семьи нет —
+    // своя группа без супруга.
+    const otherParent = of(e, "deceased_relative", "deceased_parent")
+      .find((p) => p.key !== e.me.key && /^(отец|мать)/i.test((p.kinship ?? "").trim()));
+    const key = (m: Mention | undefined) => (m ? m.iof_modern.toLowerCase().replace(/ё/g, "е") : "");
+    const firstYear = (g: Family["spouses"][number]) => Math.min(...g.children.map((c) => c.event.year ?? Infinity));
+    let group = otherParent ? spouses.find((g) => key(g.spouse) === key(otherParent)) : undefined;
+    if (!group && !otherParent) {
+      group = spouses.filter((g) => e.year == null || firstYear(g) <= e.year).sort((a, b) => firstYear(b) - firstYear(a))[0]
+        ?? (spouses.length === 1 ? spouses[0] : undefined);
+    }
+    if (!group) spouses.push(group = { spouse: otherParent, children: [] });
+    group.children.push({ event: e, child: { ...child, died: child.died ?? e.year }, godparents: [], byDeath: true });
+  }
+  for (const g of spouses) g.children.sort((a, b) => (childYear(a) ?? Infinity) - (childYear(b) ?? Infinity));
   const birth = events.find((e) => e.me.role_code === "child");
   const parents = birth ? { event: birth, father: one(birth, "father"), mother: one(birth, "mother") } : null;
   return { parents, marriages, spouses };

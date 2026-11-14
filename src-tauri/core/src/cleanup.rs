@@ -280,7 +280,7 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
     };
 
     // Значения: частоты и перечни, по (вид, ключ).
-    struct V { value: String, uses: i64, spellings: Vec<String>, lookup: Vec<(i64, String)>, archive: bool }
+    struct V { value: String, uses: i64, spellings: Vec<String>, lookup: Vec<(i64, String)>, archive: bool, seed: bool }
     let mut values: Vec<((String, String), V)> = Vec::new();
     let mut at: HashMap<(String, String), usize> = HashMap::new();
     {
@@ -304,7 +304,7 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
             }
             let key = (kind.clone(), normalize_words(&value));
             let i = *at.entry(key.clone()).or_insert_with(|| {
-                values.push((key, V { value: value.clone(), uses: 0, spellings: Vec::new(), lookup: Vec::new(), archive: false }));
+                values.push((key, V { value: value.clone(), uses: 0, spellings: Vec::new(), lookup: Vec::new(), archive: false, seed: false }));
                 values.len() - 1
             });
             let v = &mut values[i].1;
@@ -317,21 +317,27 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
         }
     }
     if let Some(elsewhere) = &elsewhere {
-        let mut stmt = conn.prepare("SELECT id, kind, value, value_norm FROM main.lookup WHERE origin = 'user'").map_err(s)?;
+        // Значения поставки — только звания и причины смерти (Роман
+        // 12.11.2026: «снять иммунитет… строго только для двух справочников»).
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, value, value_norm, origin = 'seed' FROM main.lookup
+              WHERE origin = 'user'
+                 OR (origin = 'seed' AND kind IN ('rank_m', 'rank_f', 'rank_clergy', 'death_cause'))").map_err(s)?;
         let mut rows = stmt.query([]).map_err(s)?;
         while let Some(r) = rows.next().map_err(s)? {
-            let (id, kind, value, norm): (i64, String, String, String) =
-                (r.get(0).map_err(s)?, r.get(1).map_err(s)?, r.get(2).map_err(s)?, r.get(3).map_err(s)?);
+            let (id, kind, value, norm, seed): (i64, String, String, String, bool) =
+                (r.get(0).map_err(s)?, r.get(1).map_err(s)?, r.get(2).map_err(s)?, r.get(3).map_err(s)?, r.get(4).map_err(s)?);
             let Some((_, group, _)) = kind_groups(&kind) else { continue };
             if own.has(group, &value) || elsewhere.iter().any(|u| u.has(group, &value)) {
                 continue;
             }
             let key = (kind.clone(), normalize_words(&value));
             let i = *at.entry(key.clone()).or_insert_with(|| {
-                values.push((key, V { value: value.clone(), uses: 0, spellings: Vec::new(), lookup: Vec::new(), archive: false }));
+                values.push((key, V { value: value.clone(), uses: 0, spellings: Vec::new(), lookup: Vec::new(), archive: false, seed: false }));
                 values.len() - 1
             });
             values[i].1.lookup.push((id, norm));
+            values[i].1.seed |= seed;
         }
     }
     let mut out = Vec::new();
@@ -340,8 +346,13 @@ fn scan(conn: &Connection, others: Option<&[PathBuf]>) -> Result<Vec<(Unused, Pa
             continue;
         }
         let (group, _, title) = kind_groups(&kind).expect("вид проверен выше");
-        let detail = if group == "Прочие перечни" || group == "Звания" { title.to_string() } else { String::new() };
-        out.push((Unused { key: value_key(&kind, &norm), group, value: v.value, detail, uses: v.uses, careful: false },
+        let mut detail = if group == "Прочие перечни" || group == "Звания" { title.to_string() } else { String::new() };
+        // Из поставки (ваш справочник из Excel) — не отмечено заранее: таких
+        // значений десятки, отмечает человек сам.
+        if v.seed {
+            detail.push_str(" · из поставки программы");
+        }
+        out.push((Unused { key: value_key(&kind, &norm), group, value: v.value, detail, uses: v.uses, careful: v.seed },
                   Part::Value { kind, spellings: v.spellings, lookup: v.lookup }));
     }
 
@@ -490,6 +501,9 @@ pub fn remove(conn: &Connection, keys: &[String], others: Option<&[PathBuf]>) ->
                     tx.execute("DELETE FROM usage_stat WHERE kind = ?1 AND value = ?2", rusqlite::params![kind, v]).map_err(s)?;
                 }
                 for (id, norm) in &lookup {
+                    // Значение поставки — помнить, что убрано: обновление его не вернёт.
+                    tx.execute("INSERT OR IGNORE INTO main.lookup_seed_removed (kind, value_norm)
+                                SELECT kind, value_norm FROM main.lookup WHERE id = ?1 AND origin = 'seed'", [id]).map_err(s)?;
                     tx.execute("INSERT OR IGNORE INTO main.lookup_dropped (kind, value_norm) VALUES (?1, ?2)",
                                rusqlite::params![kind, norm]).map_err(s)?;
                     tx.execute("DELETE FROM main.lookup WHERE id = ?1", [id]).map_err(s)?;
@@ -643,6 +657,29 @@ mod tests {
         assert_eq!(num(&conn, "SELECT count(*) FROM clergy_index"), 1);
         assert_eq!(num(&conn, "SELECT count(*) FROM spouse_index"), 1);
         assert!(find(&conn, Some(&[])).unwrap().is_empty());
+    }
+
+    /// Роман 12.11.2026: звания и причины смерти из поставки, не стоящие ни в
+    /// одной записи, можно убрать; остальные перечни поставки — нет.
+    #[test]
+    fn seed_ranks_and_causes_offered() {
+        let conn = base();
+        conn.execute_batch(
+            "INSERT INTO lookup (kind, value, value_norm, origin) VALUES
+               ('death_cause', 'головая боль', 'головая боль', 'seed'),
+               ('rank_m', 'однодворец', 'однодворец', 'seed'),
+               ('rank_m', 'крестьянин', 'крестьянин', 'seed'),
+               ('church', 'Никольская', 'никольская', 'seed');").unwrap();
+        let found = find(&conn, Some(&[])).unwrap();
+        let get = |v: &str| found.iter().find(|u| u.value == v);
+        let cause = get("головая боль").expect("причина смерти из поставки предложена");
+        assert!(cause.careful && get("однодворец").is_some_and(|u| u.careful), "не отмечены заранее");
+        assert!(get("крестьянин").is_none(), "занятое не предлагается");
+        assert!(get("Никольская").is_none(), "другие перечни поставки не трогаются");
+        let (n, _) = remove(&conn, &[cause.key.clone()], Some(&[])).unwrap();
+        assert_eq!(n, 1);
+        let marked: i64 = conn.query_row("SELECT count(*) FROM lookup_seed_removed WHERE value_norm = 'головая боль'", [], |r| r.get(0)).unwrap();
+        assert_eq!(marked, 1, "убранное из поставки помнится");
     }
 
     #[test]

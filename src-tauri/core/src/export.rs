@@ -52,7 +52,16 @@ pub struct About {
     pub telegram: String,
     pub is_new: bool,
     pub previous: String,
+    /// Согласие с документами Familio — три флажка карточки (шаблон
+    /// ver.2026-10c, Роман 12.11.2026, п. 148): без него листы шаблона не
+    /// заполняются. Ставит человек, не программа.
+    #[serde(default)]
+    pub consent: bool,
 }
+
+/// Строки согласия на листе about (B29–B31) и значение из списка шаблона.
+pub const CONSENT_CELLS: [&str; 3] = ["B29", "B30", "B31"];
+pub const CONSENT_YES: &str = "✔ Согласен";
 
 #[derive(Serialize, Default)]
 pub struct Exported {
@@ -123,6 +132,10 @@ pub fn parish_name(conn: &Connection) -> String {
 pub fn familio_bytes(conn: &Connection, years: &[i64], about: &About)
     -> Result<(Vec<u8>, Exported), String>
 {
+    if !about.consent {
+        return Err("нет согласия с документами Familio: отметьте три флажка в карточке «Для Familio» — \
+                    без них шаблон Familio не заполняется и файл не примут".into());
+    }
     let years_json = serde_json::to_string(years).map_err(|e| e.to_string())?;
     prepare(conn)?;
     // Имя блока — литералом: так его видит проверка в test_incidents.py.
@@ -137,7 +150,7 @@ pub fn familio_bytes(conn: &Connection, years: &[i64], about: &About)
     let b = |cell: &str, value: &str| CellValue {
         sheet: "about".into(), cell: cell.into(), value: value.trim().to_string(),
     };
-    let cells = vec![
+    let mut cells = vec![
         b("B4", &about.title), b("B5", &about.years), b("B6", &about.min_year),
         b("B7", &about.description), b("B9", &about.author), b("B10", &about.profile),
         b("B11", &about.telegram),
@@ -146,6 +159,7 @@ pub fn familio_bytes(conn: &Connection, years: &[i64], about: &About)
         b("B19", if about.is_new { "новый справочник" } else { "обновление начатого ранее" }),
         b("B20", if about.is_new { "" } else { &about.previous }),
     ];
+    cells.extend(CONSENT_CELLS.iter().map(|c| b(c, CONSENT_YES)));
     let bytes = fill_template(FAMILIO_TEMPLATE, &[
         SheetRows { sheet: "location".into(), first_row: 3, rows: places },
         SheetRows { sheet: "РОЖДЕНИЕ".into(), first_row: 4, rows: births },
@@ -223,7 +237,7 @@ mod tests {
         let about = About {
             title: "Метрические книги Борисоглебское за 1886-1887 годы".into(), years: "1886-1887".into(),
             min_year: "1886".into(), description: "".into(), author: "Роман Чистов".into(),
-            profile: "".into(), telegram: "@r4istov".into(), is_new: true, previous: "".into(),
+            profile: "".into(), telegram: "@r4istov".into(), is_new: true, previous: "".into(), consent: true,
         };
         let (bytes, c) = familio_bytes(&conn, &[], &about).unwrap();
         std::fs::write(out.join("familio.xlsx"), &bytes).unwrap();

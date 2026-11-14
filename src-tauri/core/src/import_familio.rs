@@ -1325,6 +1325,7 @@ mod tests {
         crate::export::About {
             title: "Тест".into(), years: String::new(), min_year: String::new(), description: String::new(),
             author: "Тест Тестов".into(), profile: String::new(), telegram: String::new(), is_new: true, previous: String::new(),
+            consent: true,
         }
     }
 
@@ -1369,6 +1370,14 @@ mod tests {
         let birth = read_sheet(&bytes, "РОЖДЕНИЕ").unwrap();
         assert!(birth.values().any(|r| r.get(&24).map(|v| v == "Логунков").unwrap_or(false)), "Фамилия-2 — в колонке X: {:?}",
                 birth.values().map(|r| (r.get(&23).cloned(), r.get(&24).cloned())).collect::<Vec<_>>());
+
+        // Шаблон ver.2026-10c (п. 148): согласие — в B29–B31; без него —
+        // отказ, а не файл, который Familio не примет.
+        let sheet_about = read_sheet(&bytes, "about").unwrap();
+        assert!((29..=31).all(|r| sheet_about[&r][&2] == crate::export::CONSENT_YES), "согласие в B29–B31");
+        assert!(sheet_about[&1].get(&26).is_some_and(|v| v.contains("согласие")), "шаблон — ver.2026-10c");
+        let no = crate::export::About { consent: false, ..about() };
+        assert!(crate::export::familio_bytes(&a, &[], &no).is_err(), "без согласия — отказ");
 
         let seen = inspect("own.xlsx", &bytes).unwrap();
         assert_eq!((seen.births, seen.marriages, seen.deaths), (4, 2, 4), "{seen:?}");

@@ -242,12 +242,22 @@ export default function IofField({
   // Только набор с клавиатуры открывает список: программная подстановка
   // (жена по мужу, причт из списка) — нет. Заказчик 15.09.2026, см. Suggest.tsx.
   const typed = useRef(false);
+  // Слово выбрано из подсказки (имя, отчество) — список не закрывается, а
+  // сразу показывает персон с этим началом (Роман 12.11.2026, п. 145:
+  // «Евдокия Иванова Козлова» находилась, только когда начнёшь фамилию).
+  // Заранее строка не выбрана: Enter, как раньше, ведёт дальше по форме, а
+  // Ctrl+Enter сохраняет запись.
+  const afterWord = useRef(false);
+  const [softList, setSoftList] = useState(false);
 
   // Подсказки: персоны по всей строке и слова по текущему слову.
   useEffect(() => {
     // Флаг снимается сразу, на любом пути — см. Suggest.tsx (ревьюер 18.09.2026).
     const byKeyboard = typed.current;
     typed.current = false;
+    const wordPicked = afterWord.current;
+    afterWord.current = false;
+    setSoftList(wordPicked);
     if (justPicked.current) {
       justPicked.current = false;
       closeSuggestions();
@@ -357,13 +367,15 @@ export default function IofField({
         // только слово из записей (приход, база, связанное в сверке — ярусы
         // 1–3) или когда из записей в списке ничего нет: словарное «Ив», ни
         // разу не встречавшееся, вставало над частым «Иван», и Enter
-        // подставлял его (Роман 03.11.2026). Длиннее — как раньше: «Марк» +
-        // Enter не должен давать «Маркел» (ревьюер 03.11.2026; грабля
-        // «подсказка шире набранного»).
+        // подставлял его (Роман 03.11.2026). Три буквы — так же: «Мар» и
+        // «Ива» есть в словаре, но в приходе их нет, и они вставали над
+        // частыми «Марией» и «Иваном» (Роман 12.11.2026, п. 143). С четырёх
+        // букв — как раньше: «Марк» + Enter не должен давать «Маркел»
+        // (ревьюер 03.11.2026; грабля «подсказка шире набранного»).
         const typedNorm = currentWord.toLowerCase().replace(/ъ$/, "");
         const used = (w: Item) => w.tier < 4;
         const exactFound = sexed.findIndex((w) => w.value.toLowerCase().replace(/ъ$/, "") === typedNorm);
-        const exactAt = exactFound >= 0 && (typedNorm.length > 2 || used(sexed[exactFound]) || !sexed.some(used)) ? exactFound : -1;
+        const exactAt = exactFound >= 0 && (typedNorm.length > 3 || used(sexed[exactFound]) || !sexed.some(used)) ? exactFound : -1;
         // Не поднятое словарное слово в свёрнутом виде не показывается: «Ив»
         // второй строкой под «Иваном» Роман назвал фантомным — «алгоритм
         // должен… выдавать только одно релевантное имя» (06.11.2026, п. 128).
@@ -393,7 +405,7 @@ export default function IofField({
         // Умерший первой строкой (живых с таким ИОФ нет) — тоже не выбран
         // заранее: Enter не подставит его молча (спека 2026-10-15-semya-celikom).
         const deadFirst = !preferInfant && !!foundPersons[0] && !foundPersons[0].infant && !!foundPersons[0].died;
-        setActive((twins || masked || deadFirst) && !namesFirst ? -1 : 0);
+        setActive((twins || masked || deadFirst || wordPicked) && !namesFirst ? -1 : 0);
         setOpen(foundPersons.length + shownWords.length > 0);
         setElsewhere(0);
         // НП умершего отсеял всех детей — узнать, есть ли они в приходе
@@ -622,10 +634,10 @@ export default function IofField({
   }
 
   function pickWord(item: Item) {
-    justPicked.current = true;
     closeSuggestions();
     const head = tokens.slice(0, wordIndex);
     if (singleWord) {
+      justPicked.current = true;
       // Имя ребёнка — одно слово: выбрали — и дальше, в ИОФ отца.
       onChange([...head, item.value].join(" "), parsed);
       const el = inputEl.current;
@@ -633,6 +645,9 @@ export default function IofField({
       return;
     }
     // Пробел сразу после подстановки: следующее слово набирается без пауз.
+    // Список — снова, уже с персонами (п. 145): как после набора с клавиатуры.
+    typed.current = true;
+    afterWord.current = true;
     onChange([...head, item.value].join(" ") + " ", parsed);
   }
 
@@ -667,6 +682,9 @@ export default function IofField({
         // Ни одна строка не выбрана (тёзки): Enter — как без списка, дальше
         // по форме; набранное остаётся как есть. Ctrl+Enter запись при этом
         // не сохраняет — список ещё открыт (то же правило, что выше).
+        // После выбора слова список лишь показывает персон (п. 145) — там
+        // Ctrl+Enter сохраняет, как без списка.
+        if ((e.ctrlKey || e.metaKey) && softList) { closeSuggestions(); return; }
         if (e.ctrlKey || e.metaKey) { e.stopPropagation(); return; }
         closeSuggestions();
         enterOn(e.currentTarget, e.shiftKey);

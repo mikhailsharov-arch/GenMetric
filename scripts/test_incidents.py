@@ -52,6 +52,16 @@ def read(rel: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+def zip_text(rel: str, member: str) -> str:
+    """Текст файла внутри zip (xlsx): образец Familio — какой версии."""
+    import zipfile
+    p = REPO / rel
+    if not p.exists():
+        return ""
+    with zipfile.ZipFile(p) as z:
+        return z.read(member).decode("utf-8") if member in z.namelist() else ""
+
+
 def rust_all() -> str:
     """Весь код на Rust: программа (src-tauri/src) и крейт без окна
     (src-tauri/core/src). Проверки не должны зависеть от того, в каком из
@@ -1594,8 +1604,9 @@ def incident_20261015_pamyat_if_i_dovodka():
           and '"guarantor"' in read("scripts/test_names.mjs"))
     check("«воздух» между событиями досье", "padding: 0.5em 0.5em 0.5em 0;" in read("src/styles.css"))
     check("по маске заранее не выбрана ни одна строка: Enter не подставляет чужого (ревьюер 15.10.2026)",
-          # С 17.10.2026 к маске добавился умерший первой строкой.
-          "setActive((twins || masked || deadFirst) && !namesFirst ? -1 : 0);" in read("src/IofField.tsx"))
+          # С 17.10.2026 к маске добавился умерший первой строкой, с 13.11.2026 —
+          # список после выбора слова (п. 145).
+          "setActive((twins || masked || deadFirst || wordPicked) && !namesFirst ? -1 : 0);" in read("src/IofField.tsx"))
     check("«ИФ» несут и жена по мужу, и отец умершего младенца",
           'statement("person_name_surname")' in main and "AS name_surname" in block("birth_father")
           and "nameSurname: m.iof ? m.nameSurname : !!wife.name_surname," in read("src/BirthForm.tsx")
@@ -1882,6 +1893,83 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261113_sprint_139_149():
+    """
+    13.11.2026, ответ Романа на сборку 11.11 вечер (intent/2026-11-12-…):
+    церковь 1858 года затёрла церковь дел 1914–1917 (п. 139), «Показать в
+    папке» открывала «Этот компьютер» (п. 140), Ctrl+Enter и листание скана на
+    Mac (пп. 141–142), подсказки ИОФ и НП (пп. 143–145), шаблон Familio с
+    согласием (п. 148), «Семья» без детей по смерти (п. 149); массовая сверка
+    правок слияния, найти и заменить в записях, очистка званий и причин из
+    поставки.
+    """
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
+    spread = strip_comments(blocks.get("case_spread_parish", ""))
+    rec = read("src-tauri/core/src/records.rs")
+    check("п. 139: «Сохранить дело» не разносит церковь на дела других лет; частоты идут за ключом прихода",
+          "church" not in spread and "parish_key = :parish_key" in spread
+          and "move_parish_stats(conn, old, &parish)" in rec and "fn church_stays_with_its_year()" in rec)
+    parish = read("src-tauri/core/src/parish.rs")
+    reveal = read("src-tauri/src/export.rs")
+    check("п. 140: путь файла прихода собирается по частям, «Показать в папке» на Windows — без «/»",
+          "pub fn file_path(dir: &Path, file: &str) -> PathBuf" in parish and "dir.join(&file)" not in parish
+          and "fn file_path_by_parts()" in parish and "path.replace('/', \"\\\\\")" in reveal
+          and "путь второго прихода — без «/»" in read("scripts/e2e/windows.py"))
+    keys = read("src/keys.ts")
+    app = read("src/App.tsx")
+    forms = [read(f"src/{f}") for f in ("BirthForm.tsx", "DeathForm.tsx", "MarriageForm.tsx")]
+    check("п. 141: сохранение — и когда курсор не в поле формы; подпись на Mac — ⌘+Enter",
+          'button[data-save]' in app and "e.defaultPrevented" in app
+          and all("data-save onClick={save}" in t and "{SAVE_KEY}" in t for t in forms)
+          and 'MAC ? "⌘+Enter" : "Ctrl+Enter"' in keys)
+    scan = read("src/scan.tsx")
+    check("п. 142: листание скана на Mac — ⌘+] и ⌘+[ (по коду клавиши), подсказки маковскими значками",
+          'e.code === "BracketRight"' in keys and "sheetStep(e)" in scan and "{NEXT_SHEET_KEY}" in scan
+          and "data-scan-keys" in scan)
+    iof = read("src/IofField.tsx")
+    check("п. 145: после выбора слова список ИОФ остаётся — с персонами, без заранее выбранной строки",
+          "afterWord.current = true;" in iof and "wordPicked) && !namesFirst ? -1 : 0" in iof
+          and "(e.ctrlKey || e.metaKey) && softList" in iof)
+    lib = read("src-tauri/core/src/lib.rs")
+    main = read("src-tauri/src/main.rs")
+    check("п. 144: подсказка НП — название без приставки «г.», «с.» первым",
+          "pub fn place_name_first<T>" in lib and "place_name_first(out, &prefix" in main
+          and "fn place_name_first_skips_type()" in lib)
+    exp = read("src-tauri/core/src/export.rs")
+    check("п. 148: выгрузка Familio — шаблон ver.2026-10c, согласие в B29–B31, без согласия — отказ",
+          'pub const CONSENT_CELLS: [&str; 3] = ["B29", "B30", "B31"];' in exp and "if !about.consent {" in exp
+          and "data-familio-consent" in read("src/ExportPanel.tsx")
+          and "ver.2026-10c" in zip_text("db/export/familio_template.xlsx", "xl/sharedStrings.xml"))
+    dossier = read("src/dossier.ts")
+    check("п. 149: в «Семье» — дети, известные только по записи о смерти",
+          "byDeath: true" in dossier and "export function childYear" in dossier
+          and "ребёнок только по смерти" in read("scripts/test_dossier.mjs"))
+    merge = read("src-tauri/core/src/merge.rs")
+    review = read("src/ReviewDialog.tsx")
+    check("массовая сверка: однотипные правки помощника — группой, «во всех» одной кнопкой",
+          "pub fn edit_group(text: &str) -> Option<String>" in merge and "fn edit_groups()" in merge
+          and '"merge_take_many"' in review and '"review_done_many"' in review)
+    # Находки ревьюера 13.11.2026 (до выкладки).
+    check("«Взять правку во всех»: копия прихода, второе нажатие, правка сверяется заново (запись могли поправить)",
+          "genmetric_core::db::TAKE_MARK" in main and "group_now(conn, *id, &roles)?.as_deref() != Some(group)" in merge
+          and "Да, взять в ${g.length} записях" in review and 'line.starts_with("у помощника нет ")' in merge)
+    check("слияние: новое дело года — с церковью помощника и общим ключом прихода (п. 139 и в слиянии)",
+          "new.church = keep(&t.church, &base.church);" in merge and "key.unwrap_or_else(|| c.parish_key())" in merge)
+    check("«Сохранить дело» — одной точкой сохранения, частоты всех ключей прихода — под общий",
+          'conn.execute_batch("SAVEPOINT save_case")' in rec and 'statement("case_parish_keys")' in rec)
+    rep = read("src-tauri/core/src/replace.rs")
+    check("найти и заменить в записях: пересохранение записи, старое значение уходит из частот, копия прихода",
+          "save_entry_in_tx(&tx, &entry, &parish)?;" in rep and '"usage_unbump"' in rep
+          and "fn typo_found_and_replaced()" in rep and "REPLACE_MARK" in main)
+    clean = read("src-tauri/core/src/cleanup.rs")
+    check("очистка: звания и причины смерти из поставки — без отметки; убранное обновление не возвращает",
+          "kind IN ('rank_m', 'rank_f', 'rank_clergy', 'death_cause')" in clean and "careful: v.seed" in clean
+          and "lookup_seed_removed" in read("db/migrate.sql") and "CREATE TABLE lookup_seed_removed" in read("db/schema.sql"))
+    death = read("src/DeathForm.tsx")
+    check("«незаконнорожд./прим.» у умершего — пометка в его примечании, как в «Рождениях»",
+          "data-illegitimate" in death and "titleAfter={<>{illegitBox}{namelessBox}</>}" in death)
+
+
 def incident_20261111_sprint_131_138():
     """
     11.11.2026, ответ Романа на сборки 06–11.11 (intent/2026-11-11-…): п. 131
@@ -2149,8 +2237,9 @@ def incident_20261103_otvet_romana_na_sborku_03_11():
     # С 06.11.2026: дела ещё нет (новый приход) — поля пустеют (стенд s75).
     check("«Очистить» очищает и «Дело» (перечитывает реквизиты; без дела — пустые поля), а не только формы записей",
           'load(loadedYear, c.id);' in read("src/CaseHeader.tsx") and "setC(EMPTY);" in read("src/CaseHeader.tsx"))
-    check("«Марк» + Enter не даёт «Маркел»: словарное слово не поднимается только при наборе до двух букв",
-          "(typedNorm.length > 2 || used(sexed[exactFound]) || !sexed.some(used))" in iof)
+    # С 13.11.2026 (п. 143): и на трёх буквах — «Мар» не встаёт над «Марией».
+    check("«Марк» + Enter не даёт «Маркел»: словарное слово не поднимается только при наборе до трёх букв",
+          "(typedNorm.length > 3 || used(sexed[exactFound]) || !sexed.some(used))" in iof)
     check("PDF кусками: оборванная строка <…> просит дочитать; круг без дочитывания — целиком",
           "fn long_hex_string_at_piece_edge()" in pdf and "if !fresh && total > 0 {" in pdf)
     check("чужая пометка поворота у JPEG при неповёрнутой странице гасится («как есть»)",
@@ -2378,6 +2467,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261113_sprint_139_149,
     incident_20261111_sprint_131_138,
     incident_20261110_sliyanie_prihodov,
     incident_20261106_otvet_romana_na_sborki_03_05_11,

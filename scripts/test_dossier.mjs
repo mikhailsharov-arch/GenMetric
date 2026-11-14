@@ -3,7 +3,7 @@
  * Проверка слов досье — src/dossier.ts (Роман 09.10.2026: «хронологическое
  * „досье“ человека»). Запуск: node --experimental-strip-types scripts/test_dossier.mjs
  */
-import { ageWords, dateOf, describe, diedMark, eventKind, family, familyTimeline, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
+import { ageWords, childYear, dateOf, describe, diedMark, eventKind, family, familyTimeline, marriageLine, nameless, personTail, roleKind } from "../src/dossier.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -67,6 +67,26 @@ check("группы ролей — как у переключателей", role
   && roleKind("deceased_relative") === "part" && roleKind("clergy2") === "clergy" && roleKind("child") === "child");
 
 console.log("\nБлок «Семья»\n");
+{
+  // П. 149 (Роман 12.11.2026): дети, известные только по смерти, — в «Семье».
+  const sil = m("father", "Сильвестр Белянкин", { gender: "М" });
+  const tat = m("mother", "Татьяна Степанова", { gender: "Ж" });
+  const born = ev(1, sil, [m("child", "Ольга", { gender: "Ж" }), tat], { year: 1901, entry_id: 1 });
+  const olgaDied = ev(3, m("deceased_relative", "Сильвестр Белянкин", { kinship: "отец" }),
+                      [m("deceased", "Ольга", { gender: "Ж", age: "2 мес" })], { year: 1901, entry_id: 2 });
+  const liza = ev(3, m("deceased_relative", "Сильвестр Белянкин", { kinship: "отец" }),
+                  [m("deceased", "Елизавета", { gender: "Ж", age: "6 лет" })], { year: 1904, entry_id: 3 });
+  const f = family([born, olgaDied, liza]);
+  const kids = f.spouses.flatMap((g) => g.children);
+  check("ребёнок только по смерти — в «Семье», у той же матери", f.spouses.length === 1 && kids.some((c) => c.child?.iof === "Елизавета" && c.byDeath),
+        JSON.stringify(kids.map((c) => c.child?.iof)));
+  check("смерть ребёнка с рождением — не второй строкой", kids.filter((c) => c.child?.iof === "Ольга").length === 1);
+  const lz = kids.find((c) => c.child?.iof === "Елизавета");
+  check("год ребёнка по смерти — год смерти минус возраст; «†» — год смерти", !!lz && childYear(lz) === 1898 && lz.child?.died === 1904);
+  check("порядок детей — по году рождения", kids[0].child?.iof === "Елизавета", JSON.stringify(kids.map((c) => c.child?.iof)));
+  check("брат умершего — не родитель, в «Семью» не идёт",
+        family([ev(3, m("deceased_relative", "Пётр", { kinship: "брат" }), [m("deceased", "Иван")])]).spouses.length === 0);
+}
 const anna2 = m("mother", "Анна Петрова Капитонова", { iof_modern: "анна Петровна", gender: "Ж" });
 const fam = family([
   ev(2, m("groom", "Иван Капитонов"), [m("bride", "Анна Петрова", { iof_modern: "Анна Петровна" })], { entry_id: 1, year: 1888 }),

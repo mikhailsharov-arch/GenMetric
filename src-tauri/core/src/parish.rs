@@ -28,6 +28,16 @@ pub const FIRST_FILE: &str = "genmetric.sqlite";
 pub const COMMON_FILE: &str = "genmetric-общее.sqlite";
 /// Подпапка новых приходов в папке данных.
 pub const PARISH_DIR: &str = "приходы";
+
+/// Полный путь файла прихода. В перечне файл записан с «/»
+/// («приходы/2-Горелое.sqlite»), и `dir.join` давал на Windows смешанный путь
+/// «…\org.genmetric.app\приходы/2-….sqlite» — проводник с таким путём в
+/// «Показать в папке» открывал «Этот компьютер» (Роман 12.11.2026, п. 140).
+/// Путь собирается по частям — разделитель у каждой системы свой.
+pub fn file_path(dir: &Path, file: &str) -> PathBuf {
+    file.split(['/', '\\']).filter(|p| !p.is_empty()).fold(dir.to_path_buf(), |path, part| path.join(part))
+}
+
 const NO_NAME: &str = "Без названия";
 const NAME_MAX: usize = 60;
 
@@ -162,7 +172,7 @@ pub fn list(dir: &Path) -> Result<Vec<ParishRow>, String> {
         .map_err(s)?;
     let mut out = Vec::new();
     for (id, name, file, opened_at, source_name) in rows {
-        let path = dir.join(&file);
+        let path = file_path(dir, &file);
         let missing = !path.exists();
         let peek = if missing {
             None
@@ -252,7 +262,7 @@ pub fn open(dir: &Path, bundled: &Path, id: i64) -> Result<Opened, String> {
         .optional()
         .map_err(s)?
         .ok_or_else(|| format!("прихода № {id} нет в перечне"))?;
-    let path = dir.join(&file);
+    let path = file_path(dir, &file);
     // Только первая база создаётся из поставки сама (первый запуск программы).
     // Пропавший файл другого прихода молча пустым не подменяется.
     if id != 1 && !path.exists() {
@@ -354,7 +364,7 @@ pub fn create_with<T>(
     std::fs::create_dir_all(&folder).map_err(|e| format!("не создана папка {}: {e}", folder.display()))?;
     let next: i64 = common.query_row("SELECT coalesce(max(id), 0) + 1 FROM parish", [], |r| r.get(0)).map_err(s)?;
     let file = format!("{PARISH_DIR}/{next}-{}.sqlite", safe_name(&name));
-    let path = dir.join(&file);
+    let path = file_path(dir, &file);
     if path.exists() {
         return Err(format!("файл {} уже есть — уберите его или назовите приход иначе", path.display()));
     }
@@ -453,7 +463,7 @@ pub fn replace(dir: &Path, old_id: i64, new_id: i64) -> Result<(), String> {
     let old_file: String = common
         .query_row("SELECT file FROM parish WHERE id = ?1", [old_id], |r| r.get(0))
         .map_err(s)?;
-    let old_path = dir.join(&old_file);
+    let old_path = file_path(dir, &old_file);
     if old_path.exists() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -504,7 +514,7 @@ pub fn remove(dir: &Path, id: i64) -> Result<String, String> {
         .optional()
         .map_err(s)?
         .ok_or("такого прихода в перечне нет")?;
-    let path = dir.join(&file);
+    let path = file_path(dir, &file);
     let mut kept = String::new();
     if path.exists() {
         let to_dir = dir.join(DELETED_DIR);
@@ -561,6 +571,15 @@ pub fn setting_set(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    /// П. 140: путь файла прихода — без «/» посреди пути Windows.
+    #[test]
+    fn file_path_by_parts() {
+        let dir = Path::new("data");
+        assert_eq!(file_path(dir, "приходы/2-Горелое.sqlite"), dir.join("приходы").join("2-Горелое.sqlite"));
+        assert_eq!(file_path(dir, "genmetric.sqlite"), dir.join("genmetric.sqlite"));
+        assert!(!file_path(dir, "приходы/2-Горелое.sqlite").to_string_lossy().contains(if cfg!(windows) { '/' } else { '\\' }));
+    }
+
     use super::*;
 
     fn seed() -> Option<PathBuf> {

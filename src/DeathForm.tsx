@@ -1,4 +1,5 @@
 import DeleteEntry from "./DeleteEntry";
+import { SAVE_KEY } from "./keys";
 import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
@@ -873,6 +874,33 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     autoRank.current = null;
   }
 
+  // --- «Незаконнорожденный» у умершего (Роман 12.11.2026) ---
+  // Как в «Рождениях»: флажок пишет пометку в примечание — здесь в «Прим.»
+  // умершего (у записи о смерти своего примечания нет); отмечен, если
+  // пометка там есть. Пол — по имени, без имени — по выбранному руками.
+  const ILLEGIT = /^незаконнорожденн(ый|ая)$/i;
+  const deadNoteParts = (dead.note ?? "").split(";").map((t) => t.trim()).filter(Boolean);
+  const illegitimate = deadNoteParts.some((t) => ILLEGIT.test(t));
+  function setIllegitimate(on: boolean) {
+    setDead((d) => {
+      const rest = (d.note ?? "").split(";").map((t) => t.trim()).filter((t) => t && !ILLEGIT.test(t));
+      const mark = deadSex === "Ж" ? "незаконнорожденная" : "незаконнорожденный";
+      return { ...d, note: (on ? [...rest, mark] : rest).join("; ") };
+    });
+  }
+  // Пометка следует за полом: флажок поставили до имени, потом набрали
+  // «Мария» — «незаконнорожденная». Запись на правке не трогаем.
+  useEffect(() => {
+    if (editingId === null && illegitimate && deadSex) setIllegitimate(true);
+  }, [deadSex]);
+  const illegitBox = (
+    <label className="unknownbox" title="Ставит пометку «незаконнорожденный» в примечание умершего">
+      <input type="checkbox" checked={illegitimate} tabIndex={-1} data-illegitimate
+             onChange={(e) => setIllegitimate(e.target.checked)} />
+      незаконнорожд./прим.
+    </label>
+  );
+
   const namelessBox = (
     <label className="unknownbox" title="Имени в книге нет — запись сохранится без ИОФ">
       {/* Вне обхода Tab: нужен редко, мышью (Роман 03.10.2026). */}
@@ -1017,7 +1045,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                      {...common} extra={deadExtra}
                      // Полное ИОФ младенца по родственнику «отец» — только показ.
                      modernOverride={fullDead}
-                     noIof={nameless} titleAfter={namelessBox} rankAuto={rankCleared} />
+                     noIof={nameless} titleAfter={<>{illegitBox}{namelessBox}</>} rankAuto={rankCleared} />
         {relFolded && (
           <FoldLine block="death_relative" title="Родственник" summary={foldSummary([rel])} onOpen={() => foldRel(false)} />
         )}
@@ -1054,9 +1082,9 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
       />
 
       <div className={editingId !== null ? "savebar editing" : "savebar"}>
-        <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
+        <button className="primary" data-save onClick={save} disabled={busy} title={SAVE_KEY}>
           {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
-          <span className="kbd">Ctrl+Enter</span>
+          <span className="kbd">{SAVE_KEY}</span>
         </button>
         {editingId !== null && (
           <DeleteEntry id={editingId} what={deletedWhat()}

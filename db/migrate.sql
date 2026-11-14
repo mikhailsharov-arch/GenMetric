@@ -55,7 +55,11 @@ SELECT code, title, section, sort_order, gender, age_min, age_max FROM seed.role
 -- --- то, что пользователь пополняет сам: только дополняем -------------------
 -- UNIQUE(kind, value) не даст задвоить, а введённое человеком останется на месте.
 INSERT OR IGNORE INTO lookup (kind, value, value_norm, sort_order, origin)
-SELECT kind, value, value_norm, sort_order, origin FROM seed.lookup;
+SELECT kind, value, value_norm, sort_order, origin FROM seed.lookup s
+ -- Убранное человеком из поставки (звания, причины смерти, 13.11.2026) — не
+ -- возвращать.
+ WHERE NOT EXISTS (SELECT 1 FROM main.lookup_seed_removed r
+                    WHERE r.kind = s.kind AND r.value_norm = s.value_norm);
 
 -- Пункт из поставки, который человек поправил в карточке (тип, уезд,
 -- губерния — части UNIQUE), не заводится заново: сверка по name_norm, как

@@ -421,10 +421,16 @@ fn case_label(c: &Case) -> String {
 }
 
 fn save_case_row(conn: &Connection, c: &Case) -> Result<(), String> {
+    // Ключ прихода — общий для всех лет (п. 139): у дела он свой или, у
+    // нового, — нашего первого дела; из полей дела — только в пустом приходе.
+    // Иначе церковь нового года развела бы частоты «по приходу».
+    let key: Option<String> = conn
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": c.id }, |r| r.get(0))
+        .optional().map_err(s)?.flatten().filter(|k: &String| !k.is_empty());
     conn.execute(&statement("case_upsert")?, rusqlite::named_params! {
         ":id": c.id, ":archive": c.archive, ":fond": c.fond, ":opis": c.opis, ":delo": c.delo,
         ":church": c.church, ":village": c.village, ":uyezd": c.uyezd, ":guberniya": c.guberniya,
-        ":year": c.year, ":parish_key": c.parish_key(), ":indexer": c.indexer,
+        ":year": c.year, ":parish_key": key.unwrap_or_else(|| c.parish_key()), ":indexer": c.indexer,
     }).map(|_| ()).map_err(s)
 }
 
@@ -570,6 +576,10 @@ fn merge_in_tx(conn: &Connection, src: &Connection, uid: &str, _file: &str) -> R
                 new.id = id;
                 if let Some(base) = ours.first().map(|o| o.case.clone()) {
                     for ((name, mine), (_, theirs)) in parish_fields(&base).into_iter().zip(parish_fields(t)) {
+                        // Церковь у дела своя (п. 139): у нового года — из файла помощника.
+                        if name == "церковь" {
+                            continue;
+                        }
                         let (a, b) = (text(&mine), text(&theirs));
                         if !a.is_empty() && !b.is_empty() && normalize(&a) != normalize(&b)
                             && seen_diffs.insert(format!("{name}|{}|{}", normalize(&a), normalize(&b))) {
@@ -577,7 +587,10 @@ fn merge_in_tx(conn: &Connection, src: &Connection, uid: &str, _file: &str) -> R
                         }
                     }
                     let keep = |mine: &Option<String>, theirs: &Option<String>| if text(mine).is_empty() { theirs.clone() } else { mine.clone() };
-                    new.church = keep(&base.church, &t.church);
+                    // Церковь — у своего дела (п. 139, ревьюер 13.11.2026): Олег
+                    // набрал 1858 год с «Николаевской» — у нас дело 1858 года
+                    // с ней же, а не с церковью нашего первого дела.
+                    new.church = keep(&t.church, &base.church);
                     new.village = keep(&base.village, &t.village);
                     new.uyezd = keep(&base.uyezd, &t.uyezd);
                     new.guberniya = keep(&base.guberniya, &t.guberniya);
@@ -931,6 +944,12 @@ pub fn snapshot(conn: &Connection, id: i64) -> Result<String, String> {
     serde_json::to_string(&entry).map_err(s)
 }
 
+/// Запись прихода — как её принимает сохранение (замена значения в записях,
+/// `replace.rs`). Записи нет — `None`.
+pub fn entry_input(conn: &Connection, id: i64) -> Result<Option<EntryInput>, String> {
+    Ok(read_entries(conn, Some(id))?.into_iter().next().map(|e| e.2))
+}
+
 /// Что сделала кнопка строки списка на сверку.
 #[derive(Serialize, Debug)]
 pub struct Taken {
@@ -1014,9 +1033,118 @@ pub fn take(conn: &Connection, review_id: i64) -> Result<Taken, String> {
     Ok(Taken { entry_id: saved.id, section: entry.section, restored: !alive })
 }
 
+/// Группа однотипных правок помощника (Роман 12.11.2026: Олег убрал
+/// приставку у пункта — на сверку пришла 1761 запись с одной и той же
+/// правкой). Ключ — набор отличий строки без того, у кого из людей
+/// («— НП: у вас «с.Горелое», у помощника «Горелое»»), по тексту строки
+/// списка: так группируются и строки, созданные до этой сборки. Строка,
+/// где показаны не все отличия («и ещё отличий»), в группу не идёт.
+pub fn edit_group(text: &str) -> Option<String> {
+    let start = text.find("): ")? + 3;
+    let end = text.rfind(". «Взять правку»")?;
+    let body = text.get(start..end)?;
+    if body.contains("и ещё отличий") || body.starts_with("отличия — в полях") {
+        return None;
+    }
+    group_of(body.split("; "))
+}
+
+/// Ключ группы по строкам отличий. Человек, которого у одной стороны нет
+/// («у помощника нет Отец…»), в группу не идёт: подпись группы спрятала бы,
+/// что помощник его убрал (ревьюер 13.11.2026).
+fn group_of<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    const ENTRY_FIELDS: [&str; 6] = ["страница", "счёт м.", "счёт ж.", "дата события", "дата обряда", "примечание записи"];
+    let mut pieces: Vec<String> = Vec::new();
+    for line in lines {
+        if line.starts_with("у помощника есть ") || line.starts_with("у помощника нет ") {
+            return None;
+        }
+        let at = line.find(": у вас ")?;
+        let (left, right) = (&line[..at], &line[at + 2..]);
+        let label = if ENTRY_FIELDS.contains(&left) {
+            left.to_string()
+        } else {
+            match left.rfind(" — ") {
+                Some(p) => left[p + " — ".len()..].to_string(),
+                None => "ИОФ".to_string(),
+            }
+        };
+        let piece = format!("{label}: {right}");
+        if !pieces.contains(&piece) {
+            pieces.push(piece);
+        }
+    }
+    if pieces.is_empty() {
+        return None;
+    }
+    pieces.sort();
+    Some(pieces.join("; "))
+}
+
+/// Группа правки сейчас: отличия нашей записи, какой она стала, от версии
+/// помощника. Роман мог поправить запись после слияния — тогда текст строки
+/// списка устарел, и массовое «взять» молча затёрло бы его правку.
+fn group_now(conn: &Connection, review_id: i64, roles: &HashMap<String, String>) -> Result<Option<String>, String> {
+    let origin_id: Option<i64> = conn
+        .query_row(&statement("merge_review_origin")?, rusqlite::named_params! { ":id": review_id }, |r| r.get(1))
+        .optional().map_err(s)?.flatten();
+    let Some(origin_id) = origin_id else { return Ok(None) };
+    let row: Option<(i64, Option<i64>, Option<String>, Option<String>)> = conn
+        .query_row(&statement("merge_origin_by_id")?, rusqlite::named_params! { ":id": origin_id },
+                   |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .optional().map_err(s)?;
+    let Some((_, Some(our_id), Some(pending), _)) = row else { return Ok(None) };
+    let theirs: EntryInput = serde_json::from_str(&pending).map_err(|e| format!("запись помощника не читается: {e}"))?;
+    let Some(ours) = entry_input(conn, our_id)? else { return Ok(None) };
+    let lines = differences(&ours, &theirs, roles);
+    if lines.is_empty() || lines.len() > 5 {
+        return Ok(None);
+    }
+    Ok(group_of(lines.iter().map(String::as_str)))
+}
+
+/// «Взять правку во всех»: по одной `take`, отказы — списком. Строка,
+/// чья правка сейчас уже не та, что у группы (запись поправили после
+/// слияния), не берётся — остаётся для решения по одной.
+pub fn take_many(conn: &Connection, review_ids: &[i64], group: &str) -> Result<(usize, Vec<String>), String> {
+    let roles: HashMap<String, String> = {
+        let mut stmt = conn.prepare(&statement("merge_roles")?).map_err(s)?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(s)?;
+        rows.collect::<Result<_, _>>().map_err(s)?
+    };
+    let mut taken = 0;
+    let mut failed = Vec::new();
+    for id in review_ids {
+        if group_now(conn, *id, &roles)?.as_deref() != Some(group) {
+            failed.push("запись изменилась после слияния — решите её в списке по одной".to_string());
+            continue;
+        }
+        match take(conn, *id) {
+            Ok(_) => taken += 1,
+            Err(e) => failed.push(e),
+        }
+    }
+    Ok((taken, failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Массовая сверка (Роман 12.11.2026): одинаковая правка у разных людей —
+    /// одна группа; другая правка — другая группа; урезанная строка — без группы.
+    #[test]
+    fn edit_groups() {
+        let line = |where_: &str, body: &str| format!("помощник поправил запись ({where_}): {body}. «Взять правку» заменит вашу запись версией помощника целиком");
+        let a = edit_group(&line("рождение 1914, стр. 5, № 3", "Отец — НП: у вас «с.Горелое», у помощника «Горелое»; Мать — НП: у вас «с.Горелое», у помощника «Горелое»"));
+        let b = edit_group(&line("смерть 1915, стр. 9, № 1", "Умерший — НП: у вас «с.Горелое», у помощника «Горелое»"));
+        assert_eq!(a.as_deref(), Some("НП: у вас «с.Горелое», у помощника «Горелое»"));
+        assert_eq!(a, b);
+        assert_ne!(a, edit_group(&line("брак 1914", "Жених: у вас «Иван», у помощника «Иоанн»")));
+        assert_eq!(edit_group(&line("брак 1914", "страница: у вас «5», у помощника «6»")).as_deref(), Some("страница: у вас «5», у помощника «6»"));
+        assert_eq!(edit_group(&line("брак", "а: у вас 1, у помощника 2; и ещё отличий: 3")), None);
+        assert_eq!(edit_group(&line("брак", "у помощника нет Отец жениха: у вас «Иван»")), None, "убранный человек — не в группу");
+    }
     use crate::records::{save_case, save_entry};
     use std::path::Path;
 
@@ -1132,11 +1260,24 @@ mod tests {
         let same = run(&ours, &theirs, "помощник.sqlite", true).unwrap();
         assert_eq!((same.edits, same.known), (0, 4));
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit'"), 1);
+        // «Взять правку во всех» (13.11.2026): строка, чья правка сейчас уже
+        // не та, что у группы, не берётся.
+        let rid = num(&ours, "SELECT id FROM review_item WHERE kind = 'merge_edit'");
+        let group = edit_group(&text).expect("правка имени — группа");
+        assert_eq!(take_many(&ours, &[rid], "НП: у вас «а», у помощника «б»").unwrap().0, 0, "чужая группа");
+        let our_entry = num(&ours, "SELECT entry_id FROM merge_origin WHERE source_entry = 1");
+        let page: String = ours.query_row("SELECT page FROM entry WHERE id = ?1", [our_entry], |r| r.get(0)).unwrap();
+        ours.execute("UPDATE entry SET page = '999' WHERE id = ?1", [our_entry]).unwrap();
+        let (n, failed) = take_many(&ours, &[rid], &group).unwrap();
+        assert_eq!((n, failed.len()), (0, 1), "запись поправили после слияния — массово не берётся");
+        ours.execute("UPDATE entry SET page = ?2 WHERE id = ?1", rusqlite::params![our_entry, page]).unwrap();
+        assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 1);
         // «Взять правку»: привязка скана у нашей записи остаётся нашей.
         ours.execute("UPDATE entry SET scan_file = 'наш лист.jpg' WHERE id = (SELECT entry_id FROM merge_origin WHERE source_entry = 1)", []).unwrap();
         let review_id = num(&ours, "SELECT id FROM review_item WHERE kind = 'merge_edit'");
-        let taken = take(&ours, review_id).unwrap();
-        assert!(!taken.restored);
+        // Та же правка — берётся и массово (через `take`).
+        let (n, failed) = take_many(&ours, &[review_id], &group).unwrap();
+        assert_eq!((n, failed.len()), (1, 0), "{failed:?}");
         assert_eq!(num(&ours, "SELECT count(*) FROM person_mention WHERE first_name = 'Евпраксия' AND entry_id = (SELECT entry_id FROM merge_origin WHERE source_entry = 1)"), 1);
         assert_eq!(num(&ours, "SELECT count(*) FROM entry"), before + 3);
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 0);

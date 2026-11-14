@@ -134,8 +134,10 @@ type Props = {
   defaultRank?: "father" | "groom" | "godparent" | "witness" | "relative";
   /** Enter в ИОФ ведёт к первому пустому полю (мать в рождениях). */
   enterToEmpty?: boolean;
-  /** Уход из поля ИОФ. */
-  onIofLeave?: () => void;
+  /** Уход из поля ИОФ. Вернул название пункта — форма подставляет его в
+   *  пустой НП (восприемник — НП отца): подставленное выделяется, когда
+   *  курсор в поле НП, — набор затирает его, Tab оставляет (п. 147). */
+  onIofLeave?: () => string | void;
   /** Мать: «законная жена его» в подсказке персон — как есть. */
   keepWifeRank?: boolean;
   /** Блок свёрнут (Fold.tsx): он остаётся в окне, но не на экране — его
@@ -279,6 +281,16 @@ export default function PersonBlock({
   const placeRef = useRef<HTMLInputElement | null>(null);
   const placeNow = useRef(person.place);
   placeNow.current = person.place;
+  // НП, подставленный формой при уходе из ИОФ (восприемник — НП отца), —
+  // выделен, пока курсор в поле НП (Роман 12.11.2026, п. 147).
+  const placeToSelect = useRef<string | null>(null);
+  useEffect(() => {
+    const want = placeToSelect.current;
+    if (want === null || person.place !== want) return;
+    placeToSelect.current = null;
+    const el = placeRef.current;
+    if (el && document.activeElement === el && el.value === want) el.select();
+  }, [person.place]);
 
   async function checkPlace(name: string, related: EventTarget | null, typed: boolean) {
     const text = name.trim();
@@ -449,7 +461,10 @@ export default function PersonBlock({
         preferInfant={preferInfant}
         modernOverride={modernOverride}
         enterToEmpty={enterToEmpty}
-        onLeave={onIofLeave}
+        onLeave={onIofLeave && (() => {
+          const filled = onIofLeave();
+          if (typeof filled === "string" && filled && !placeNow.current.trim()) placeToSelect.current = filled;
+        })}
         noSurnameMark={compact}
         keepWifeRank={keepWifeRank}
         infantRows={infantRows}

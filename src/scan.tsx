@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { NEXT_SHEET_KEY, PAN_KEY, PREV_SHEET_KEY, sheetStep } from "./keys";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { report, warn } from "./errors";
 import ErrorBar from "./ErrorBar";
@@ -867,9 +868,9 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
            onMouseDownCapture={(e) => { if (!(e.target as HTMLElement).closest("[data-scan-no]")) e.preventDefault(); }}>
       <div className="scanbar">
         <button type="button" className="toggle small" data-scan-prev disabled={count === 0 || scan.index === 0} {...keep}
-                onClick={() => scan.step(-1)} title="Предыдущий разворот (Alt+PageUp)">←</button>
+                onClick={() => scan.step(-1)} title={`Предыдущий разворот (${PREV_SHEET_KEY})`}>←</button>
         <button type="button" className="toggle small" data-scan-next disabled={count === 0 || scan.index >= count - 1} {...keep}
-                onClick={() => scan.step(1)} title="Следующий разворот (Alt+PageDown)">→</button>
+                onClick={() => scan.step(1)} title={`Следующий разворот (${NEXT_SHEET_KEY})`}>→</button>
         <span className="scanname" title={scan.dir ?? ""}>
           {count > 0 && !scan.missing ? (
             <>
@@ -944,6 +945,19 @@ export function ScanPane({ windowed = false, onView }: { windowed?: boolean; onV
           <button type="button" className="toggle small" data-scan-hide {...keep} onClick={() => scan.setOn(false)}
                   title={windowed ? "Спрятать скан (как крестик окна); вернуть — кнопкой на экране «Дело»"
                     : "Убрать скан; вернуть — кнопкой на экране «Дело»"}><span className="long">скрыть</span><span className="short" aria-hidden>✕</span></button>
+          {/* Шпаргалка клавиш — у правого края, вдали от стрелок листания:
+              наведение по пути к ним её не открывает (Роман 12.11.2026). */}
+          <span className="scankeys" data-scan-keys tabIndex={-1} aria-label="Клавиши скана">
+            ⌨
+            <span className="scankeyslist" role="tooltip">
+              <b>Клавиши скана</b> — из любого поля формы:
+              <span>{NEXT_SHEET_KEY} — следующий разворот</span>
+              <span>{PREV_SHEET_KEY} — предыдущий разворот</span>
+              <span>{PAN_KEY} — двигать лист (удержание — быстрее)</span>
+              <span>номер разворота — щёлкните по числу, наберите, Enter</span>
+              <span>колесо мыши — крупнее и мельче, перетаскивание — двигать</span>
+            </span>
+          </span>
         </span>
       </div>
       {empty ? (
@@ -1019,9 +1033,18 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
       const remote = detachedRef.current;
       // Листать окно скана можно и с битого файла: открыт он или нет,
       // знает окно скана, а файлы — здесь (ревьюер 28.10.2026).
-      const paging = e.key === "PageDown" || e.key === "PageUp";
+      const sheet = sheetStep(e);
+      const paging = sheet !== 0;
       const shown = remote ? (remoteView.loaded || (paging && scanCountRef.current > 0)) : live.viewer;
-      if (!e.altKey || e.ctrlKey || e.metaKey || !onRef.current || !shown) return;
+      if (!onRef.current || !shown) return;
+      // ⌘+] и ⌘+[ на Mac (п. 142) — листание, как Alt+PageDown/PageUp.
+      if (paging) {
+        e.preventDefault();
+        e.stopPropagation();
+        stepRef.current(sheet);
+        return;
+      }
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
       // Alt+стрелки двигают увеличенный лист (Роман 12.10.2026: «не снимать
       // руки с клавиатуры при чтении документа»). Стрелка — куда идёт
       // взгляд: Alt+↓ показывает то, что ниже. Числовое поле при видимом
@@ -1043,10 +1066,6 @@ export function ScanShell({ children }: { children: React.ReactNode }) {
         else panView(pan[0] * step, pan[1] * step, repeat);
         return;
       }
-      if (e.key !== "PageDown" && e.key !== "PageUp") return;
-      e.preventDefault();
-      e.stopPropagation();
-      stepRef.current(e.key === "PageDown" ? 1 : -1);
     };
     document.addEventListener("keydown", on, true);
     return () => document.removeEventListener("keydown", on, true);
@@ -1094,7 +1113,7 @@ export function ScanCaseBlock() {
         {scan.dir
           ? <>Сканы этого дела: <span className="mono">{scan.dir}</span>{scan.missing ? " — папка сейчас не открывается" : `, ${sheetCount(scan)}`}. </>
           : "Сканы дела — файлы JPG, PNG, TIFF или PDF в одной папке. Папку можно и перетащить мышью на окно программы. "}
-        Листать, не уходя из поля: Alt+PageDown и Alt+PageUp; двигать лист — Alt+стрелки (и когда скан в
+        Листать, не уходя из поля: {NEXT_SHEET_KEY} и {PREV_SHEET_KEY}; двигать лист — {PAN_KEY} (и когда скан в
         отдельном окне). Запись запоминает разворот, с которого набрана.
       </p>
     </div>
@@ -1125,6 +1144,12 @@ export function ScanWindow() {
       // Только кнопки самого скана: пробел остаётся буквой формы, кнопки
       // полосы ошибок в окне скана — не исключение (ревьюер 02.11.2026).
       if (e.key === "Enter" && (e.target as HTMLElement | null)?.closest?.("[data-scan] button")) return;
+      const sheet = sheetStep(e);
+      if (sheet !== 0) {
+        e.preventDefault();
+        act({ kind: "step", by: sheet });
+        return;
+      }
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         const pan = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key];
         if (pan && live.viewer) {
@@ -1133,9 +1158,6 @@ export function ScanWindow() {
           if (!repeat) { held.key = e.key; held.since = performance.now(); }
           const step = panStep(repeat, performance.now() - held.since);
           panView(pan[0] * step, pan[1] * step, repeat);
-        } else if (e.key === "PageDown" || e.key === "PageUp") {
-          e.preventDefault();
-          act({ kind: "step", by: e.key === "PageDown" ? 1 : -1 });
         }
         return;
       }

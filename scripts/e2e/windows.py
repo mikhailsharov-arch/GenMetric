@@ -1518,7 +1518,7 @@ def resumed(driver, wait):
     check("счёт браков вырос до 2", count == "2", f"«{count}»")
     check("в списке номер перед датой", "№ 1 · " in block)
     # Поручители до шести (Роман 27.09.2026).
-    click(driver, m + "button[normalize-space()='+ добавить поручителя']")
+    click(driver, m + "button[normalize-space()='Добавить поручителя']")
     w5 = shown(driver, m + "section[.//h2[starts-with(normalize-space(),'Поручитель 5')]]").text
     check("пятый поручитель добавлен, сторона «по жениху»", "по жениху" in w5, w5.replace("\n", " | ")[:80])
     # Причт общий: набран в рождениях — есть и в браках.
@@ -1593,6 +1593,15 @@ def resumed(driver, wait):
     wait.until(EC.visibility_of_element_located((By.XPATH, modal)))
     years = driver.find_element(By.XPATH, modal).text
     check("в окне годы 1886 и 1897", "1886" in years and "1897" in years, years.replace("\n", " | ")[:200])
+    # Шаблон Familio ver.2026-10c (Роман 12.11.2026, п. 148): без согласия с
+    # документами шаблон не заполняется — сначала три флажка.
+    click(driver, modal + "//button[normalize-space()='Выгрузить']")
+    body_text = lambda: driver.find_element(By.TAG_NAME, "body").text
+    check("без согласия выгрузка не идёт — полоса объясняет, окно на месте",
+          wait_until(lambda: "Нет согласия с документами Familio" in body_text(), 5)
+          and bool(driver.find_elements(By.XPATH, modal + "//div[@data-familio-consent]")))
+    for i in range(3):
+        click(driver, modal + f"//input[@data-consent='{i}']")
     click(driver, modal + "//button[normalize-space()='Выгрузить']")
     path = exported_path(driver, wait, "Familio")
     if path:
@@ -1609,6 +1618,9 @@ def resumed(driver, wait):
         about = xlsx_rows(path, "about")
         title = about.get(4, {}).get("B", "")
         check("about: название справочника по селу", "Борисоглебское" in title, f"«{title}»")
+        check("about: согласие в B29–B31 (шаблон ver.2026-10c)",
+              all(about.get(r, {}).get("B", "") == "✔ Согласен" for r in (29, 30, 31)),
+              str([about.get(r, {}).get("B") for r in (29, 30, 31)]))
         validate_xlsx(path, "Familio", REPO / "db" / "export" / "familio_template.xlsx")
     click(driver, "//button[normalize-space()='Выгрузить в Excel']")
     # «Показать в папке»: ветка для Windows (explorer /select) на Mac не
@@ -1825,6 +1837,13 @@ def parishes(driver, wait):
     name.send_keys("Николо-Макарово")
     click(driver, PARISH + "//button[normalize-space()='Создать и открыть']")
     reloaded(driver, wait, "Николо-Макарово")
+    # П. 140 (Роман 12.11.2026): путь второго прихода был «…\\приходы/2-….sqlite»,
+    # и «Показать в папке» открывала «Этот компьютер».
+    click(driver, "//button[@aria-label='О программе']")
+    path_text = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "p.path.mono"))).text
+    check("путь второго прихода — без «/» (проводник Windows открывает его папку)",
+          "/" not in path_text and "Николо-Макарово" in path_text, path_text)
+    tab(driver, 'Дело')
     body = driver.find_element(By.TAG_NAME, "body").text
     check("новый приход пуст: дело не заполнено", "Дело за" not in body, body[:200].replace("\n", " | "))
     for label, value in [("Архив", "ГА Костромской области"), ("Церковь", "Никольская"),

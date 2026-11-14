@@ -471,8 +471,12 @@ fn suggest(
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         // :gender есть только в запросе отчеств — лишний именованный параметр
         // rusqlite считает ошибкой, поэтому список собирается по месту.
+        // Пункты — с запасом: строки, где набранное совпало только с
+        // приставкой («г.Тамбов» на «г»), уйдут вниз, и настоящие не должны
+        // выпасть из первой выборки (п. 144).
+        let first_limit = if kind == "place" { 200 } else { limit };
         let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
-            vec![(":kind", &kind), (":prefix", &pattern), (":limit", &limit)];
+            vec![(":kind", &kind), (":prefix", &pattern), (":limit", &first_limit)];
         // Пол нужен отчествам, именам и фамилиям. Заказчик 13.09.2026: матери
         // подставлялись мужские имена — фильтровались только отчества.
         if gendered {
@@ -495,6 +499,10 @@ fn suggest(
         // Населённые пункты — так же (п. 127, 06.11.2026): «Черн» находит
         // «с.Черняное», название которого начинается с приставки типа.
         let mut out = merge_case_twins(out);
+        if kind == "place" {
+            out = genmetric_core::place_name_first(out, &prefix, |r| r.value.as_str());
+            out.truncate(limit as usize);
+        }
         if let Some(inside) = genmetric_core::rank_inside_pattern(&kind, &pattern) {
             if (out.len() as i64) < limit {
                 let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1625,7 +1633,7 @@ fn other_parish_files(conn: &Connection, dir: &std::path::Path, own: &str) -> Op
         .ok()?;
     let mut out = Vec::new();
     for f in files {
-        let p = dir.join(f);
+        let p = parish::file_path(dir, &f);
         let same = std::fs::canonicalize(&p).map(|c| c == own).unwrap_or(false);
         if same {
             continue;
@@ -1675,6 +1683,37 @@ fn cleanup_remove(app: State<App>, keys: Vec<String>) -> Result<Cleaned, String>
             write_log(&app.log_path, &format!("Очистка справочников: перечень другого прихода не поправлен — {p}"));
         }
         Ok(Cleaned { removed, copy: copy.to_string_lossy().to_string() })
+    })
+}
+
+/// «Найти в записях» (13.11.2026): написания поля, похожие на набранное.
+#[tauri::command(async)]
+fn replace_spellings(app: State<App>, field: String, query: String) -> Result<Vec<genmetric_core::replace::Spelling>, String> {
+    with_conn(&app, "Найти в записях", |conn| genmetric_core::replace::spellings(conn, &field, &query))
+}
+
+/// Записи, где поле написано именно так.
+#[tauri::command(async)]
+fn replace_hits(app: State<App>, field: String, value: String) -> Result<Vec<genmetric_core::replace::Hit>, String> {
+    with_conn(&app, "Найти в записях", |conn| genmetric_core::replace::hits(conn, &field, &value))
+}
+
+#[derive(Serialize)]
+struct Replaced {
+    entries: usize,
+    copy: String,
+}
+
+/// «Заменить во всех»: перед этим — копия файла прихода рядом с ним.
+#[tauri::command(async)]
+fn replace_apply(app: State<App>, field: String, old: String, new: String) -> Result<Replaced, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    with_conn_shared(&app, "Замена в записях", |conn| {
+        let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::REPLACE_MARK)
+            .map_err(|e| format!("копия прихода не сделана, замена отменена: {e}"))?;
+        let entries = genmetric_core::replace::replace(conn, &field, &old, &new)?;
+        write_log(&app.log_path, &format!("Замена в записях: {field} «{old}» → «{new}», записей {entries}"));
+        Ok(Replaced { entries, copy: copy.to_string_lossy().to_string() })
     })
 }
 
@@ -1728,6 +1767,8 @@ struct ReviewItem {
     year: Option<i64>,
     page: Option<String>,
     no: Option<i64>,
+    /// Группа однотипных правок помощника (`merge::edit_group`).
+    group: Option<String>,
 }
 
 #[tauri::command]
@@ -1738,10 +1779,29 @@ fn review_list(app: State<App>, done: bool) -> Result<Vec<ReviewItem>, String> {
             .query_map(rusqlite::named_params! { ":done": done as i64 }, |r| Ok(ReviewItem {
                 id: r.get(0)?, kind: r.get(1)?, text: r.get(2)?, sheet: r.get(3)?, row: r.get(4)?,
                 entry_id: r.get(5)?, done: r.get::<_, i64>(6)? != 0, section: r.get(7)?, year: r.get(8)?,
-                page: r.get(9)?, no: r.get(10)?,
+                page: r.get(9)?, no: r.get(10)?, group: None,
             }))
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        for i in &mut items {
+            if i.kind == "merge_edit" {
+                i.group = genmetric_core::merge::edit_group(&i.text);
+            }
+        }
+        Ok(items)
+    })
+}
+
+/// «Оставить мою во всех» / «Вернуть в список» — для группы строк сразу.
+#[tauri::command]
+fn review_done_many(app: State<App>, ids: Vec<i64>, done: bool) -> Result<(), String> {
+    with_conn(&app, "Список на сверку", |conn| {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let sql = statement("review_done")?;
+        for id in ids {
+            tx.execute(&sql, rusqlite::named_params! { ":id": id, ":done": done as i64 }).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
     })
 }
 
@@ -2621,6 +2681,28 @@ fn entry_delete(app: State<App>, id: i64) -> Result<i64, String> {
     })
 }
 
+/// «Взять правку во всех» — группа однотипных правок помощника (Роман
+/// 12.11.2026). Отказы отдельных строк не останавливают остальные.
+#[derive(Serialize)]
+struct TakenMany {
+    taken: usize,
+    failed: Vec<String>,
+    copy: String,
+}
+
+#[tauri::command(async)]
+fn merge_take_many(app: State<App>, review_ids: Vec<i64>, group: String) -> Result<TakenMany, String> {
+    let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    with_conn_shared(&app, "Правки помощника", |conn| {
+        // Много записей разом — сначала копия прихода (ревьюер 13.11.2026).
+        let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::TAKE_MARK)
+            .map_err(|e| format!("копия прихода не сделана, правки не взяты: {e}"))?;
+        let (taken, failed) = genmetric_core::merge::take_many(conn, &review_ids, &group)?;
+        write_log(&app.log_path, &format!("Взять правку во всех: взято {taken}, не взято {}; копия {}", failed.len(), copy.display()));
+        Ok(TakenMany { taken, failed, copy: copy.to_string_lossy().to_string() })
+    })
+}
+
 /// «Взять правку» / «Вернуть запись» в списке на сверку.
 #[tauri::command(async)]
 fn merge_take(app: State<App>, review_id: i64) -> Result<genmetric_core::merge::Taken, String> {
@@ -2875,6 +2957,7 @@ fn main() {
             review_list,
             review_count,
             review_done,
+            review_done_many,
             entry_save,
             entry_list,
             entry_load,
@@ -2927,6 +3010,10 @@ fn main() {
             merge_inspect,
             merge_run,
             merge_take,
+            merge_take_many,
+            replace_spellings,
+            replace_hits,
+            replace_apply,
             familio_reset,
             search_release,
             search_open,

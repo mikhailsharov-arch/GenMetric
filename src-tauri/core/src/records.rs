@@ -416,6 +416,23 @@ pub struct CaseSaved {
 /// заводится своё дело с набранными реквизитами, прежний год не меняется;
 /// год другой и его дело уже есть — только с согласия (`overwrite`).
 pub fn save_case(conn: &Connection, case: &Case, overwrite: bool) -> Result<CaseSaved, String> {
+    // Одним куском (ревьюер 13.11.2026): дело, разнос на все годы и перенос
+    // частот; сбой посередине переноса удвоил бы частоты. Точка сохранения,
+    // а не транзакция: зовут и изнутри транзакции (импорт, слияние).
+    conn.execute_batch("SAVEPOINT save_case").map_err(|e| e.to_string())?;
+    match save_case_in(conn, case, overwrite) {
+        Ok(done) => {
+            conn.execute_batch("RELEASE save_case").map_err(|e| e.to_string())?;
+            Ok(done)
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK TO save_case; RELEASE save_case");
+            Err(err)
+        }
+    }
+}
+
+fn save_case_in(conn: &Connection, case: &Case, overwrite: bool) -> Result<CaseSaved, String> {
     let e = |e: rusqlite::Error| e.to_string();
     let loaded_year: Option<i64> = if case.id > 0 {
         conn.query_row(&statement("case_year_of")?, rusqlite::named_params! { ":id": case.id }, |r| r.get(0))
@@ -449,19 +466,32 @@ pub fn save_case(conn: &Connection, case: &Case, overwrite: bool) -> Result<Case
         _ => (if case.id > 0 { case.id } else { 1 }, "saved"),
     };
     let parish = case.parish_key();
+    // Прежний ключ прихода: сменился (другая церковь, село) — частоты «по
+    // приходу» переходят под новый, а не остаются под старым (п. 139).
+    // Ключей у дел прихода бывает и несколько (импорт по реквизитам) —
+    // частоты каждого идут под общий.
+    let old_keys: Vec<String> = {
+        let mut stmt = conn.prepare(&statement("case_parish_keys")?).map_err(e)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(e)?;
+        rows.collect::<Result<_, _>>().map_err(e)?
+    };
     conn.execute(&statement("case_upsert")?, rusqlite::named_params! {
         ":id": id, ":archive": case.archive, ":fond": case.fond, ":opis": case.opis,
         ":delo": case.delo, ":church": case.church, ":village": case.village,
         ":uyezd": case.uyezd, ":guberniya": case.guberniya, ":year": case.year,
         ":parish_key": parish, ":indexer": case.indexer,
     }).map_err(e)?;
-    // Церковь, село, уезд, губерния, индексатор — свойства прихода: на
-    // дела всех лет. Фонд, опись и дело остаются у своего года.
+    // Село, уезд, губерния, индексатор и ключ прихода — на дела всех лет.
+    // Церковь, фонд, опись и дело остаются у своего года (церковь — с
+    // 13.11.2026, п. 139).
     conn.execute(&statement("case_spread_parish")?, rusqlite::named_params! {
-        ":id": id, ":archive": case.archive, ":church": case.church, ":village": case.village,
+        ":id": id, ":archive": case.archive, ":village": case.village,
         ":uyezd": case.uyezd, ":guberniya": case.guberniya,
         ":parish_key": parish, ":indexer": case.indexer,
     }).map_err(e)?;
+    for old in old_keys.iter().filter(|k| **k != parish) {
+        move_parish_stats(conn, old, &parish)?;
+    }
     // Архив, церковь, уезд, губерния — в справочники, как звания при
     // сохранении записи. Заказчик 21.09.2026: «должна сохраниться
     // возможность добавить свой [архив], если его нет в списке, и чтобы
@@ -473,6 +503,18 @@ pub fn save_case(conn: &Connection, case: &Case, overwrite: bool) -> Result<Case
         }
     }
     Ok(CaseSaved { id, status: status.into(), existing: None })
+}
+
+/// Частоты подсказок «по приходу» — под новый ключ прихода: значение, уже
+/// запомненное под новым, получает сумму, строка старого ключа уходит.
+/// Общее для «Сохранить дело» и объединения пунктов.
+pub fn move_parish_stats(conn: &Connection, old_key: &str, new_key: &str) -> Result<(), String> {
+    let e = |err: rusqlite::Error| err.to_string();
+    for name in ["place_merge_scope_merge", "place_merge_scope_drop", "place_merge_scope"] {
+        conn.execute(&statement(name)?, rusqlite::named_params! { ":new_key": new_key, ":old_key": old_key })
+            .map_err(e)?;
+    }
+    Ok(())
 }
 
 /// Первое заполнение частот фамилий: записи, набранные или импортированные до
@@ -1269,6 +1311,44 @@ mod tests {
         drop(1897);
         assert_eq!((count(), drop(1898)), (1, 0), "последнее дело прихода не убирается");
 
+        std::mem::drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// П. 139 (Роман 12.11.2026): церковь нового года не переписывает дела
+    /// других лет; ключ прихода общий, частоты «по приходу» идут за ним.
+    #[test]
+    fn church_stays_with_its_year() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
+        if !seed.exists() {
+            crate::seed_missing("тест церкви дела пропущен");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("genmetric-church-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(&seed, &path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let case = |id: i64, year: i64, church: &str| Case {
+            id, archive: Some("ГА".into()), fond: Some("1".into()), opis: Some("1".into()), delo: Some(year.to_string()),
+            church: Some(church.into()), village: Some("Горелое".into()), uyezd: None, guberniya: None,
+            year: Some(year), indexer: None,
+        };
+        let first = save_case(&conn, &case(0, 1914, "Воскресенская"), false).unwrap();
+        let old_key: String = conn.query_row("SELECT parish_key FROM mk_case WHERE id = ?1", [first.id], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO usage_stat (kind, scope, scope_key, value, value_norm, count)
+                      VALUES ('rank_m', 'parish', ?1, 'однодворец', 'однодворец', 5)", [&old_key]).unwrap();
+        let next = save_case(&conn, &case(first.id, 1858, "Николаевская"), false).unwrap();
+        assert_eq!(next.status, "created");
+        let church = |id: i64| -> String { conn.query_row("SELECT church FROM mk_case WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!((church(first.id), church(next.id)), ("Воскресенская".to_string(), "Николаевская".to_string()),
+                   "церковь 1858 года не затёрла церковь 1914");
+        let keys: Vec<String> = conn.prepare("SELECT DISTINCT parish_key FROM mk_case").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(keys.len(), 1, "ключ прихода общий для всех лет");
+        let moved: i64 = conn.query_row("SELECT count FROM usage_stat WHERE kind = 'rank_m' AND scope = 'parish' AND scope_key = ?1",
+                                        [&keys[0]], |r| r.get(0)).unwrap();
+        assert_eq!(moved, 5, "частоты прихода перешли под новый ключ");
+        assert_eq!(conn.query_row("SELECT count(*) FROM usage_stat WHERE scope_key = ?1", [&old_key], |r| r.get::<_, i64>(0)).unwrap(), 0);
         std::mem::drop(conn);
         let _ = std::fs::remove_file(path);
     }

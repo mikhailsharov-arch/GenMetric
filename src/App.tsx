@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { FIND_KEY } from "./keys";
 import { invoke } from "@tauri-apps/api/core";
 import ErrorBar from "./ErrorBar";
 import FontScale from "./FontScale";
@@ -13,6 +14,7 @@ import { dirtyForms } from "./dirty";
 import { FIELDS } from "./focus";
 import ArchiveBlock from "./ArchiveBlock";
 import CleanupBlock from "./CleanupBlock";
+import FindReplaceBlock from "./FindReplaceBlock";
 import WivesBlock from "./WivesBlock";
 import { ScanCaseBlock, ScanProvider, ScanShell } from "./scan";
 import SearchScreen, { type SearchRequest } from "./SearchScreen";
@@ -162,6 +164,25 @@ export default function App() {
     // Курсор — в то же поле, откуда ушли: набор продолжается с того же места.
     setTimeout(() => { if (el && el.isConnected && el.offsetParent !== null) el.focus(); }, 0);
   }
+  // Ctrl+Enter (⌘+Enter на Mac) — сохранить запись, и когда курсор не в
+  // поле формы: после щелчка по скану, по пустому месту, по кнопке (Роман
+  // 12.11.2026, п. 141: на Mac «шорткат просто не перехватывается»). Формы
+  // ловят сочетание сами и гасят его (preventDefault), окно с вопросом — тоже
+  // (stopPropagation); сюда доходит только то, что не поймал никто.
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.altKey || e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
+      if (e.key !== "Enter" && e.code !== "Enter" && e.code !== "NumpadEnter") return;
+      if (document.querySelector(".modal")) return;
+      const form = Array.from(document.querySelectorAll<HTMLElement>(".formroot")).find((f) => f.offsetParent !== null);
+      const button = form?.querySelector<HTMLButtonElement>("button[data-save]");
+      if (!button || button.disabled) return;
+      e.preventDefault();
+      button.click();
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, []);
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       // По коду клавиши, а не по букве: в русской раскладке это «а».
@@ -347,11 +368,11 @@ export default function App() {
                           занята целиком (Роман 09.10.2026, ответ 4Б). */}
                       <div className="findblock">
                         <button type="button" className="toggle" data-find-person onClick={() => openSearch(null)}>
-                          Найти персону <span className="kbd">Ctrl+F</span>
+                          Найти персону <span className="kbd">{FIND_KEY}</span>
                         </button>
                         <p className="hint">
                           Все записи прихода, где встречается человек: дети, браки, смерть, у кого был восприемником
-                          и поручителем. Ctrl+F из блока персоны при наборе ищет сразу её.
+                          и поручителем. {FIND_KEY} из блока персоны при наборе ищет сразу её.
                         </p>
                       </div>
                       <ScanCaseBlock />
@@ -432,6 +453,8 @@ export default function App() {
           {/* Очистка неиспользуемых значений (Роман 20.10.2026: «можно скрыть
               куда-то в настройки»). */}
           <CleanupBlock />
+          {/* Найти и заменить значение в записях (Роман 12.11.2026: «головая боль»). */}
+          <FindReplaceBlock onOpenEntry={openEntry} />
           {/* Фамилии жён по мужьям (Роман 12.10.2026, спека 2026-10-20-familii-zhyon). */}
           <WivesBlock onOpenEntry={openEntry} />
 

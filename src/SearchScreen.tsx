@@ -4,7 +4,7 @@ import Suggest from "./Suggest";
 import { report } from "./errors";
 import { ScanLink } from "./scan";
 import { focusNextField } from "./focus";
-import { dateOf, describe, diedMark, eventKind, family, familyTimeline, marriageLine, nameless, personTail, type DossierEvent, type Mention, type Part } from "./dossier";
+import { ageWords, childYear, dateOf, describe, diedMark, eventKind, family, familyTimeline, marriageLine, nameless, personTail, type DossierEvent, type Mention, type Part } from "./dossier";
 
 /**
  * Экран «Поиск»: персона по приходу и её досье (спека
@@ -471,9 +471,14 @@ export default function SearchScreen({ active, request, onOpenEntry, onBack, bac
                     </p>
                     <ul>
                       {g.children.map((c) => (
-                        <li key={c.event.entry_id}>
-                          <span className="when">{c.event.year ?? "?"}</span> {c.child ? who(c.child, dossier.place) : "имя не записано"}
+                        <li key={c.event.entry_id} data-child-by-death={c.byDeath ? "" : undefined}>
+                          <span className="when">{c.byDeath && childYear(c) != null ? `ок. ${childYear(c)}` : c.event.year ?? "?"}</span>{" "}
+                          {c.child ? who(c.child, dossier.place) : "имя не записано"}
                           {c.child?.died ? <span className="died" data-died> {diedMark(c.child.died)}</span> : null}
+                          {/* Рождения в базе нет — ребёнок по записи о смерти (п. 149). */}
+                          {c.byDeath && (
+                            <span className="sub"> · по записи о смерти{c.child?.age ? `, ${ageWords(c.child.age)}` : ""}</span>
+                          )}
                           {c.godparents.length > 0 && (
                             <span className="sub"> · восприемники: {c.godparents.map((gp, k) => (
                               <span key={k}>{k > 0 && ", "}{who(gp, dossier.place)}</span>

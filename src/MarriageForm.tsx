@@ -1,4 +1,5 @@
 import DeleteEntry from "./DeleteEntry";
+import { SAVE_KEY } from "./keys";
 import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
@@ -730,8 +731,10 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
         </label>
         <FoldLink block="marriage_witnesses" onFold={() => foldWitnesses(true)} />
         {witnessCount < WITNESS_MAX && (
-          <button type="button" className="linkish" onClick={() => setWitnessCount((n) => n + 1)}>
-            + добавить поручителя
+          // Кнопкой, как «Добавить восприемника»: ссылку Роман не нашёл и
+          // считал, что поручителей «жестко 4» (12.11.2026, п. 146).
+          <button type="button" className="toggle" data-add-witness onClick={() => setWitnessCount((n) => n + 1)}>
+            Добавить поручителя
           </button>
         )}
       </div>
@@ -743,9 +746,9 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
       />
 
       <div className={editingId !== null ? "savebar editing" : "savebar"}>
-        <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
+        <button className="primary" data-save onClick={save} disabled={busy} title={SAVE_KEY}>
           {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
-          <span className="kbd">Ctrl+Enter</span>
+          <span className="kbd">{SAVE_KEY}</span>
         </button>
         {editingId !== null && (
           <DeleteEntry id={editingId} what={deletedWhat()}

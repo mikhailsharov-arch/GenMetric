@@ -1,4 +1,5 @@
 import DeleteEntry from "./DeleteEntry";
+import { SAVE_KEY } from "./keys";
 import { useEffect, useRef, useState } from "react";
 import { ScanLink, useEntryScan, useScan } from "./scan";
 import { invoke } from "@tauri-apps/api/core";
@@ -249,6 +250,8 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
       const place = fatherNow.current.place.trim();
       if (!place) return;
       set((g) => (g.iof.trim() && !g.place.trim() ? { ...g, place } : g));
+      // Блок выделит подставленное в поле НП (п. 147).
+      return place;
     };
   }
   function godChange(i: number, set: React.Dispatch<React.SetStateAction<Person>>) {
@@ -1338,9 +1341,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
           кнопку сохранить и следующая». Прокрутка на каждой записи — это
           и время, и рука на мыши, которой он просил избегать. */}
       <div className={editingId !== null ? "savebar editing" : "savebar"}>
-        <button className="primary" onClick={save} disabled={busy} title="Ctrl+Enter">
+        <button className="primary" data-save onClick={save} disabled={busy} title={SAVE_KEY}>
           {busy ? "Сохраняю…" : editingId !== null ? "Сохранить изменения" : "Сохранить и следующая"}
-          <span className="kbd">Ctrl+Enter</span>
+          <span className="kbd">{SAVE_KEY}</span>
         </button>
         {editingId !== null && (
           <DeleteEntry id={editingId} what={deletedWhat()}

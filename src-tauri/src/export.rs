@@ -91,7 +91,10 @@ pub fn reveal_path(path: String) -> Result<(), String> {
         // Как есть, без кавычек вокруг всего аргумента: с пробелом в пути
         // («Мои документы») Rust взял бы в кавычки и «/select,», и проводник
         // открыл бы не ту папку (ревьюер #39).
+        // «/» в пути проводник не понимает и открывает «Этот компьютер»
+        // (Роман 12.11.2026, п. 140: путь прихода был «…\приходы/2-….sqlite»).
         use std::os::windows::process::CommandExt;
+        let path = path.replace('/', "\\");
         std::process::Command::new("explorer").raw_arg(format!("/select,\"{path}\"")).spawn()
     };
     #[cfg(not(windows))]

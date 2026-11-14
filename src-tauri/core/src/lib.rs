@@ -16,6 +16,7 @@ pub mod parish;
 pub mod pdf;
 pub mod place_merge;
 pub mod records;
+pub mod replace;
 pub mod scans;
 pub mod search;
 pub mod text;
@@ -89,6 +90,18 @@ pub fn rank_inside_pattern(kind: &str, prefix_pattern: &str) -> Option<String> {
         return None;
     }
     Some(format!("%{typed}%"))
+}
+
+/// Подсказка НП: первыми — пункты, у которых с набранного начинается само
+/// название, без приставки типа; ниже — где набранное совпало только с
+/// приставкой (Роман и Олег 12.11.2026, п. 144: на «г» шли «г.Тамбов»,
+/// «г.Кирсанов», а не «Горелое»). Порядок внутри каждой части — прежний (по
+/// частоте). `name` — название строки.
+pub fn place_name_first<T>(rows: Vec<T>, typed: &str, name: impl Fn(&T) -> &str) -> Vec<T> {
+    let want = text::normalize(text::strip_place_type(typed));
+    let (head, tail): (Vec<T>, Vec<T>) = rows.into_iter()
+        .partition(|r| text::normalize(text::strip_place_type(name(r))).starts_with(&want));
+    head.into_iter().chain(tail).collect()
 }
 
 /// Адрес поиска населённого пункта на Familio (Роман 03.10.2026, задача 3).
@@ -218,6 +231,15 @@ mod tests {
         assert_eq!(familio_search_url("с.Малово", "", "", ""), familio_search_url("Малово", "", "", ""), "приставка типа отсекается");
         let odd = familio_search_url("a&b=c#d/e?f", "Костромская", "Макарьевский", "");
         assert_eq!(odd, "https://familio.org/places?title=a%26b%3Dc%23d%2Fe%3Ff&georequisites=%D0%9A%D0%BE%D1%81%D1%82%D1%80%D0%BE%D0%BC%D1%81%D0%BA%D0%B0%D1%8F%20%D0%9C%D0%B0%D0%BA%D0%B0%D1%80%D1%8C%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B9");
+    }
+
+    /// П. 144: на «г» первым — «Горелое», а не «г.Тамбов».
+    #[test]
+    fn place_name_first_skips_type() {
+        let rows = vec!["г.Тамбов", "г.Кирсанов", "Горелое", "с.Гагарино"];
+        assert_eq!(super::place_name_first(rows.clone(), "г", |r| r), vec!["Горелое", "с.Гагарино", "г.Тамбов", "г.Кирсанов"]);
+        assert_eq!(super::place_name_first(rows.clone(), "с.Гор", |r| r)[0], "Горелое");
+        assert_eq!(super::place_name_first(rows, "Тамб", |r| r)[0], "г.Тамбов");
     }
 
     /// Волость пункта для подсказки НП (Роман 11.11.2026) — у лучшей строки.

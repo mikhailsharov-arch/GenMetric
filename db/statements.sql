@@ -115,6 +115,10 @@ SELECT archive, fond, opis, delo, church, village, uyezd, guberniya,
  ORDER BY (id = (SELECT e.case_id FROM entry e ORDER BY e.id DESC LIMIT 1)) DESC, updated_at DESC, id DESC
  LIMIT 1;
 
+-- @case_parish_keys
+-- Все ключи прихода у дел: при смене ключа частоты каждого переходят под новый.
+SELECT DISTINCT parish_key FROM mk_case WHERE coalesce(parish_key, '') <> '';
+
 -- @case_parish_key
 -- Ключ прихода для частот подсказок: дела :id, а нет такого — первого дела.
 SELECT parish_key FROM mk_case ORDER BY (id = :id) DESC, id LIMIT 1;
@@ -146,10 +150,13 @@ DELETE FROM mk_case
    AND (SELECT count(*) FROM mk_case) > 1;
 
 -- @case_spread_parish
--- Церковь, село, уезд, губерния и индексатор — свойства прихода, не года:
--- правка на экране «Дело» расходится на дела всех лет. Архив — туда, где пуст.
+-- Село, уезд, губерния и индексатор — свойства прихода, не года: правка на
+-- экране «Дело» расходится на дела всех лет. Архив — туда, где пуст. Церковь
+-- — нет: она у каждого дела своя (Роман 12.11.2026, п. 139: «Николаевская»
+-- 1858 года затёрла «Воскресенскую» 1914–1917). Ключ прихода — общий для
+-- всех лет: по нему частоты подсказок «по приходу».
 UPDATE mk_case
-   SET church = :church, village = :village, uyezd = :uyezd, guberniya = :guberniya,
+   SET village = :village, uyezd = :uyezd, guberniya = :guberniya,
        parish_key = :parish_key, indexer = :indexer,
        archive = coalesce(nullif(trim(archive), ''), :archive)
  WHERE id <> :id;
@@ -2269,3 +2276,29 @@ SELECT name, min(patr_m) AS patr_m, min(patr_f) AS patr_f
 -- чтобы одна жена, записанная разными вариантами, не делила мужа на два
 -- досье (ревьюер 17.10.2026, спека 2026-10-15-semya-celikom, п. 2.1).
 SELECT name, base_name, variant FROM name_dict;
+
+-- @replace_values
+-- «Найти в записях» (Роман 12.11.2026: «головая боль» в подсказке помечена
+-- «введено», а найти запись нельзя): написания поля и в скольких записях.
+-- Поле — одно из четырёх; отбор по набранному без регистра и «ё» — в Rust
+-- (кириллица, см. грабли про lower()).
+SELECT v, count(DISTINCT entry_id) AS n
+  FROM (SELECT entry_id,
+               CASE :field WHEN 'rank' THEN rank WHEN 'death_cause' THEN death_cause
+                           WHEN 'kinship' THEN kinship WHEN 'surname' THEN surname END AS v
+          FROM person_mention)
+ WHERE v IS NOT NULL AND trim(v) <> ''
+ GROUP BY v;
+
+-- @replace_hits
+-- Записи, где поле написано именно так (без учёта пробелов по краям), — с
+-- местом в книге для списка и «Открыть».
+SELECT m.entry_id, e.section, coalesce(e.rite_year, e.event_year, c.year) AS year, e.page,
+       coalesce(e.no_male, e.no_female) AS no, m.role_code,
+       trim(coalesce(m.first_name, '') || ' ' || coalesce(m.patronymic, '') || ' ' || coalesce(m.surname, '')) AS who
+  FROM person_mention m
+  JOIN entry e ON e.id = m.entry_id
+  LEFT JOIN mk_case c ON c.id = e.case_id
+ WHERE trim(CASE :field WHEN 'rank' THEN m.rank WHEN 'death_cause' THEN m.death_cause
+                        WHEN 'kinship' THEN m.kinship WHEN 'surname' THEN m.surname END) = trim(:value)
+ ORDER BY year, e.section, e.id, m.sort_order;

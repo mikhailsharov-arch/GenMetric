@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Modal from "./Modal";
 import { focusNextField } from "./focus";
-import { report, warn } from "./errors";
+import { dismissWarn, report, warn } from "./errors";
 import type { Case } from "./CaseHeader";
 import { stripPlaceType } from "./names";
 
@@ -36,7 +36,19 @@ export type About = {
   telegram: string;     // B11 Никнейм в Telegram
   isNew: boolean;       // B19 новый справочник / обновление начатого ранее
   previous: string;     // B20 Ссылка на загруженный ранее справочник
+  /** B29–B31: согласие с тремя документами Familio (шаблон ver.2026-10c). */
+  consent: [boolean, boolean, boolean];
 };
+
+/** Документы Familio, с которыми человек соглашается (лист about, строки
+ *  29–31 шаблона ver.2026-10c; Роман 12.11.2026, п. 148). */
+const CONSENT: { text: string; url: string }[] = [
+  { text: "Я ознакомлен(а) и согласен(на) с Пользовательским соглашением сайта familio.org", url: "familio.org/terms" },
+  { text: "Я ознакомлен(а) и согласен(на) с Политикой конфиденциальности (обработки персональных данных) сайта familio.org",
+    url: "familio.org/privacy" },
+  { text: "Даю согласие на распространение моих персональных данных, указанных выше (имя, страница на Familio, Telegram), — чтобы на сайте было видно, кто составил справочник",
+    url: "familio.org/personal-data" },
+];
 
 const ABOUT_KEY = "familio_about";
 
@@ -111,6 +123,7 @@ export default function ExportPanel({ mkCase }: { mkCase: Case }) {
           title: about.title, years: yearsText(chosen), min_year: chosen.length ? String(Math.min(...chosen)) : "",
           description: about.description, author: about.author, profile: about.profile,
           telegram: about.telegram, is_new: about.isNew, previous: about.previous,
+          consent: about.consent.every(Boolean),
         },
       });
       setOpen(false);
@@ -178,8 +191,11 @@ function FamilioDialog({ mkCase, years, busy, onClose, onExport }: {
   const village = mkCase.village ?? "";
   const [about, setAbout] = useState<About>({
     title: defaultTitle(village, all), description: "", author: mkCase.indexer ?? "",
-    profile: "", telegram: "", isNew: true, previous: "",
+    profile: "", telegram: "", isNew: true, previous: "", consent: [false, false, false],
   });
+  // Отказ без согласия — внутри окна, у флажков: полоса над формой под окном
+  // не видна (проверяющий 13.11.2026).
+  const [consentAsk, setConsentAsk] = useState(false);
   // Название по годам — пока его не правили руками.
   const [titleTouched, setTitleTouched] = useState(false);
 
@@ -194,6 +210,9 @@ function FamilioDialog({ mkCase, years, busy, onClose, onExport }: {
           ...a,
           author: saved.author ?? a.author, profile: saved.profile ?? "",
           telegram: saved.telegram ?? "", isNew: saved.isNew ?? true, previous: saved.previous ?? "",
+          // Согласие, данное однажды, помнится — его можно снять.
+          consent: Array.isArray(saved.consent) && saved.consent.length === 3
+            ? saved.consent.map(Boolean) as [boolean, boolean, boolean] : a.consent,
         }));
       })
       .catch((e) => report("Не удалось прочитать карточку «Для Familio»", e));
@@ -240,6 +259,13 @@ function FamilioDialog({ mkCase, years, busy, onClose, onExport }: {
       warn("Нет названия справочника", "оно пойдёт на лист about — без него Familio файл не примет");
       return;
     }
+    if (!about.consent.every(Boolean)) {
+      setConsentAsk(true);
+      document.querySelector("[data-familio-consent]")?.scrollIntoView({ block: "center" });
+      return;
+    }
+    // Прежний отказ («нет согласия») к выгрузке больше не относится.
+    dismissWarn();
     onExport(chosen, { ...about, description: about.description.trim() || about.title });
   }
 
@@ -288,6 +314,26 @@ function FamilioDialog({ mkCase, years, busy, onClose, onExport }: {
       </div>
       {!about.isNew && field("Прежний справочник", "previous", "ссылка на уже загруженный справочник на familio.org")}
       <p className="hint">Отчества — в современном написании; как в книге — в авторском комментарии.</p>
+      <h3>Согласие с документами Familio — обязательно</h3>
+      <div className="consent" data-familio-consent>
+        {CONSENT.map((c, i) => (
+          <label key={c.url} className="consentrow">
+            <input type="checkbox" data-consent={i} checked={about.consent[i]}
+                   onChange={(e) => setAbout((a) => {
+                     const next = [...a.consent] as [boolean, boolean, boolean];
+                     next[i] = e.target.checked;
+                     return { ...a, consent: next };
+                   })} />
+            <span>{c.text}. <span className="mono">{c.url}</span></span>
+          </label>
+        ))}
+      </div>
+      {consentAsk && !about.consent.every(Boolean) && (
+        <p className="reviewbusy" data-consent-missing>
+          Нет согласия с документами Familio: отметьте все три флажка — без них шаблон Familio не заполняется
+          и файл не примут.
+        </p>
+      )}
       <div className="modalbar">
         <button type="button" className="primary" disabled={busy} onClick={submit}>
           {busy ? "Выгружаю…" : "Выгрузить"}

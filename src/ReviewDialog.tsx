@@ -18,6 +18,8 @@ type Item = {
   id: number; kind: "name" | "patronymic" | "note" | "skipped" | "duplicate" | "merge_edit" | "merge_deleted" | "merge_twin"; text: string;
   sheet: string | null; row: number | null; entry_id: number | null; done: boolean;
   section: number | null; year: number | null; page: string | null; no: number | null;
+  /** Правки помощника с тем же набором отличий — одна группа (merge::edit_group). */
+  group: string | null;
 };
 
 const KIND: Record<Item["kind"], string> = {
@@ -99,6 +101,44 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
       .finally(() => setTaking(null));
   }
 
+  /** Группа однотипных правок помощника — разом (Роман 12.11.2026: 1761
+   *  строка «с.Горелое» → «Горелое», «прокликивать… физически невозможно»). */
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  /** Группа, для которой нажали «Взять правку во всех» один раз: второе
+   *  нажатие — «Да, взять в N записях» (как у замены в записях). */
+  const [sureGroup, setSureGroup] = useState<string | null>(null);
+  function takeAll(key: string, rows: Item[]) {
+    if (taking !== null) return;
+    if (sureGroup !== key) { setSureGroup(key); return; }
+    setSureGroup(null);
+    const forms = dirtyForms();
+    if (forms.length) {
+      setTook(`Сначала сохраните или очистите набранное: ${forms.join(", ")} — и возьмите правки помощника снова.`);
+      return;
+    }
+    setTaking(-1);
+    setTook(`Беру правки помощника: ${rows.length}…`);
+    invoke<{ taken: number; failed: string[]; copy: string }>("merge_take_many", { reviewIds: rows.map((r) => r.id), group: key })
+      .then((t) => {
+        tookAny.current = t.taken > 0 || tookAny.current;
+        setTook(`Записи заменены версией помощника: ${t.taken}.` +
+                (t.failed.length ? ` Не взято: ${t.failed.length} — ${[...new Set(t.failed)].slice(0, 3).join("; ")}.` : "") +
+                ` Копия прихода до этого: ${t.copy}`);
+        load(showDone);
+        refocus();
+      })
+      .catch((e) => { report("Не удалось взять правки помощника", e); load(showDone); })
+      .finally(() => setTaking(null));
+  }
+  /** Кнопки группы исчезают вместе с ней — курсор возвращается в окно, иначе
+   *  Esc уходил в никуда и окно не закрывалось (стенд 13.11.2026). */
+  const refocus = () => document.querySelector<HTMLElement>('.modal[data-modal="review"]')?.focus();
+  function markAll(rows: Item[], done: boolean) {
+    invoke("review_done_many", { ids: rows.map((r) => r.id), done })
+      .then(() => { load(showDone); refocus(); })
+      .catch((e) => report("Не удалось отметить строки списка", e));
+  }
+
   function mark(item: Item, done: boolean) {
     invoke("review_done", { id: item.id, done })
       .then(() => load(showDone))
@@ -123,12 +163,47 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
       {ORDER.map((kind) => {
         const rows = items.filter((i) => i.kind === kind);
         if (!rows.length) return null;
+        // Однотипные правки помощника (две строки и больше) — блоком сверху.
+        const groups = new Map<string, Item[]>();
+        for (const i of rows) if (!i.done && i.group) groups.set(i.group, [...(groups.get(i.group) ?? []), i]);
+        const big = [...groups.entries()].filter(([, g]) => g.length > 1).sort((a, b) => b[1].length - a[1].length);
+        const grouped = new Set(big.flatMap(([, g]) => g.map((i) => i.id)));
+        const shown = rows.filter((i) => !grouped.has(i.id) || big.some(([k, g]) => openGroups.has(k) && g.includes(i)));
         return (
           <div key={kind}>
             <h3>{KIND[kind]}: {rows.filter((i) => !i.done).length}</h3>
+            {big.map(([key, g]) => (
+              <div key={key} className="reviewgroup" data-review-group={g.length}>
+                <p>
+                  <b>Одна и та же правка в {g.length} записях:</b> {key}
+                </p>
+                <div className="row">
+                  <button type="button" className={sureGroup === key ? "danger small" : "toggle small"} data-review-take-all
+                          disabled={taking !== null}
+                          title="Заменить все эти записи версией помощника — целиком; перед этим программа делает копию прихода"
+                          onClick={() => takeAll(key, g)}>
+                    {sureGroup === key ? `Да, взять в ${g.length} записях` : `Взять правку во всех (${g.length})`}
+                  </button>
+                  {sureGroup === key && (
+                    <button type="button" className="toggle small" onClick={() => setSureGroup(null)}>Отмена</button>
+                  )}
+                  <button type="button" className="toggle small" data-review-keep-all disabled={taking !== null}
+                          title="Оставить ваши записи как есть" onClick={() => markAll(g, true)}>
+                    Оставить мою во всех ({g.length})
+                  </button>
+                  <button type="button" className="linkish" onClick={() => setOpenGroups((o) => {
+                    const n = new Set(o);
+                    if (n.has(key)) n.delete(key); else n.add(key);
+                    return n;
+                  })}>
+                    {openGroups.has(key) ? "спрятать записи" : "показать записи"}
+                  </button>
+                </div>
+              </div>
+            ))}
             <table className="facts review">
               <tbody>
-                {rows.map((i) => (
+                {shown.map((i) => (
                   <tr key={i.id} className={i.done ? "done" : ""}>
                     <td>
                       {i.text}

@@ -1097,7 +1097,20 @@ table.events tr.part b.what, table.events tr.clergy b.what { font-weight: 500; c
   white-space: nowrap;
 }
 .scanname b { color: var(--ink); font-weight: 600; }
-.scantools { display: flex; gap: 0.3em; flex-wrap: wrap; }
+.scantools { display: flex; gap: 0.3em; flex-wrap: wrap; align-items: center; }
+/* Шпаргалка клавиш скана (Роман 12.11.2026): значок у правого края, список
+   — по наведению. */
+.scankeys { position: relative; cursor: help; color: var(--muted); padding: 0 0.2em; font-size: 1.1em; }
+.scankeys .scankeyslist {
+  display: none; position: absolute; right: 0; top: 100%; z-index: 20;
+  min-width: 22em; padding: 0.5em 0.7em; font-size: 0.8em; line-height: 1.45;
+  background: var(--bg, #fff); color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 0.2em 0.8em rgba(0, 0, 0, 0.18); cursor: default;
+}
+.scankeys .scankeyslist span { display: block; }
+.scankeys:hover .scankeyslist, .scankeys:focus .scankeyslist { display: block; }
 /* Картинки или листы PDF — только когда в папке есть и то и другое (03.11.2026). */
 .scankind { display: flex; gap: 0.15em; }
 /* Номер разворота — поле: набрали и Enter (Роман 12.10.2026). */
@@ -1156,3 +1169,24 @@ body.withscan .overlay { right: auto; width: var(--formw); }
 details.devinfo { margin-top: 1.2em; border-top: 0.0625em solid #e3e8ef; padding-top: 0.6em; }
 details.devinfo > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
 details.devinfo[open] > summary { margin-bottom: 0.6em; }
+
+/* Согласие с документами Familio в окне выгрузки (шаблон ver.2026-10c,
+   13.11.2026): флажок слева, текст блоком справа. */
+.consent { display: flex; flex-direction: column; gap: 0.35em; }
+.consentrow { display: flex; gap: 0.5em; align-items: flex-start; line-height: 1.35; }
+/* Общее правило input растянуло бы флажок на всю строку (проверяющий 13.11.2026). */
+.consentrow input { margin-top: 0.2em; flex: none; width: auto; padding: 0; }
+
+/* Однотипные правки помощника — блоком (массовая сверка, 13.11.2026). */
+.reviewgroup {
+  margin: 0.4em 0 0.6em; padding: 0.4em 0.6em;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.reviewgroup p { margin: 0 0 0.3em; }
+.reviewgroup .row { display: flex; gap: 0.4em; align-items: center; flex-wrap: wrap; }
+
+/* «Найти в записях» (13.11.2026): перечень, поле и кнопка — одной строкой. */
+.findrow { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin: 0.3em 0; }
+.findrow input { flex: 1 1 12em; min-width: 10em; }
+.findhits table td { padding-right: 0.8em; }

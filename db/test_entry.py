@@ -555,12 +555,15 @@ def main() -> int:
               and fod(1899) == one("SELECT fond, opis, delo FROM mk_case WHERE id = 1"))
         db.execute("UPDATE mk_case SET delo = '19' WHERE id = ?", (new_id,))
         check("правка дела нового года не трогает прежний", one("SELECT delo FROM mk_case WHERE id = 1")[0] == "18")
-        db.execute(sql["case_spread_parish"], dict(id=new_id, archive="ГАКО", church="Никольская", village="Борисоглебское",
+        db.execute(sql["case_spread_parish"], dict(id=new_id, archive="ГАКО", village="Борисоглебское",
                                                   uyezd="Макарьевский", guberniya="Костромская",
                                                   parish_key="Никольская|Борисоглебское|Макарьевский|Костромская",
                                                   indexer="Роман Чистов"))
-        check("церковь расходится на дела всех лет, фонд/опись/дело — нет, заполненный архив не затирается",
-              one("SELECT church, delo, archive FROM mk_case WHERE id = 1") == ("Никольская", "18", "ГА Костромской области"))
+        # П. 139 (Роман 12.11.2026): «Николаевская» 1858 года затёрла
+        # «Воскресенскую» у дел 1914–1917 — церковь у каждого дела своя.
+        check("церковь, фонд/опись/дело остаются у своего года; ключ прихода — общий; заполненный архив не затирается",
+              one("SELECT church, delo, archive, parish_key FROM mk_case WHERE id = 1")
+              == ("Христорождественская", "18", "ГА Костромской области", "Никольская|Борисоглебское|Макарьевский|Костромская"))
         check("годы для экрана «Дело»: с числом записей, по делам (номер и «Д.», п. 94)",
               (1899, 0, new_id) in [r[:3] for r in db.execute(sql["case_years"]).fetchall()])
         check("дело по номеру (второе дело года, п. 94)",
