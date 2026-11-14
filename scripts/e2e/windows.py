@@ -1572,7 +1572,7 @@ def resumed(driver, wait):
     print("\n13. Умерший без имени (Роман 30.09.2026)")
     # «Тело неизвестного человека мужеского пола» — флажок вместо ИОФ,
     # пол кнопкой, звание и причина как обычно.
-    click(driver, dead + "label[contains(@class,'unknownbox')]/input")
+    click(driver, dead + "label[contains(@class,'unknownbox')][contains(normalize-space(),'личность не установлена')]/input")
     check("поле ИОФ умершего убрано", not driver.find_elements(
         By.XPATH, dead + "div[contains(@class,'field')][./label[normalize-space()='ИОФ']]"))
     fill(driver, "Счёт", "5", d)
