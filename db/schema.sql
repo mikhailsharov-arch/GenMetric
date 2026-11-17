@@ -433,7 +433,10 @@ CREATE TABLE review_item (
   created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
   -- Слияние приходов (схема 13): строка merge_origin, о которой эта строка
   -- списка, — у видов merge_edit и merge_deleted («Взять правку», «Вернуть»).
-  origin_id   INTEGER
+  origin_id   INTEGER,
+  -- Правки помощника, которые человек решил оставить своими («Оставить мою»
+  -- по одной правке, 17.11.2026, п. 157): ключи правок, по строке на ключ.
+  kept        TEXT
 );
 CREATE INDEX ix_review_open ON review_item (done, id);
 

@@ -324,7 +324,8 @@ export default function MarriageForm({ mkCase, onSaved, workYear, openReq, onNew
       ...ws.map((w) => ["поручителя", w] as [string, Person]),
       ...cl.map((c) => ["причта", c] as [string, Person]),
     ];
-    const unknown = named.find(([, p]) => p.iof.trim() && p.parsed && !p.parsed.known_name);
+    // Без имени сверять нечего — «Имя причта «null»» (п. 164, 16.11.2026).
+    const unknown = named.find(([, p]) => p.iof.trim() && p.parsed?.first_name && !p.parsed.known_name);
     if (unknown) {
       warn(`Имя ${unknown[0]} «${unknown[1].parsed?.first_name}» не сверено со справочником`,
              unknown[0] === "причта"

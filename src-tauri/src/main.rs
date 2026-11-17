@@ -99,10 +99,11 @@ struct Suggestion {
     value: String,
     tier: i64,
     count: i64,
-    /// Волость пункта — серой припиской в подсказке НП (Роман 11.11.2026:
-    /// тёзки разных волостей «при быстром вводе невозможно отличить»).
+    /// Тип, волость, уезд, губерния пункта — второй строкой подсказки НП
+    /// (Роман 11.11.2026: тёзки разных волостей «при быстром вводе невозможно
+    /// отличить»; 16.11.2026, П1 — и остальное).
     #[serde(skip_serializing_if = "Option::is_none")]
-    volost: Option<String>,
+    area: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -468,75 +469,65 @@ fn suggest(
         // фамилии по окончанию.
         let (sql, gendered) = genmetric_core::suggest_sql(&kind)?;
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        // :gender есть только в запросе отчеств — лишний именованный параметр
-        // rusqlite считает ошибкой, поэтому список собирается по месту.
-        // Пункты — с запасом: строки, где набранное совпало только с
-        // приставкой («г.Тамбов» на «г»), уйдут вниз, и настоящие не должны
-        // выпасть из первой выборки (п. 144).
+        // Пункты — с запасом: порядок решается ниже, по частоте, и нужные
+        // строки не должны выпасть из первой выборки (пп. 144, 159).
         let first_limit = if kind == "place" { 200 } else { limit };
-        let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
-            vec![(":kind", &kind), (":prefix", &pattern), (":limit", &first_limit)];
-        // Пол нужен отчествам, именам и фамилиям. Заказчик 13.09.2026: матери
-        // подставлялись мужские имена — фильтровались только отчества.
-        if gendered {
-            params.push((":gender", &gender));
-        }
-        let rows = stmt
-            .query_map(&params[..], |r| {
-                Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)?, volost: None })
-            })
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
-        }
-        drop(stmt);
+        let mut out = merge_case_twins(suggest_rows(conn, &sql, &kind, &pattern, first_limit, gendered, &gender)?);
         // Звания — ещё и по вхождению (Роман 12.10.2026: набрал «от» и хочет
         // увидеть «сын-отрок», а не только «отставной рядовой»). Сначала всё,
         // что начинается с набранного, ниже — где набранное в середине. С
         // двух букв: одна буква в середине есть почти в каждом звании.
         // Населённые пункты — так же (п. 127, 06.11.2026): «Черн» находит
-        // «с.Черняное», название которого начинается с приставки типа.
-        let mut out = merge_case_twins(out);
-        if kind == "place" {
-            out = genmetric_core::place_name_first(out, &prefix, |r| r.value.as_str());
-            out.truncate(limit as usize);
-        }
+        // «с.Черняное», название которого начинается с приставки типа; с
+        // 17.11.2026 (п. 159) — всегда, а не только когда строк мало: на «Го»
+        // частое «с.Горелое» стояло ниже словарных «Гобино» и «Голчино».
         if let Some(inside) = genmetric_core::rank_inside_pattern(&kind, &pattern) {
-            if (out.len() as i64) < limit {
-                let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-                let mut params: Vec<(&str, &dyn rusqlite::ToSql)> =
-                    vec![(":kind", &kind), (":prefix", &inside), (":limit", &limit)];
-                if gendered {
-                    params.push((":gender", &gender));
-                }
-                let more = stmt
-                    .query_map(&params[..], |r| {
-                        Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)?, volost: None })
-                    })
-                    .map_err(|e| e.to_string())?;
-                for row in more {
-                    let row = row.map_err(|e| e.to_string())?;
+            if kind == "place" || (out.len() as i64) < limit {
+                for row in suggest_rows(conn, &sql, &kind, &inside, first_limit, gendered, &gender)? {
                     let key = genmetric_core::text::normalize(&row.value);
-                    if (out.len() as i64) < limit && !out.iter().any(|have: &Suggestion| genmetric_core::text::normalize(&have.value) == key) {
+                    if !out.iter().any(|have: &Suggestion| genmetric_core::text::normalize(&have.value) == key) {
                         out.push(row);
                     }
                 }
             }
         }
         if kind == "place" {
-            let find = statement("place_volost")?;
+            out = genmetric_core::place_order(out, &prefix, |r| r.value.as_str(), |r| r.count);
+        }
+        out.truncate(limit as usize);
+        if kind == "place" {
+            let find = statement("place_where")?;
             for row in &mut out {
-                row.volost = conn
+                let fields: Option<[Option<String>; 4]> = conn
                     .query_row(&find, rusqlite::named_params! { ":name_norm": genmetric_core::text::normalize(&row.value) },
-                               |r| r.get::<_, Option<String>>(0))
-                    .optional().map_err(|e| e.to_string())?.flatten()
-                    .map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+                               |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?]))
+                    .optional().map_err(|e| e.to_string())?;
+                row.area = fields.and_then(|[t, v, u, g]| {
+                    let f = |x: &Option<String>| x.clone().unwrap_or_default();
+                    genmetric_core::place_where(&f(&t), &f(&v), &f(&u), &f(&g))
+                });
             }
         }
         Ok(out)
     })
+}
+
+/// Строки подсказки по запросу перечня. `:gender` есть только в запросах
+/// имён, отчеств и фамилий — лишний именованный параметр rusqlite считает
+/// ошибкой, поэтому список собирается по месту.
+fn suggest_rows(conn: &rusqlite::Connection, sql: &str, kind: &str, pattern: &str, limit: i64, gendered: bool,
+                gender: &Option<String>) -> Result<Vec<Suggestion>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut params: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":kind", &kind), (":prefix", &pattern), (":limit", &limit)];
+    // Пол нужен отчествам, именам и фамилиям. Заказчик 13.09.2026: матери
+    // подставлялись мужские имена — фильтровались только отчества.
+    if gendered {
+        params.push((":gender", gender));
+    }
+    let rows = stmt
+        .query_map(&params[..], |r| Ok(Suggestion { value: r.get(0)?, tier: r.get(1)?, count: r.get(2)?, area: None }))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 /// «попов» и «Попов» — одна строка подсказки (Роман 11.11.2026, п. 133:
@@ -1767,8 +1758,9 @@ struct ReviewItem {
     year: Option<i64>,
     page: Option<String>,
     no: Option<i64>,
-    /// Группа однотипных правок помощника (`merge::edit_group`).
-    group: Option<String>,
+    /// Правка помощника по полям (`merge::edit_view`, пп. 156–157) — у
+    /// несделанных строк «помощник поправил запись».
+    view: Option<genmetric_core::merge::EditView>,
 }
 
 #[tauri::command]
@@ -1779,29 +1771,15 @@ fn review_list(app: State<App>, done: bool) -> Result<Vec<ReviewItem>, String> {
             .query_map(rusqlite::named_params! { ":done": done as i64 }, |r| Ok(ReviewItem {
                 id: r.get(0)?, kind: r.get(1)?, text: r.get(2)?, sheet: r.get(3)?, row: r.get(4)?,
                 entry_id: r.get(5)?, done: r.get::<_, i64>(6)? != 0, section: r.get(7)?, year: r.get(8)?,
-                page: r.get(9)?, no: r.get(10)?, group: None,
+                page: r.get(9)?, no: r.get(10)?, view: None,
             }))
             .map_err(|e| e.to_string())?;
         let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-        for i in &mut items {
-            if i.kind == "merge_edit" {
-                i.group = genmetric_core::merge::edit_group(&i.text);
-            }
+        let roles = genmetric_core::merge::roles(conn)?;
+        for i in items.iter_mut().filter(|i| i.kind == "merge_edit" && !i.done) {
+            i.view = genmetric_core::merge::edit_view(conn, i.id, &roles)?;
         }
         Ok(items)
-    })
-}
-
-/// «Оставить мою во всех» / «Вернуть в список» — для группы строк сразу.
-#[tauri::command]
-fn review_done_many(app: State<App>, ids: Vec<i64>, done: bool) -> Result<(), String> {
-    with_conn(&app, "Список на сверку", |conn| {
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        let sql = statement("review_done")?;
-        for id in ids {
-            tx.execute(&sql, rusqlite::named_params! { ":id": id, ":done": done as i64 }).map_err(|e| e.to_string())?;
-        }
-        tx.commit().map_err(|e| e.to_string())
     })
 }
 
@@ -2681,25 +2659,34 @@ fn entry_delete(app: State<App>, id: i64) -> Result<i64, String> {
     })
 }
 
-/// «Взять правку во всех» — группа однотипных правок помощника (Роман
-/// 12.11.2026). Отказы отдельных строк не останавливают остальные.
+/// «Взять правку во всех» / «Оставить мою во всех» — одна правка помощника
+/// во многих строках (Роман 12.11 и 16.11.2026). Окно шлёт строки частями,
+/// чтобы показывать ход (п. 152); копия прихода — перед первой частью
+/// «взять» (`backup`). Отказы отдельных строк не останавливают остальные.
 #[derive(Serialize)]
-struct TakenMany {
-    taken: usize,
-    failed: Vec<String>,
-    copy: String,
+struct PieceMany {
+    #[serde(flatten)]
+    done: genmetric_core::merge::ManyDone,
+    copy: Option<String>,
 }
 
 #[tauri::command(async)]
-fn merge_take_many(app: State<App>, review_ids: Vec<i64>, group: String) -> Result<TakenMany, String> {
+fn merge_piece_many(app: State<App>, review_ids: Vec<i64>, key: String, take: bool, backup: bool) -> Result<PieceMany, String> {
     let db_path = app.db_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
     with_conn_shared(&app, "Правки помощника", |conn| {
         // Много записей разом — сначала копия прихода (ревьюер 13.11.2026).
-        let copy = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::TAKE_MARK)
-            .map_err(|e| format!("копия прихода не сделана, правки не взяты: {e}"))?;
-        let (taken, failed) = genmetric_core::merge::take_many(conn, &review_ids, &group)?;
-        write_log(&app.log_path, &format!("Взять правку во всех: взято {taken}, не взято {}; копия {}", failed.len(), copy.display()));
-        Ok(TakenMany { taken, failed, copy: copy.to_string_lossy().to_string() })
+        let copy = if take && backup {
+            let c = genmetric_core::db::backup_marked(conn, std::path::Path::new(&db_path), genmetric_core::db::TAKE_MARK)
+                .map_err(|e| format!("копия прихода не сделана, правки не взяты: {e}"))?;
+            Some(c.to_string_lossy().to_string())
+        } else {
+            None
+        };
+        let done = genmetric_core::merge::piece_many(conn, &review_ids, &key, take)?;
+        write_log(&app.log_path, &format!("{} «{key}»: решено {}, осталось с другими отличиями {}, не вышло {}",
+                                          if take { "Взять правку во всех" } else { "Оставить мою во всех" },
+                                          done.closed, done.left, done.failed.len()));
+        Ok(PieceMany { done, copy })
     })
 }
 
@@ -2957,7 +2944,6 @@ fn main() {
             review_list,
             review_count,
             review_done,
-            review_done_many,
             entry_save,
             entry_list,
             entry_load,
@@ -3010,7 +2996,7 @@ fn main() {
             merge_inspect,
             merge_run,
             merge_take,
-            merge_take_many,
+            merge_piece_many,
             replace_spellings,
             replace_hits,
             replace_apply,

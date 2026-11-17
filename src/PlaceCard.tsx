@@ -116,6 +116,19 @@ function PlaceForm({ name, similar, defaults, existing, lastVolost, last, defaul
   const [uyezd, setUyezd] = useState(fresh ? prev?.uyezd || defaults.uyezd : existing.uyezd ?? "");
   const [volost, setVolost] = useState(existing && !bare ? existing.volost ?? "" : existing ? "" : lastVolost ?? "");
   const [url, setUrl] = useState(existing?.familio_url ?? "");
+  // Сменили губернию — уезд и волость прежней уже не те; сменили уезд —
+  // волость (Роман 16.11.2026, П2). По уходу из поля и только при настоящей
+  // смене: повторный выбор той же губернии ничего не трогает. Очищенное
+  // подсвечено, пока его не заполнят; в карточку пишется только по «Сохранить».
+  const seen = useRef([guberniya, uyezd]);
+  const [cleared, setCleared] = useState([false, false, false]);
+  function leftLevel(level: 0 | 1, value: string) {
+    const same = value.trim().toLowerCase() === seen.current[level].trim().toLowerCase();
+    seen.current[level] = value;
+    if (same) return;
+    if (level === 0 && uyezd.trim()) { setUyezd(""); seen.current[1] = ""; setCleared((c) => [c[0], true, c[2]]); }
+    if (volost.trim()) { setVolost(""); setCleared((c) => [c[0], c[1], true]); }
+  }
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
   const urlField = useRef<HTMLInputElement>(null);
@@ -299,11 +312,14 @@ function PlaceForm({ name, similar, defaults, existing, lastVolost, last, defaul
           16.10.2026). */}
       <Suggest label="Тип" kind="np_type" value={npType} onChange={setNpType} browse autofocus={!existing && !twin && similar.length === 0} />
       {/* Первая буква — заглавная (Роман 07.10.2026). */}
-      <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse fix={capFirst} />
-      <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse fix={capFirst} />
+      <Suggest label="Губерния" kind="guberniya" value={guberniya} onChange={setGuberniya} browse fix={capFirst}
+               onLeave={(v) => leftLevel(0, v)} />
+      <Suggest label="Уезд" kind="uyezd" value={uyezd} onChange={setUyezd} browse fix={capFirst}
+               onLeave={(v) => leftLevel(1, v)} auto={cleared[1] && !uyezd.trim()} />
       {/* Волость — со списком уже известных; набранная в карточке губерния,
           уезд и волость запоминаются (Роман 02.10.2026). */}
-      <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse fix={capFirst} />
+      <Suggest label="Волость" kind="volost" value={volost} onChange={setVolost} browse fix={capFirst}
+               auto={cleared[2] && !volost.trim()} />
       {!twin && commentRow}
       <div className="field">
         <label>Familio</label>

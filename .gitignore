@@ -38,3 +38,4 @@ Thumbs.db
 # Ресурсы, которые собираются автоматически
 src-tauri/resources/*.sqlite
 src-tauri/gen/
+graphify-out/

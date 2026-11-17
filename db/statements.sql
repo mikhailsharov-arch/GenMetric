@@ -150,14 +150,13 @@ DELETE FROM mk_case
    AND (SELECT count(*) FROM mk_case) > 1;
 
 -- @case_spread_parish
--- Село, уезд, губерния и индексатор — свойства прихода, не года: правка на
--- экране «Дело» расходится на дела всех лет. Архив — туда, где пуст. Церковь
--- — нет: она у каждого дела своя (Роман 12.11.2026, п. 139: «Николаевская»
--- 1858 года затёрла «Воскресенскую» 1914–1917). Ключ прихода — общий для
--- всех лет: по нему частоты подсказок «по приходу».
+-- Индексатор — свойство прихода, не года: правка на экране «Дело» расходится
+-- на дела всех лет. Архив — туда, где пуст. Церковь (п. 139, 13.11.2026), село,
+-- уезд и губерния (п. 158, Роман 16.11.2026: «бывает, что в разные годы
+-- одного прихода дело велось в другом селе») — нет: у каждого дела свои.
+-- Ключ прихода — общий для всех лет: по нему частоты подсказок «по приходу».
 UPDATE mk_case
-   SET village = :village, uyezd = :uyezd, guberniya = :guberniya,
-       parish_key = :parish_key, indexer = :indexer,
+   SET parish_key = :parish_key, indexer = :indexer,
        archive = coalesce(nullif(trim(archive), ''), :archive)
  WHERE id <> :id;
 
@@ -180,11 +179,19 @@ UPDATE entry SET case_id = :case_id, page = :page, no_male = :no_male, no_female
                  updated_at = datetime('now')
  WHERE id = :id;
 
+-- @entry_place_in_book
+-- Дело, год книги и раздел записи — сохранение решает, менять ли дело, а
+-- удаление — какой список обновить (п. 151: запросы — здесь, не в Rust).
+SELECT case_id, coalesce(rite_year, event_year), section FROM entry WHERE id = :id;
+
 -- @mentions_before_edit
 -- Люди записи до правки — их вклад в память подсказок снимается перед
 -- сохранением новых (Роман 20.10.2026: исправленная опечатка «Павлоа»,
 -- «Владимир Ремов» оставалась в подсказках и в списке причта навсегда).
-SELECT m.role_code, m.first_name, m.patronymic, m.surname, m.rank, p.name, e.case_id
+-- С 17.11.2026 (п. 150) — и всё остальное, что сохранение кладёт в частоты:
+-- звание, НП, причина смерти, родство, «каким браком», вероисповедание.
+SELECT m.role_code, m.first_name, m.patronymic, m.surname, m.rank, p.name, e.case_id,
+       m.gender, m.kinship, m.death_cause, m.marriage_order, m.confession
   FROM person_mention m JOIN entry e ON e.id = m.entry_id LEFT JOIN place p ON p.id = m.place_id
  WHERE m.entry_id = :entry_id;
 
@@ -914,10 +921,11 @@ SELECT form, 3, 0 FROM name_alias
 -- губерния, уезд, волость и ссылка на Familio.
 SELECT name, 4, 0 FROM place WHERE name_norm LIKE :prefix ESCAPE '\'
 
--- @place_volost
--- Волость пункта для подсказки НП (Роман 11.11.2026) — у лучшей строки
--- названия (правило place_find).
-SELECT volost FROM place WHERE name_norm = :name_norm
+-- @place_where
+-- Тип, волость, уезд и губерния пункта — второй строкой подсказки НП (Роман
+-- 11.11.2026 — волость; 16.11.2026, П1 — всё) — у лучшей строки названия
+-- (правило place_find).
+SELECT np_type, volost, uyezd, guberniya FROM place WHERE name_norm = :name_norm
  ORDER BY (full_location IS NULL OR trim(full_location) = ''),
           (np_type IS NULL OR trim(np_type) = ''), (origin = 'archive'), id LIMIT 1;
 
@@ -1304,6 +1312,12 @@ SELECT r.id, r.kind, r.text, r.sheet, r.row, r.entry_id, r.done,
 
 -- @review_count
 SELECT count(*) FROM review_item WHERE done = 0;
+
+-- @review_kept
+SELECT kept FROM review_item WHERE id = :id;
+
+-- @review_kept_set
+UPDATE review_item SET kept = :kept WHERE id = :id;
 
 -- @review_done
 UPDATE review_item SET done = :done WHERE id = :id;
@@ -2280,12 +2294,13 @@ SELECT name, base_name, variant FROM name_dict;
 -- @replace_values
 -- «Найти в записях» (Роман 12.11.2026: «головая боль» в подсказке помечена
 -- «введено», а найти запись нельзя): написания поля и в скольких записях.
--- Поле — одно из четырёх; отбор по набранному без регистра и «ё» — в Rust
+-- Поле — одно из шести (имя и отчество — с 17.11.2026, П3); отбор по набранному без регистра и «ё» — в Rust
 -- (кириллица, см. грабли про lower()).
 SELECT v, count(DISTINCT entry_id) AS n
   FROM (SELECT entry_id,
                CASE :field WHEN 'rank' THEN rank WHEN 'death_cause' THEN death_cause
-                           WHEN 'kinship' THEN kinship WHEN 'surname' THEN surname END AS v
+                           WHEN 'kinship' THEN kinship WHEN 'surname' THEN surname
+                           WHEN 'first_name' THEN first_name WHEN 'patronymic' THEN patronymic END AS v
           FROM person_mention)
  WHERE v IS NOT NULL AND trim(v) <> ''
  GROUP BY v;
@@ -2300,5 +2315,6 @@ SELECT m.entry_id, e.section, coalesce(e.rite_year, e.event_year, c.year) AS yea
   JOIN entry e ON e.id = m.entry_id
   LEFT JOIN mk_case c ON c.id = e.case_id
  WHERE trim(CASE :field WHEN 'rank' THEN m.rank WHEN 'death_cause' THEN m.death_cause
-                        WHEN 'kinship' THEN m.kinship WHEN 'surname' THEN m.surname END) = trim(:value)
+                        WHEN 'kinship' THEN m.kinship WHEN 'surname' THEN m.surname
+                        WHEN 'first_name' THEN m.first_name WHEN 'patronymic' THEN m.patronymic END) = trim(:value)
  ORDER BY year, e.section, e.id, m.sort_order;

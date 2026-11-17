@@ -94,14 +94,37 @@ pub fn rank_inside_pattern(kind: &str, prefix_pattern: &str) -> Option<String> {
 
 /// Подсказка НП: первыми — пункты, у которых с набранного начинается само
 /// название, без приставки типа; ниже — где набранное совпало только с
-/// приставкой (Роман и Олег 12.11.2026, п. 144: на «г» шли «г.Тамбов»,
-/// «г.Кирсанов», а не «Горелое»). Порядок внутри каждой части — прежний (по
-/// частоте). `name` — название строки.
-pub fn place_name_first<T>(rows: Vec<T>, typed: &str, name: impl Fn(&T) -> &str) -> Vec<T> {
+/// приставкой или в середине (п. 144: на «г» шли «г.Тамбов», а не
+/// «Горелое»). Внутри — только по частоте, при равной — по алфавиту названия
+/// без приставки; приставка на порядок не влияет (Роман 16.11.2026, п. 159:
+/// частое «с.Горелое» стояло ниже словарных «Гобино» и «Голчино»).
+pub fn place_order<T>(rows: Vec<T>, typed: &str, name: impl Fn(&T) -> &str, count: impl Fn(&T) -> i64) -> Vec<T> {
+    let bare = |r: &T| text::normalize(text::strip_place_type(name(r)));
     let want = text::normalize(text::strip_place_type(typed));
-    let (head, tail): (Vec<T>, Vec<T>) = rows.into_iter()
-        .partition(|r| text::normalize(text::strip_place_type(name(r))).starts_with(&want));
-    head.into_iter().chain(tail).collect()
+    let mut rows = rows;
+    rows.sort_by(|a, b| {
+        let (ba, bb) = (bare(a), bare(b));
+        (!ba.starts_with(&want)).cmp(&!bb.starts_with(&want))
+            .then(count(b).cmp(&count(a)))
+            .then(ba.cmp(&bb))
+    });
+    rows
+}
+
+/// Вторая строка подсказки НП (Роман 16.11.2026, П1): «д., Завражная вол.,
+/// Макарьевский уезд, Костромская губ.». Пустые поля пропускаются; подпись
+/// поля не дублируется, если она уже в значении («Макарьевский уезд»).
+/// Ничего не заполнено — `None`.
+pub fn place_where(np_type: &str, volost: &str, uyezd: &str, guberniya: &str) -> Option<String> {
+    let part = |v: &str, tail: &str, mark: &str| {
+        let v = v.trim();
+        if v.is_empty() { None }
+        else if tail.is_empty() || text::normalize(v).contains(mark) { Some(v.to_string()) }
+        else { Some(format!("{v} {tail}")) }
+    };
+    let all: Vec<String> = [part(np_type, "", ""), part(volost, "вол.", "вол"), part(uyezd, "уезд", "уезд"),
+                            part(guberniya, "губ.", "губ")].into_iter().flatten().collect();
+    (!all.is_empty()).then(|| all.join(", "))
 }
 
 /// Адрес поиска населённого пункта на Familio (Роман 03.10.2026, задача 3).
@@ -233,16 +256,29 @@ mod tests {
         assert_eq!(odd, "https://familio.org/places?title=a%26b%3Dc%23d%2Fe%3Ff&georequisites=%D0%9A%D0%BE%D1%81%D1%82%D1%80%D0%BE%D0%BC%D1%81%D0%BA%D0%B0%D1%8F%20%D0%9C%D0%B0%D0%BA%D0%B0%D1%80%D1%8C%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B9");
     }
 
-    /// П. 144: на «г» первым — «Горелое», а не «г.Тамбов».
+    /// П. 144: на «г» первым — «Горелое», а не «г.Тамбов»; п. 159: внутри —
+    /// по частоте, приставка не влияет, при равной — по алфавиту без неё.
     #[test]
-    fn place_name_first_skips_type() {
-        let rows = vec!["г.Тамбов", "г.Кирсанов", "Горелое", "с.Гагарино"];
-        assert_eq!(super::place_name_first(rows.clone(), "г", |r| r), vec!["Горелое", "с.Гагарино", "г.Тамбов", "г.Кирсанов"]);
-        assert_eq!(super::place_name_first(rows.clone(), "с.Гор", |r| r)[0], "Горелое");
-        assert_eq!(super::place_name_first(rows, "Тамб", |r| r)[0], "г.Тамбов");
+    fn place_order_by_count() {
+        let rows = vec![("г.Тамбов", 9), ("г.Кирсанов", 1), ("Горелое", 0), ("с.Гагарино", 0), ("Гобино", 0), ("с.Горелое", 40)];
+        let names = |typed: &str| super::place_order(rows.clone(), typed, |r| r.0, |r| r.1).into_iter().map(|r| r.0).collect::<Vec<_>>();
+        assert_eq!(names("г"), vec!["с.Горелое", "с.Гагарино", "Гобино", "Горелое", "г.Тамбов", "г.Кирсанов"]);
+        assert_eq!(names("Го"), vec!["с.Горелое", "Гобино", "Горелое", "г.Тамбов", "г.Кирсанов", "с.Гагарино"]);
+        assert_eq!(names("Тамб")[0], "г.Тамбов");
     }
 
-    /// Волость пункта для подсказки НП (Роман 11.11.2026) — у лучшей строки.
+    /// П1 (Роман 16.11.2026): вторая строка подсказки НП.
+    #[test]
+    fn place_where_line() {
+        assert_eq!(super::place_where("д.", "Завражная", "Макарьевский", "Костромская").as_deref(),
+                   Some("д., Завражная вол., Макарьевский уезд, Костромская губ."));
+        assert_eq!(super::place_where("", "Завражная", " ", "").as_deref(), Some("Завражная вол."));
+        assert_eq!(super::place_where("", "", "Макарьевский уезд", "Костромская губерния").as_deref(),
+                   Some("Макарьевский уезд, Костромская губерния"));
+        assert_eq!(super::place_where("", "", "", ""), None);
+    }
+
+    /// Поля пункта для подсказки НП — у лучшей строки (Роман 11.11.2026).
     #[test]
     fn place_volost_runs() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -250,8 +286,8 @@ mod tests {
         conn.execute_batch("INSERT INTO place (name, name_norm, origin) VALUES ('Малово', 'малово', 'archive');
                             INSERT INTO place (name, name_norm, np_type, volost, full_location, uyezd)
                               VALUES ('Малово', 'малово', 'д.', 'Завражная', 'д. Малово, Завражная волость', 'Макарьевский');").unwrap();
-        let v: Option<String> = conn.query_row(&crate::statement("place_volost").unwrap(), rusqlite::named_params! { ":name_norm": "малово" },
-                                               |r| r.get(0)).unwrap();
+        let v: Option<String> = conn.query_row(&crate::statement("place_where").unwrap(), rusqlite::named_params! { ":name_norm": "малово" },
+                                               |r| r.get(1)).unwrap();
         assert_eq!(v.as_deref(), Some("Завражная"));
     }
 

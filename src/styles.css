@@ -346,7 +346,7 @@ button.primary:disabled { opacity: 0.6; cursor: default; }
    различает тёзок и стоит последней, обрезать её нельзя. */
 .suggest .sub.wrap { white-space: normal; overflow-wrap: anywhere; }
 /* Волость в строке подсказки НП — в той же строке, серым (Роман 11.11.2026). */
-.suggest .sub.placevolost { display: inline; font-size: 0.78rem; }
+.suggest .sub.placewhere { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tier.t1 { font-weight: 600; }
 
 /* Причт: три персоны в одной секции, без своих рамок. Каждая рамка — это
@@ -708,8 +708,6 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 button.toggle.small { width: auto; padding: 0.15em 0.7em; font-size: 0.82rem; }
 .caseyearrow { align-items: center; }
 .caseyearrow .fieldhint { flex: 1 1 12em; }
-.facts.review td:last-child { white-space: nowrap; }
-.facts.review td:last-child button + button { margin-left: 0.4em; }
 .facts.review tr.done td { opacity: 0.55; }
 .modal[data-modal="review"] { max-width: 44em; }
 
@@ -721,7 +719,9 @@ button.toggle { white-space: nowrap; }
 .facts.parishes td [data-parish-confirm] { display: block; white-space: normal; max-width: 18em; text-align: left; }
 .facts.parishes td input[data-parish-rename] { width: 100%; font-weight: 600; }
 .facts.parishes .parishopen { color: var(--muted); margin-right: 0.3em; }
-.toggle.danger { border-color: #c0392b; color: #c0392b; }
+/* Кнопка подтверждения — светлым на красном (п. 161: «Удалить» в окне
+   «Приходы» была красной на красном, надпись не читалась). */
+button.toggle.danger { border-color: #a93226; color: #fff; background: #c0392b; }
 /* «Удалить запись» (11.11.2026): красная, рядом с «Сохранить изменения», уже неё. */
 button.danger { padding: 0.45em 0.8em; font-family: inherit; font-size: 0.9rem; color: #fff; background: #c0392b;
                 border: 1px solid #a93226; border-radius: 7px; cursor: pointer; }
@@ -1184,7 +1184,36 @@ details.devinfo[open] > summary { margin-bottom: 0.6em; }
   border-radius: 6px;
 }
 .reviewgroup p { margin: 0 0 0.3em; }
-.reviewgroup .row { display: flex; gap: 0.4em; align-items: center; flex-wrap: wrap; }
+.reviewgroup .row, .reviewbuttons { display: flex; gap: 0.4em; align-items: center; flex-wrap: wrap; }
+/* Окно сверки (Роман 16.11.2026, пп. 152–156): шапка и нижняя панель на
+   месте, прокручивается только список; кнопки строки — под текстом. */
+/* Окно объединения пунктов невысокое: подсказка «Пункт» обрезалась его
+   краем, «Дальше» уходила под список (Роман 16.11.2026, п. 160). Окно
+   короткое, своей прокрутки ему не нужно — список выходит поверх. */
+.modal[data-modal="place-merge"] { overflow: visible; }
+.modal[data-modal="review"] { display: flex; flex-direction: column; overflow: hidden; }
+.reviewscroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.reviewbuttons { margin-top: 0.3em; }
+.facts.review td { text-align: left; }
+.reviewresult {
+  padding: 0.4em 0.6em;
+  background: #e6f4ea;
+  border: 1px solid #9fcfab;
+  border-radius: 6px;
+  color: #1e4d2b;
+}
+.reviewprogress { display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap; }
+.reviewprogress progress { flex: 1 1 10em; }
+.reviewgroupitems {
+  list-style: none;
+  margin: 0.4em 0 0 0.6em;
+  padding: 0 0 0 0.6em;
+  border-left: 2px solid var(--line);
+  max-height: 16em;
+  overflow-y: auto;
+  font-size: 0.85rem;
+}
+.reviewgroupitems li { display: flex; gap: 0.6em; align-items: center; justify-content: space-between; padding: 0.15em 0; }
 
 /* «Найти в записях» (13.11.2026): перечень, поле и кнопка — одной строкой. */
 .findrow { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin: 0.3em 0; }

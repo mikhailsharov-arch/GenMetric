@@ -324,25 +324,124 @@ fn date(d: Option<i64>, m: Option<i64>, y: Option<i64>) -> String {
     format!("{}.{}.{}", two(d), two(m), y.map(|n| n.to_string()).unwrap_or_else(|| "????".into()))
 }
 
-fn differ(out: &mut Vec<String>, label: &str, a: String, b: String) {
-    let quote = |v: &str| if v.is_empty() { "пусто".to_string() } else { format!("«{v}»") };
-    if normalize(&a) != normalize(&b) {
-        out.push(format!("{label}: у вас {}, у помощника {}", quote(&a), quote(&b)));
+/// Одно отличие нашей записи от записи помощника (пп. 156–157, Роман
+/// 16.11.2026): поле, у кого и оба значения. `role` — роль и номер человека
+/// этой роли в записи; у полей записи — нет.
+#[derive(Clone, Debug)]
+struct Diff {
+    who: String,
+    field: &'static str,
+    ours: String,
+    theirs: String,
+    role: Option<(String, usize)>,
+}
+
+impl Diff {
+    /// Правка без того, у кого она: «НП: «с.Горелое» → «Горелое»». Одинаковая
+    /// у разных людей и в разных записях — одна правка.
+    fn key(&self) -> String {
+        let quote = |v: &str| if v.is_empty() { "пусто".to_string() } else { format!("«{v}»") };
+        format!("{}: {} → {}", self.field, quote(&self.ours), quote(&self.theirs))
+    }
+    /// Прежняя строка списка: «Отец — НП: у вас «…», у помощника «…»».
+    fn line(&self) -> String {
+        let quote = |v: &str| if v.is_empty() { "пусто".to_string() } else { format!("«{v}»") };
+        let label = match (&self.role, self.field) {
+            (None, f) => f.to_string(),
+            (Some(_), "ИОФ") => self.who.clone(),
+            (Some(_), f) => format!("{} — {f}", self.who),
+        };
+        format!("{label}: у вас {}, у помощника {}", quote(&self.ours), quote(&self.theirs))
     }
 }
 
-/// Чем запись помощника отличается от нашей — словами, для списка на сверку.
-/// Пусто — видимых отличий нет.
-fn differences(ours: &EntryInput, theirs: &EntryInput, roles: &HashMap<String, String>) -> Vec<String> {
+const ENTRY_FIELDS: [&str; 6] = ["страница", "счёт м.", "счёт ж.", "дата события", "дата обряда", "примечание записи"];
+const PERSON_FIELDS: [&str; 10] = ["ИОФ", "НП", "звание", "возраст", "причина смерти", "родство", "каким браком",
+                                   "вероисповедание", "девичья фамилия", "примечание"];
+
+fn entry_value(e: &EntryInput, field: &str) -> String {
+    match field {
+        "страница" => text(&e.page),
+        "счёт м." => number(e.no_male),
+        "счёт ж." => number(e.no_female),
+        "дата события" => date(e.event_day, e.event_month, e.event_year),
+        "дата обряда" => date(e.rite_day, e.rite_month, e.rite_year),
+        _ => text(&e.note),
+    }
+}
+
+fn person_value(p: &PersonInput, field: &str) -> String {
+    match field {
+        "ИОФ" => iof(p),
+        "НП" => text(&p.place),
+        "звание" => text(&p.rank),
+        "возраст" => {
+            let t = text(&p.age_text);
+            if t.is_empty() { number(p.age_years) } else { t }
+        }
+        "причина смерти" => text(&p.death_cause),
+        "родство" => text(&p.kinship),
+        "каким браком" => text(&p.marriage_order),
+        "вероисповедание" => text(&p.confession),
+        "девичья фамилия" => text(&p.maiden_surname),
+        _ => text(&p.note),
+    }
+}
+
+/// Взять у помощника одно поле записи — всё, из чего оно складывается.
+fn copy_entry_field(to: &mut EntryInput, from: &EntryInput, field: &str) {
+    match field {
+        "страница" => to.page = from.page.clone(),
+        "счёт м." => to.no_male = from.no_male,
+        "счёт ж." => to.no_female = from.no_female,
+        "дата события" => (to.event_day, to.event_month, to.event_year) = (from.event_day, from.event_month, from.event_year),
+        "дата обряда" => (to.rite_day, to.rite_month, to.rite_year) = (from.rite_day, from.rite_month, from.rite_year),
+        _ => to.note = from.note.clone(),
+    }
+}
+
+/// То же для поля человека. ИОФ — вместе с современным написанием и полом:
+/// иначе имя помощника осталось бы с нашим современным написанием.
+fn copy_person_field(to: &mut PersonInput, from: &PersonInput, field: &str) {
+    match field {
+        "ИОФ" => {
+            to.first_name = from.first_name.clone();
+            to.patronymic = from.patronymic.clone();
+            to.surname = from.surname.clone();
+            to.first_name_modern = from.first_name_modern.clone();
+            to.patronymic_modern = from.patronymic_modern.clone();
+            to.surname_modern = from.surname_modern.clone();
+            to.gender = from.gender.clone();
+        }
+        "НП" => to.place = from.place.clone(),
+        "звание" => to.rank = from.rank.clone(),
+        "возраст" => {
+            to.age_years = from.age_years;
+            to.age_months = from.age_months;
+            to.age_weeks = from.age_weeks;
+            to.age_days = from.age_days;
+            to.age_text = from.age_text.clone();
+        }
+        "причина смерти" => to.death_cause = from.death_cause.clone(),
+        "родство" => to.kinship = from.kinship.clone(),
+        "каким браком" => to.marriage_order = from.marriage_order.clone(),
+        "вероисповедание" => to.confession = from.confession.clone(),
+        "девичья фамилия" => to.maiden_surname = from.maiden_surname.clone(),
+        _ => to.note = from.note.clone(),
+    }
+}
+
+/// Отличия по полям и строки о людях, которые есть только у одной стороны
+/// (их по полю не взять — только записью целиком).
+fn diffs(ours: &EntryInput, theirs: &EntryInput, roles: &HashMap<String, String>) -> (Vec<Diff>, Vec<String>) {
     let mut out = Vec::new();
-    differ(&mut out, "страница", text(&ours.page), text(&theirs.page));
-    differ(&mut out, "счёт м.", number(ours.no_male), number(theirs.no_male));
-    differ(&mut out, "счёт ж.", number(ours.no_female), number(theirs.no_female));
-    differ(&mut out, "дата события", date(ours.event_day, ours.event_month, ours.event_year),
-           date(theirs.event_day, theirs.event_month, theirs.event_year));
-    differ(&mut out, "дата обряда", date(ours.rite_day, ours.rite_month, ours.rite_year),
-           date(theirs.rite_day, theirs.rite_month, theirs.rite_year));
-    differ(&mut out, "примечание записи", text(&ours.note), text(&theirs.note));
+    let mut other = Vec::new();
+    for field in ENTRY_FIELDS {
+        let (a, b) = (entry_value(ours, field), entry_value(theirs, field));
+        if normalize(&a) != normalize(&b) {
+            out.push(Diff { who: String::new(), field, ours: a, theirs: b, role: None });
+        }
+    }
     let title = |code: &str| roles.get(code).cloned().unwrap_or_else(|| code.to_string());
     let mut codes: Vec<(i64, String)> = Vec::new();
     for p in ours.persons.iter().chain(&theirs.persons) {
@@ -354,37 +453,32 @@ fn differences(ours: &EntryInput, theirs: &EntryInput, roles: &HashMap<String, S
     for (_, code) in codes {
         // У роли бывает несколько человек (два родственника жениха) — по порядку.
         let mine: Vec<&PersonInput> = ours.persons.iter().filter(|p| p.role_code == code).collect();
-        let other: Vec<&PersonInput> = theirs.persons.iter().filter(|p| p.role_code == code).collect();
-        for n in 0..mine.len().max(other.len()) {
+        let yours: Vec<&PersonInput> = theirs.persons.iter().filter(|p| p.role_code == code).collect();
+        for n in 0..mine.len().max(yours.len()) {
             let who = title(&code);
-            match (mine.get(n), other.get(n)) {
+            match (mine.get(n), yours.get(n)) {
                 (Some(a), Some(b)) => {
-                    let age = |p: &PersonInput| {
-                        let t = text(&p.age_text);
-                        if t.is_empty() { number(p.age_years) } else { t }
-                    };
-                    for (label, x, y) in [
-                        ("", iof(a), iof(b)),
-                        (" — НП", text(&a.place), text(&b.place)),
-                        (" — звание", text(&a.rank), text(&b.rank)),
-                        (" — возраст", age(a), age(b)),
-                        (" — причина смерти", text(&a.death_cause), text(&b.death_cause)),
-                        (" — родство", text(&a.kinship), text(&b.kinship)),
-                        (" — каким браком", text(&a.marriage_order), text(&b.marriage_order)),
-                        (" — вероисповедание", text(&a.confession), text(&b.confession)),
-                        (" — девичья фамилия", text(&a.maiden_surname), text(&b.maiden_surname)),
-                        (" — примечание", text(&a.note), text(&b.note)),
-                    ] {
-                        differ(&mut out, &format!("{who}{label}"), x, y);
+                    for field in PERSON_FIELDS {
+                        let (x, y) = (person_value(a, field), person_value(b, field));
+                        if normalize(&x) != normalize(&y) {
+                            out.push(Diff { who: who.clone(), field, ours: x, theirs: y, role: Some((code.clone(), n)) });
+                        }
                     }
                 }
-                (None, Some(b)) => out.push(format!("у помощника есть {who}: «{}», у вас нет", iof(b))),
-                (Some(a), None) => out.push(format!("у помощника нет {who}: у вас «{}»", iof(a))),
+                (None, Some(b)) => other.push(format!("у помощника есть {who}: «{}», у вас нет", iof(b))),
+                (Some(a), None) => other.push(format!("у помощника нет {who}: у вас «{}»", iof(a))),
                 (None, None) => {}
             }
         }
     }
-    out
+    (out, other)
+}
+
+/// Чем запись помощника отличается от нашей — словами, для списка на сверку.
+/// Пусто — видимых отличий нет.
+fn differences(ours: &EntryInput, theirs: &EntryInput, roles: &HashMap<String, String>) -> Vec<String> {
+    let (d, other) = diffs(ours, theirs, roles);
+    d.iter().map(Diff::line).chain(other).collect()
 }
 
 fn brief(lines: &[String]) -> String {
@@ -524,10 +618,8 @@ fn merge_in_tx(conn: &Connection, src: &Connection, uid: &str, _file: &str) -> R
         let t = &theirs.case;
         let found = ours.iter().position(|o| o.case.year == t.year && same_fod(&o.case, t))
             .or_else(|| t.year.and_then(|_| ours.iter().position(|o| o.case.year == t.year)));
-        // Свойства прихода (церковь, село, уезд, губерния) — наши; у файла
-        // другие — в отчёт. Пустые наши дополняются.
-        let parish_fields = |c: &Case| [("церковь", c.church.clone()), ("село", c.village.clone()),
-                                        ("уезд", c.uyezd.clone()), ("губерния", c.guberniya.clone())];
+        // Дело того же года: реквизиты наши; у файла другие — в отчёт.
+        // Пустые наши дополняются.
         match found {
             Some(i) => {
                 let mut mine = ours[i].case.clone();
@@ -575,25 +667,16 @@ fn merge_in_tx(conn: &Connection, src: &Connection, uid: &str, _file: &str) -> R
                 let mut new = t.clone();
                 new.id = id;
                 if let Some(base) = ours.first().map(|o| o.case.clone()) {
-                    for ((name, mine), (_, theirs)) in parish_fields(&base).into_iter().zip(parish_fields(t)) {
-                        // Церковь у дела своя (п. 139): у нового года — из файла помощника.
-                        if name == "церковь" {
-                            continue;
-                        }
-                        let (a, b) = (text(&mine), text(&theirs));
-                        if !a.is_empty() && !b.is_empty() && normalize(&a) != normalize(&b)
-                            && seen_diffs.insert(format!("{name}|{}|{}", normalize(&a), normalize(&b))) {
-                            report.case_diffs.push(format!("{name} прихода — у вас «{a}», в файле «{b}» (осталось ваше)"));
-                        }
-                    }
                     let keep = |mine: &Option<String>, theirs: &Option<String>| if text(mine).is_empty() { theirs.clone() } else { mine.clone() };
-                    // Церковь — у своего дела (п. 139, ревьюер 13.11.2026): Олег
-                    // набрал 1858 год с «Николаевской» — у нас дело 1858 года
-                    // с ней же, а не с церковью нашего первого дела.
+                    // Церковь (п. 139, ревьюер 13.11.2026), село, уезд и
+                    // губерния (п. 158, Роман 16.11.2026) — у своего дела: у
+                    // нового года — из файла помощника, пустое — от нашего
+                    // первого дела. Олег набрал 1858 год с «Николаевской» — у
+                    // нас дело 1858 года с ней же.
                     new.church = keep(&t.church, &base.church);
-                    new.village = keep(&base.village, &t.village);
-                    new.uyezd = keep(&base.uyezd, &t.uyezd);
-                    new.guberniya = keep(&base.guberniya, &t.guberniya);
+                    new.village = keep(&t.village, &base.village);
+                    new.uyezd = keep(&t.uyezd, &base.uyezd);
+                    new.guberniya = keep(&t.guberniya, &base.guberniya);
                     if text(&new.archive).is_empty() {
                         new.archive = base.archive.clone();
                     }
@@ -1033,118 +1116,216 @@ pub fn take(conn: &Connection, review_id: i64) -> Result<Taken, String> {
     Ok(Taken { entry_id: saved.id, section: entry.section, restored: !alive })
 }
 
-/// Группа однотипных правок помощника (Роман 12.11.2026: Олег убрал
-/// приставку у пункта — на сверку пришла 1761 запись с одной и той же
-/// правкой). Ключ — набор отличий строки без того, у кого из людей
-/// («— НП: у вас «с.Горелое», у помощника «Горелое»»), по тексту строки
-/// списка: так группируются и строки, созданные до этой сборки. Строка,
-/// где показаны не все отличия («и ещё отличий»), в группу не идёт.
-pub fn edit_group(text: &str) -> Option<String> {
-    let start = text.find("): ")? + 3;
-    let end = text.rfind(". «Взять правку»")?;
-    let body = text.get(start..end)?;
-    if body.contains("и ещё отличий") || body.starts_with("отличия — в полях") {
-        return None;
-    }
-    group_of(body.split("; "))
+/// Правка помощника на сверке — по полям (пп. 156–157, Роман 16.11.2026).
+#[derive(Serialize, Debug, Clone)]
+pub struct Piece {
+    /// Правка без того, у кого: «НП: «с.Горелое» → «Горелое»». Одинаковая в
+    /// разных записях — одна группа.
+    pub key: String,
+    /// У кого из людей записи («отец, мать»); пусто — поле записи.
+    pub who: Vec<String>,
 }
 
-/// Ключ группы по строкам отличий. Человек, которого у одной стороны нет
-/// («у помощника нет Отец…»), в группу не идёт: подпись группы спрятала бы,
-/// что помощник его убрал (ревьюер 13.11.2026).
-fn group_of<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    const ENTRY_FIELDS: [&str; 6] = ["страница", "счёт м.", "счёт ж.", "дата события", "дата обряда", "примечание записи"];
-    let mut pieces: Vec<String> = Vec::new();
-    for line in lines {
-        if line.starts_with("у помощника есть ") || line.starts_with("у помощника нет ") {
-            return None;
-        }
-        let at = line.find(": у вас ")?;
-        let (left, right) = (&line[..at], &line[at + 2..]);
-        let label = if ENTRY_FIELDS.contains(&left) {
-            left.to_string()
-        } else {
-            match left.rfind(" — ") {
-                Some(p) => left[p + " — ".len()..].to_string(),
-                None => "ИОФ".to_string(),
-            }
-        };
-        let piece = format!("{label}: {right}");
-        if !pieces.contains(&piece) {
-            pieces.push(piece);
-        }
-    }
-    if pieces.is_empty() {
-        return None;
-    }
-    pieces.sort();
-    Some(pieces.join("; "))
+#[derive(Serialize, Debug)]
+pub struct EditView {
+    /// «Рождение 1914, № 92, стр. 34об-35. Петр, отец Василий Родионов Аксенов».
+    pub head: String,
+    /// Отличия, которые ещё не решены («оставить мою» по правке их убирает).
+    pub pieces: Vec<Piece>,
+    /// Люди, которые есть только у одной стороны, и правки в полях, которых
+    /// здесь не видно, — их решает только «Взять правку» целиком.
+    pub other: Vec<String>,
 }
 
-/// Группа правки сейчас: отличия нашей записи, какой она стала, от версии
-/// помощника. Роман мог поправить запись после слияния — тогда текст строки
-/// списка устарел, и массовое «взять» молча затёрло бы его правку.
-fn group_now(conn: &Connection, review_id: i64, roles: &HashMap<String, String>) -> Result<Option<String>, String> {
-    let origin_id: Option<i64> = conn
-        .query_row(&statement("merge_review_origin")?, rusqlite::named_params! { ":id": review_id }, |r| r.get(1))
+/// Подпись роли в заголовке: «родитель (отец)» → «отец».
+fn role_word(title: &str) -> String {
+    match (title.find('('), title.rfind(')')) {
+        (Some(a), Some(b)) if a < b => title[a + 1..b].to_string(),
+        _ => title.to_string(),
+    }
+}
+
+fn head(e: &EntryInput, roles: &HashMap<String, String>) -> String {
+    let section = ["Запись", "Рождение", "Брак", "Смерть"].get(e.section as usize).copied().unwrap_or("Запись");
+    let mut where_ = section.to_string();
+    if let Some(y) = e.rite_year.or(e.event_year) { where_.push_str(&format!(" {y}")); }
+    if let Some(n) = e.no_male.or(e.no_female) { where_.push_str(&format!(", № {n}")); }
+    let page = text(&e.page);
+    if !page.is_empty() { where_.push_str(&format!(", стр. {page}")); }
+    let mut people: Vec<String> = Vec::new();
+    for code in ["child", "father", "mother", "groom", "bride", "deceased"] {
+        for p in e.persons.iter().filter(|p| p.role_code == code) {
+            let name = iof(p);
+            if name.is_empty() { continue; }
+            let word = role_word(&roles.get(code).cloned().unwrap_or_default());
+            // Главное лицо — без подписи, остальные — «отец Василий…».
+            people.push(if people.is_empty() && ["child", "groom", "deceased"].contains(&code) { name } else { format!("{word} {name}") });
+        }
+    }
+    if people.is_empty() { format!("{where_}.") } else { format!("{where_}. {}", people.join(", ")) }
+}
+
+/// Решённые «оставить мою» правки строки.
+fn kept(conn: &Connection, review_id: i64) -> Result<Vec<String>, String> {
+    let v: Option<String> = conn
+        .query_row(&statement("review_kept")?, rusqlite::named_params! { ":id": review_id }, |r| r.get(0))
         .optional().map_err(s)?.flatten();
-    let Some(origin_id) = origin_id else { return Ok(None) };
-    let row: Option<(i64, Option<i64>, Option<String>, Option<String>)> = conn
+    Ok(v.map(|v| v.lines().map(str::to_string).collect()).unwrap_or_default())
+}
+
+/// Строка списка на сверку и обе записи: (наш номер, отпечаток помощника,
+/// наша запись, его запись). Правки уже нет — `None`.
+fn pending_pair(conn: &Connection, review_id: i64) -> Result<Option<(i64, i64, String, EntryInput, EntryInput)>, String> {
+    let row: Option<(String, Option<i64>)> = conn
+        .query_row(&statement("merge_review_origin")?, rusqlite::named_params! { ":id": review_id }, |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional().map_err(s)?;
+    let Some(("merge_edit", Some(origin_id))) = row.as_ref().map(|(k, o)| (k.as_str(), *o)) else { return Ok(None) };
+    let origin: Option<(i64, Option<i64>, Option<String>, Option<String>)> = conn
         .query_row(&statement("merge_origin_by_id")?, rusqlite::named_params! { ":id": origin_id },
                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .optional().map_err(s)?;
-    let Some((_, Some(our_id), Some(pending), _)) = row else { return Ok(None) };
+    let Some((_, Some(our_id), Some(pending), Some(print))) = origin else { return Ok(None) };
     let theirs: EntryInput = serde_json::from_str(&pending).map_err(|e| format!("запись помощника не читается: {e}"))?;
     let Some(ours) = entry_input(conn, our_id)? else { return Ok(None) };
-    let lines = differences(&ours, &theirs, roles);
-    if lines.is_empty() || lines.len() > 5 {
-        return Ok(None);
-    }
-    Ok(group_of(lines.iter().map(String::as_str)))
+    Ok(Some((origin_id, our_id, print, ours, theirs)))
 }
 
-/// «Взять правку во всех»: по одной `take`, отказы — списком. Строка,
-/// чья правка сейчас уже не та, что у группы (запись поправили после
-/// слияния), не берётся — остаётся для решения по одной.
-pub fn take_many(conn: &Connection, review_ids: &[i64], group: &str) -> Result<(usize, Vec<String>), String> {
-    let roles: HashMap<String, String> = {
-        let mut stmt = conn.prepare(&statement("merge_roles")?).map_err(s)?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(s)?;
-        rows.collect::<Result<_, _>>().map_err(s)?
-    };
-    let mut taken = 0;
-    let mut failed = Vec::new();
-    for id in review_ids {
-        if group_now(conn, *id, &roles)?.as_deref() != Some(group) {
-            failed.push("запись изменилась после слияния — решите её в списке по одной".to_string());
-            continue;
-        }
-        match take(conn, *id) {
-            Ok(_) => taken += 1,
-            Err(e) => failed.push(e),
+pub fn roles(conn: &Connection) -> Result<HashMap<String, String>, String> {
+    let mut stmt = conn.prepare(&statement("merge_roles")?).map_err(s)?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(s)?;
+    rows.collect::<Result<_, _>>().map_err(s)
+}
+
+/// Правки строки сейчас — по нашей записи, какой она стала. Поправили её
+/// после слияния — правки, которой больше нет, нет и здесь.
+fn open_pieces(conn: &Connection, review_id: i64, ours: &EntryInput, theirs: &EntryInput, roles: &HashMap<String, String>)
+    -> Result<(Vec<Piece>, Vec<String>), String>
+{
+    let kept = kept(conn, review_id)?;
+    let (d, mut other) = diffs(ours, theirs, roles);
+    let mut pieces: Vec<Piece> = Vec::new();
+    for x in d {
+        let key = x.key();
+        if kept.contains(&key) { continue; }
+        let who = if x.role.is_some() { role_word(&x.who) } else { String::new() };
+        match pieces.iter_mut().find(|p| p.key == key) {
+            Some(p) => { if !who.is_empty() && !p.who.contains(&who) { p.who.push(who); } }
+            None => pieces.push(Piece { key, who: if who.is_empty() { vec![] } else { vec![who] } }),
         }
     }
-    Ok((taken, failed))
+    if pieces.is_empty() && other.is_empty() && kept.is_empty() && fingerprint(ours) != fingerprint(theirs) {
+        other.push("отличия — в полях, которые здесь не показаны: пол, современное написание имени, отметка сомнения, части возраста".into());
+    }
+    Ok((pieces, other))
+}
+
+/// Строка «помощник поправил запись» для окна сверки. Правки уже нет — `None`.
+pub fn edit_view(conn: &Connection, review_id: i64, roles: &HashMap<String, String>) -> Result<Option<EditView>, String> {
+    let Some((_, _, _, ours, theirs)) = pending_pair(conn, review_id)? else { return Ok(None) };
+    let (pieces, other) = open_pieces(conn, review_id, &ours, &theirs, roles)?;
+    Ok(Some(EditView { head: head(&ours, roles), pieces, other }))
+}
+
+/// Взять у помощника одну правку (`key`) — только её поля, остальное в
+/// нашей записи как было. Нерешённого не осталось — строка в сделанных:
+/// всё взято — запись как у помощника, отпечаток принят; остальное
+/// оставлено — как «Оставить мою». Возвращает: строка закрыта.
+fn take_piece(conn: &Connection, review_id: i64, key: &str, roles: &HashMap<String, String>) -> Result<bool, String> {
+    let (origin_id, our_id, print, mut ours, theirs) = pending_pair(conn, review_id)?
+        .ok_or("правка помощника уже взята или отменена следующим слиянием")?;
+    let (d, _) = diffs(&ours, &theirs, roles);
+    let hit: Vec<&Diff> = d.iter().filter(|x| x.key() == key).collect();
+    if hit.is_empty() {
+        return Err("в записи этой правки уже нет — её поправили после слияния; решите строку по одной".into());
+    }
+    let tx = conn.unchecked_transaction().map_err(s)?;
+    for x in hit {
+        match &x.role {
+            None => copy_entry_field(&mut ours, &theirs, x.field),
+            Some((code, n)) => {
+                let from = theirs.persons.iter().filter(|p| &p.role_code == code).nth(*n);
+                let to = ours.persons.iter_mut().filter(|p| &p.role_code == code).nth(*n);
+                if let (Some(to), Some(from)) = (to, from) {
+                    copy_person_field(to, from, x.field);
+                    // Пункт, объединённый у нас, пока правка ждала, — под оставшимся названием.
+                    if x.field == "НП" {
+                        if let Some(name) = to.place.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string) {
+                            to.place = Some(our_place(&tx, &name)?);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ours.id = Some(our_id);
+    ours.scan_file = None;
+    let parish: String = tx
+        .query_row(&statement("case_parish_key")?, rusqlite::named_params! { ":id": ours.case_id }, |r| r.get::<_, Option<String>>(0))
+        .optional().map_err(s)?.flatten().unwrap_or_default();
+    save_entry_in_tx(&tx, &ours, &parish)?;
+    let now = entry_input(&tx, our_id)?.ok_or("запись пропала при сохранении")?;
+    let (pieces, other) = open_pieces(&tx, review_id, &now, &theirs, roles)?;
+    let closed = pieces.is_empty() && other.is_empty();
+    if closed {
+        if kept(&tx, review_id)?.is_empty() {
+            tx.execute(&statement("merge_origin_accept")?, rusqlite::named_params! {
+                ":id": origin_id, ":entry_id": our_id, ":fingerprint": print,
+            }).map_err(s)?;
+            tx.execute(&statement("merge_review_close")?, rusqlite::named_params! { ":origin_id": origin_id }).map_err(s)?;
+        } else {
+            tx.execute(&statement("review_done")?, rusqlite::named_params! { ":id": review_id, ":done": 1 }).map_err(s)?;
+        }
+    }
+    tx.commit().map_err(s)?;
+    Ok(closed)
+}
+
+/// «Оставить мою» для одной правки: она больше не показывается; решено всё —
+/// строка в сделанных, наша запись не меняется.
+fn keep_piece(conn: &Connection, review_id: i64, key: &str, roles: &HashMap<String, String>) -> Result<bool, String> {
+    let (_, _, _, ours, theirs) = pending_pair(conn, review_id)?
+        .ok_or("правка помощника уже взята или отменена следующим слиянием")?;
+    let mut all = kept(conn, review_id)?;
+    if !all.iter().any(|k| k == key) { all.push(key.to_string()); }
+    conn.execute(&statement("review_kept_set")?, rusqlite::named_params! { ":id": review_id, ":kept": all.join("\n") }).map_err(s)?;
+    let (pieces, other) = open_pieces(conn, review_id, &ours, &theirs, roles)?;
+    let closed = pieces.is_empty() && other.is_empty();
+    if closed {
+        conn.execute(&statement("review_done")?, rusqlite::named_params! { ":id": review_id, ":done": 1 }).map_err(s)?;
+    }
+    Ok(closed)
+}
+
+/// Итог правки во многих строках: решено (строка ушла в сделанные), осталось
+/// с другими отличиями, отказы.
+#[derive(Serialize, Debug, Default)]
+pub struct ManyDone {
+    pub closed: usize,
+    pub left: usize,
+    pub failed: Vec<String>,
+}
+
+/// «Взять правку во всех» / «Оставить мою во всех» — одна правка `key` во
+/// многих строках (Роман 16.11.2026, 1.6). Строка, где правки уже нет
+/// (запись поправили после слияния), — в отказы, решается по одной.
+pub fn piece_many(conn: &Connection, review_ids: &[i64], key: &str, take: bool) -> Result<ManyDone, String> {
+    let roles = roles(conn)?;
+    let mut out = ManyDone::default();
+    for id in review_ids {
+        let r = if take { take_piece(conn, *id, key, &roles) } else { keep_piece(conn, *id, key, &roles) };
+        match r {
+            Ok(true) => out.closed += 1,
+            Ok(false) => out.left += 1,
+            Err(e) => out.failed.push(e),
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Массовая сверка (Роман 12.11.2026): одинаковая правка у разных людей —
-    /// одна группа; другая правка — другая группа; урезанная строка — без группы.
-    #[test]
-    fn edit_groups() {
-        let line = |where_: &str, body: &str| format!("помощник поправил запись ({where_}): {body}. «Взять правку» заменит вашу запись версией помощника целиком");
-        let a = edit_group(&line("рождение 1914, стр. 5, № 3", "Отец — НП: у вас «с.Горелое», у помощника «Горелое»; Мать — НП: у вас «с.Горелое», у помощника «Горелое»"));
-        let b = edit_group(&line("смерть 1915, стр. 9, № 1", "Умерший — НП: у вас «с.Горелое», у помощника «Горелое»"));
-        assert_eq!(a.as_deref(), Some("НП: у вас «с.Горелое», у помощника «Горелое»"));
-        assert_eq!(a, b);
-        assert_ne!(a, edit_group(&line("брак 1914", "Жених: у вас «Иван», у помощника «Иоанн»")));
-        assert_eq!(edit_group(&line("брак 1914", "страница: у вас «5», у помощника «6»")).as_deref(), Some("страница: у вас «5», у помощника «6»"));
-        assert_eq!(edit_group(&line("брак", "а: у вас 1, у помощника 2; и ещё отличий: 3")), None);
-        assert_eq!(edit_group(&line("брак", "у помощника нет Отец жениха: у вас «Иван»")), None, "убранный человек — не в группу");
-    }
     use crate::records::{save_case, save_entry};
     use std::path::Path;
 
@@ -1184,6 +1365,47 @@ mod tests {
 
     fn num(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// Роман 16.11.2026, 1.6: одна правка («с.Горелое» → «Горелое» у отца и
+    /// матери) берётся во всех записях, даже где помощник поправил ещё
+    /// что-то; остаётся только другое отличие, и его можно оставить своим.
+    #[test]
+    fn one_edit_in_many() {
+        let Some((ours_path, ours)) = fresh("one-ours", 1914, "5") else { return };
+        let Some((theirs_path, theirs)) = fresh("one-theirs", 1914, "5") else { return };
+        for (no, page) in [(1, "34"), (2, "35")] {
+            let mut e = birth(1914, page, no, false, "Петр", ("Василий", "Родионов", "Аксенов"), "с.Горелое");
+            e.persons.push(person("mother", 30, "Мария", "Ивановна", "", "с.Горелое"));
+            save_entry(&theirs, &e).unwrap();
+        }
+        run(&ours, &theirs, "помощник.sqlite", true).unwrap();
+        theirs.execute("INSERT INTO place (name, name_norm) VALUES ('Горелое', 'горелое')", []).unwrap();
+        theirs.execute("UPDATE person_mention SET place_id = (SELECT id FROM place WHERE name = 'Горелое') WHERE place_id IS NOT NULL", []).unwrap();
+        theirs.execute("UPDATE entry SET page = '35об' WHERE page = '35'", []).unwrap();
+        assert_eq!(run(&ours, &theirs, "помощник.sqlite", true).unwrap().edits, 2);
+        let roles = roles(&ours).unwrap();
+        let ids: Vec<i64> = ours.prepare("SELECT id FROM review_item WHERE kind = 'merge_edit' ORDER BY id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        let key = "НП: «с.Горелое» → «Горелое»";
+        let v = edit_view(&ours, ids[1], &roles).unwrap().unwrap();
+        assert_eq!(v.head, "Рождение 1914, № 2, стр. 35. Петр, отец Василий Родионов Аксенов, мать Мария Ивановна");
+        assert_eq!(v.pieces.iter().map(|p| (p.key.as_str(), p.who.join(", "))).collect::<Vec<_>>(),
+                   vec![("страница: «35» → «35об»", String::new()), (key, "отец, мать".to_string())]);
+        let many = piece_many(&ours, &ids, key, true).unwrap();
+        assert_eq!((many.closed, many.left, many.failed.len()), (1, 1, 0), "{many:?}");
+        assert_eq!(num(&ours, "SELECT count(*) FROM person_mention m JOIN place p ON p.id = m.place_id WHERE p.name = 'Горелое'"), 4);
+        let v = edit_view(&ours, ids[1], &roles).unwrap().unwrap();
+        assert_eq!(v.pieces.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["страница: «35» → «35об»"], "осталось только другое");
+        assert_eq!(num(&ours, "SELECT count(*) FROM entry WHERE page = '35'"), 1, "страница не тронута");
+        let kept = piece_many(&ours, &ids[1..], "страница: «35» → «35об»", false).unwrap();
+        assert_eq!(kept.closed, 1);
+        assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 0);
+        assert_eq!(num(&ours, "SELECT count(*) FROM entry WHERE page = '35'"), 1, "оставлена наша страница");
+        for (path, conn) in [(ours_path, ours), (theirs_path, theirs)] {
+            std::mem::drop(conn);
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]
@@ -1260,24 +1482,29 @@ mod tests {
         let same = run(&ours, &theirs, "помощник.sqlite", true).unwrap();
         assert_eq!((same.edits, same.known), (0, 4));
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit'"), 1);
-        // «Взять правку во всех» (13.11.2026): строка, чья правка сейчас уже
-        // не та, что у группы, не берётся.
+        // Правка по полям (17.11.2026, п. 157): строка показывает правку
+        // ключом; чужой ключ не берётся; запись поправили после слияния так,
+        // что правки нет, — отказ, строка остаётся.
         let rid = num(&ours, "SELECT id FROM review_item WHERE kind = 'merge_edit'");
-        let group = edit_group(&text).expect("правка имени — группа");
-        assert_eq!(take_many(&ours, &[rid], "НП: у вас «а», у помощника «б»").unwrap().0, 0, "чужая группа");
+        let roles = roles(&ours).unwrap();
+        let view = edit_view(&ours, rid, &roles).unwrap().unwrap();
+        assert_eq!(view.pieces.len(), 1, "{view:?}");
+        let key = view.pieces[0].key.clone();
+        assert_eq!(key, "ИОФ: «Евдокия» → «Евпраксия»");
+        assert_eq!(view.head, "Рождение 1890, № 1, стр. 3. Евдокия, отец Яков Ильин Ермаков");
+        assert_eq!(piece_many(&ours, &[rid], "НП: «а» → «б»", true).unwrap().failed.len(), 1, "чужая правка");
         let our_entry = num(&ours, "SELECT entry_id FROM merge_origin WHERE source_entry = 1");
-        let page: String = ours.query_row("SELECT page FROM entry WHERE id = ?1", [our_entry], |r| r.get(0)).unwrap();
-        ours.execute("UPDATE entry SET page = '999' WHERE id = ?1", [our_entry]).unwrap();
-        let (n, failed) = take_many(&ours, &[rid], &group).unwrap();
-        assert_eq!((n, failed.len()), (0, 1), "запись поправили после слияния — массово не берётся");
-        ours.execute("UPDATE entry SET page = ?2 WHERE id = ?1", rusqlite::params![our_entry, page]).unwrap();
+        ours.execute("UPDATE person_mention SET first_name = 'Ева' WHERE first_name = 'Евдокия' AND entry_id = ?1", [our_entry]).unwrap();
+        assert_eq!(piece_many(&ours, &[rid], &key, true).unwrap().failed.len(), 1, "запись поправили после слияния — правки нет");
+        ours.execute("UPDATE person_mention SET first_name = 'Евдокия' WHERE first_name = 'Ева' AND entry_id = ?1", [our_entry]).unwrap();
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 1);
         // «Взять правку»: привязка скана у нашей записи остаётся нашей.
         ours.execute("UPDATE entry SET scan_file = 'наш лист.jpg' WHERE id = (SELECT entry_id FROM merge_origin WHERE source_entry = 1)", []).unwrap();
         let review_id = num(&ours, "SELECT id FROM review_item WHERE kind = 'merge_edit'");
-        // Та же правка — берётся и массово (через `take`).
-        let (n, failed) = take_many(&ours, &[review_id], &group).unwrap();
-        assert_eq!((n, failed.len()), (1, 0), "{failed:?}");
+        // Та же правка — берётся и массово, по полю; правка была одна —
+        // строка в сделанных, отпечаток принят.
+        let many = piece_many(&ours, &[review_id], &key, true).unwrap();
+        assert_eq!((many.closed, many.left, many.failed.len()), (1, 0, 0), "{many:?}");
         assert_eq!(num(&ours, "SELECT count(*) FROM person_mention WHERE first_name = 'Евпраксия' AND entry_id = (SELECT entry_id FROM merge_origin WHERE source_entry = 1)"), 1);
         assert_eq!(num(&ours, "SELECT count(*) FROM entry"), before + 3);
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 0);

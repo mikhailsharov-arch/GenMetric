@@ -514,7 +514,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                         Удалить «{r.name}»{r.entries ? ` (записей: ${r.entries})` : ""}? Приход уйдёт из перечня;
                         его файл не стирается — он остаётся в папке «Удалённые приходы».{" "}
                         <button type="button" className="toggle small danger" disabled={busy !== null} data-parish-delete-yes
-                                onClick={() => void remove(r)}>Удалить</button>{" "}
+                                onClick={() => void remove(r)}>Да, удалить</button>{" "}
                         <button type="button" className="toggle small" disabled={busy !== null}
                                 onClick={() => setDeleting(null)}>Отмена</button>
                       </span>

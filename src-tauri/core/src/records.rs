@@ -481,13 +481,10 @@ fn save_case_in(conn: &Connection, case: &Case, overwrite: bool) -> Result<CaseS
         ":uyezd": case.uyezd, ":guberniya": case.guberniya, ":year": case.year,
         ":parish_key": parish, ":indexer": case.indexer,
     }).map_err(e)?;
-    // Село, уезд, губерния, индексатор и ключ прихода — на дела всех лет.
-    // Церковь, фонд, опись и дело остаются у своего года (церковь — с
-    // 13.11.2026, п. 139).
+    // Индексатор и ключ прихода — на дела всех лет. Церковь (п. 139), село,
+    // уезд, губерния (п. 158), фонд, опись и дело остаются у своего года.
     conn.execute(&statement("case_spread_parish")?, rusqlite::named_params! {
-        ":id": id, ":archive": case.archive, ":village": case.village,
-        ":uyezd": case.uyezd, ":guberniya": case.guberniya,
-        ":parish_key": parish, ":indexer": case.indexer,
+        ":id": id, ":archive": case.archive, ":parish_key": parish, ":indexer": case.indexer,
     }).map_err(e)?;
     for old in old_keys.iter().filter(|k| **k != parish) {
         move_parish_stats(conn, old, &parish)?;
@@ -786,7 +783,7 @@ pub fn save_entry_in_tx(conn: &Connection, entry: &EntryInput, parish: &str) -> 
         // цельное дело»). Правка не должна уводить её в дело года.
         let year_now = entry.rite_year.or(entry.event_year);
         let stored: Option<(i64, Option<i64>)> = match entry.id {
-            Some(id) => conn.query_row("SELECT case_id, coalesce(rite_year, event_year) FROM entry WHERE id = ?1", [id],
+            Some(id) => conn.query_row(&statement("entry_place_in_book")?, rusqlite::named_params! { ":id": id },
                                        |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?,
             None => None,
         };
@@ -1081,12 +1078,15 @@ pub fn place_id_for(conn: &Connection, name: &str) -> Result<i64, String> {
 /// условиями. Звания и прочие перечни не трогаются.
 fn forget_entry(conn: &Connection, entry_id: i64, parish: &str) -> Result<Vec<(&'static str, String)>, String> {
     struct Old { role: String, first: Option<String>, patr: Option<String>, surname: Option<String>,
-                 rank: Option<String>, place: Option<String>, case_id: i64 }
+                 rank: Option<String>, place: Option<String>, case_id: i64, gender: Option<String>,
+                 kinship: Option<String>, death_cause: Option<String>, marriage_order: Option<String>,
+                 confession: Option<String> }
     let old: Vec<Old> = {
         let mut stmt = conn.prepare(&statement("mentions_before_edit")?).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(rusqlite::named_params! { ":entry_id": entry_id }, |r| Ok(Old {
             role: r.get(0)?, first: r.get(1)?, patr: r.get(2)?, surname: r.get(3)?, rank: r.get(4)?,
-            place: r.get(5)?, case_id: r.get(6)?,
+            place: r.get(5)?, case_id: r.get(6)?, gender: r.get(7)?, kinship: r.get(8)?, death_cause: r.get(9)?,
+            marriage_order: r.get(10)?, confession: r.get(11)?,
         })).map_err(|e| e.to_string())?;
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
     };
@@ -1101,6 +1101,19 @@ fn forget_entry(conn: &Connection, entry_id: i64, parish: &str) -> Result<Vec<(&
         if let Some(v) = clean(&o.first).filter(|_| !nameless) { kinds.push(("first_name", v)); }
         if let Some(v) = clean(&o.surname).filter(|_| !o.role.starts_with("clergy")) { kinds.push(("surname", v)); }
         if let Some(v) = clean(&o.patr) { kinds.push(("patronymic", v)); }
+        // Остальное — теми же правилами, что `save_entry_in_tx` прибавляет
+        // (п. 150, аудит 15.11.2026: каждое пересохранение давало им +1).
+        let filled = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        if let Some(v) = filled(&o.marriage_order) { kinds.push(("marriage_order", v)); }
+        if let Some(v) = filled(&o.kinship) { kinds.push(("kinship", v)); }
+        if let Some(v) = filled(&o.death_cause) { kinds.push(("death_cause", v)); }
+        if let Some(v) = filled(&o.rank) {
+            let kind = if o.role.starts_with("clergy") { "rank_clergy" }
+                       else if o.gender.as_deref() == Some("Ж") { "rank_f" } else { "rank_m" };
+            kinds.push((kind, rank_canonical(conn, kind, &v)?));
+        }
+        if let Some(v) = filled(&o.place) { kinds.push(("place", v)); }
+        if let Some(v) = filled(&o.confession) { kinds.push(("confession", v)); }
         names.extend(kinds.iter().cloned());
         for (kind, value) in kinds {
             for (scope, key) in [("case", o.case_id.to_string()), ("parish", parish.to_string()), ("global", String::new())] {
@@ -1161,7 +1174,8 @@ fn forget_entry(conn: &Connection, entry_id: i64, parish: &str) -> Result<Vec<(&
 pub fn delete_entry(conn: &Connection, entry_id: i64) -> Result<i64, String> {
     let e = |e: rusqlite::Error| e.to_string();
     let (section, case_id): (i64, i64) = conn
-        .query_row("SELECT section, case_id FROM entry WHERE id = ?1", [entry_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row(&statement("entry_place_in_book")?, rusqlite::named_params! { ":id": entry_id },
+                   |r| Ok((r.get(2)?, r.get(0)?)))
         .optional().map_err(e)?
         .ok_or("этой записи уже нет — список перечитан")?;
     let parish: String = conn
@@ -1187,22 +1201,24 @@ fn drop_orphan_lookups(conn: &Connection, values: &[(&str, String)]) -> Result<(
     Ok(())
 }
 
+/// Звание так, как его считают частоты: прежнее современное написание из
+/// перечня, если оно есть («крестьянинъ» → «крестьянин»), иначе как набрано.
+fn rank_canonical(conn: &Connection, kind: &str, value: &str) -> Result<String, String> {
+    let known: Option<String> = conn
+        .query_row(&statement("lookup_by_norm")?,
+                   rusqlite::named_params! { ":kind": kind, ":value_norm": normalize_words(value) }, |r| r.get(0))
+        .optional().map_err(|e| e.to_string())?;
+    Ok(known.unwrap_or_else(|| value.to_string()))
+}
+
 pub fn remember(conn: &Connection, kind: &str, value: &str, case_id: i64, parish: &str)
     -> Result<(), String>
 {
     // Звание в старой орфографии, которое в перечне уже есть по-современному,
     // перечень не пополняет и частоту наращивает прежнему («крестьянинъ» →
     // «крестьянин»). В записи остаётся как набрано.
-    let canonical: Option<String> = if kind.starts_with("rank") {
-        conn.query_row(&statement("lookup_by_norm")?,
-                       rusqlite::named_params! { ":kind": kind, ":value_norm": normalize_words(value) },
-                       |r| r.get(0))
-            .optional()
-            .map_err(|e| e.to_string())?
-    } else {
-        None
-    };
-    let value = canonical.as_deref().unwrap_or(value);
+    let canonical = if kind.starts_with("rank") { rank_canonical(conn, kind, value)? } else { value.to_string() };
+    let value = canonical.as_str();
     let norm = normalize(value);
     conn.execute(&statement("lookup_extend")?, rusqlite::named_params! {
         ":kind": kind, ":value": value, ":value_norm": norm,
@@ -1342,6 +1358,11 @@ mod tests {
         let church = |id: i64| -> String { conn.query_row("SELECT church FROM mk_case WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
         assert_eq!((church(first.id), church(next.id)), ("Воскресенская".to_string(), "Николаевская".to_string()),
                    "церковь 1858 года не затёрла церковь 1914");
+        // П. 158: село тоже у своего года.
+        save_case(&conn, &Case { village: Some("Николаевка".into()), ..case(next.id, 1858, "Николаевская") }, false).unwrap();
+        let village = |id: i64| -> String { conn.query_row("SELECT village FROM mk_case WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!((village(first.id), village(next.id)), ("Горелое".to_string(), "Николаевка".to_string()),
+                   "село 1858 года не затёрло село 1914");
         let keys: Vec<String> = conn.prepare("SELECT DISTINCT parish_key FROM mk_case").unwrap()
             .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert_eq!(keys.len(), 1, "ключ прихода общий для всех лет");
@@ -1349,6 +1370,58 @@ mod tests {
                                         [&keys[0]], |r| r.get(0)).unwrap();
         assert_eq!(moved, 5, "частоты прихода перешли под новый ключ");
         assert_eq!(conn.query_row("SELECT count(*) FROM usage_stat WHERE scope_key = ?1", [&old_key], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        std::mem::drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+    /// П. 150 (аудит 15.11.2026): пересохранение не завышает частоты звания,
+    /// НП, причины, родства, вероисповедания; удаление снимает их совсем.
+    #[test]
+    fn resave_keeps_counts() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/seed.sqlite");
+        if !seed.exists() {
+            crate::seed_missing("тест частот пропущен");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("genmetric-resave-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(&seed, &path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let case = Case { id: 0, archive: None, fond: None, opis: None, delo: None, church: Some("Ц".into()),
+                          village: Some("Тестово".into()), uyezd: None, guberniya: None, year: Some(1897), indexer: None };
+        save_case(&conn, &case, false).unwrap();
+        let dead = PersonInput {
+            role_code: "deceased".into(), sort_order: 10, surname: Some("Пробов".into()), first_name: Some("Иван".into()),
+            patronymic: None, surname_modern: None, first_name_modern: None, patronymic_modern: None,
+            maiden_surname: None, gender: Some("М".into()), rank: Some("крестьянинъ".into()), confession: Some("правосл.".into()),
+            place: Some("Тестово".into()), note: None, uncertain: None, age_years: None, marriage_order: None,
+            kinship: None, age_months: None, age_weeks: None, age_days: None, age_text: None,
+            death_cause: Some("головая бол".into()),
+        };
+        let kin = PersonInput { role_code: "deceased_relative".into(), first_name: Some("Петр".into()), rank: None, death_cause: None,
+                                kinship: Some("брат".into()), ..dead.clone() };
+        let mut e = EntryInput {
+            id: None, case_id: 1, section: 3, page: None, no_male: Some(1), no_female: None,
+            event_day: None, event_month: None, event_year: Some(1897), rite_day: None, rite_month: None,
+            rite_year: Some(1897), note: None, uncertain: None, scan_file: None, persons: vec![dead, kin],
+        };
+        let counts = |conn: &Connection| -> Vec<(String, String, i64)> {
+            conn.prepare("SELECT kind, value, count FROM usage_stat WHERE scope = 'global'
+                           AND kind IN ('rank_m', 'place', 'death_cause', 'kinship', 'confession') ORDER BY kind, value")
+                .unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(Result::unwrap).collect()
+        };
+        let before = counts(&conn);
+        let saved = save_entry(&conn, &e).unwrap();
+        let once = counts(&conn);
+        assert!(once.iter().any(|(k, v, _)| k == "death_cause" && v == "головая бол"));
+        e.id = Some(saved.id);
+        for _ in 0..3 {
+            save_entry(&conn, &e).unwrap();
+        }
+        assert_eq!(counts(&conn), once, "три пересохранения — частоты прежние");
+        delete_entry(&conn, saved.id).unwrap();
+        assert_eq!(counts(&conn), before, "удаление снимает вклад записи");
+        let typo: i64 = conn.query_row("SELECT count(*) FROM lookup WHERE value = 'головая бол'", [], |r| r.get(0)).unwrap();
+        assert_eq!(typo, 0, "опечатка удалённой записи ушла из перечня");
         std::mem::drop(conn);
         let _ = std::fs::remove_file(path);
     }

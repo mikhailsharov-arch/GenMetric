@@ -101,6 +101,9 @@ type Props = {
   /** Справа в строке заголовка, после «+ примечание» — «убрать» у
    *  пятого и шестого поручителя. */
   titleAfter?: React.ReactNode;
+  /** Без «+ примечание»: примечание открывает флажок формы (умерший —
+   *  «незаконнорожд./прим.», Роман 16.11.2026). */
+  noNoteLink?: boolean;
   /** Звание поменяла программа (снято правило младенца) — подсветить (п. 132). */
   rankAuto?: boolean;
   /** Поля роли перед ИОФ — родство у родственника в браке (как в Excel). */
@@ -250,7 +253,7 @@ export function markDocNotes(iof: string, note: string, docFor: DocFor) {
 
 export default function PersonBlock({
   title, person, onChange, rankKind, withConfession, withMaiden, onPickPerson,
-  inputRef, gender, genderGuessed, compact, placeDefaults, onPlaceRenamed, before, modernOverride, extra, titleExtra, noPlace, titleAfter, rankAuto,
+  inputRef, gender, genderGuessed, compact, placeDefaults, onPlaceRenamed, before, modernOverride, extra, titleExtra, noPlace, titleAfter, noNoteLink, rankAuto,
   confessionLabel, preferInfant, noIof, infantRows, infantYear, infantPlace,
   defaultRank, enterToEmpty, onIofLeave, keepWifeRank, hidden,
 }: Props) {
@@ -358,8 +361,14 @@ export default function PersonBlock({
    */
   const [noteOpen, setNoteOpen] = useState(false);
   // Новая запись — примечание снова свёрнуто (проверяющий 22.09.2026).
+  const noteInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (!person.iof && !person.note) setNoteOpen(false);
+    // Стирают примечание в самом поле — не сворачивать (умерший без имени, флажок
+    // «незаконнорожд./прим.» и своё примечание вместо пометки, п. 162).
+    if (!person.iof && !person.note && document.activeElement !== noteInput.current) setNoteOpen(false);
+    // Появилось примечание — поле остаётся, даже если текст стёрли до конца:
+    // иначе стёртая пометка флажка уносила поле посреди набора своего.
+    else if (person.note) setNoteOpen(true);
   }, [person.iof, person.note]);
   const sex = gender ?? (person.parsed?.gender as "М" | "Ж" | undefined) ?? undefined;
   const ranks = rankKind === "rank_clergy"
@@ -427,7 +436,7 @@ export default function PersonBlock({
   /** Ссылка «+ примечание»: в заголовке, а у персон без заголовка (причт) —
    *  отдельной строкой. Пока примечание открыто или заполнено — не нужна. */
   function noteLink(inHead: boolean) {
-    if (noteOpen || person.note) return null;
+    if (noteOpen || person.note || noNoteLink) return null;
     return (
       <button type="button" className={inHead ? "linkish noteadd" : "linkish"} tabIndex={inHead ? -1 : undefined}
               onClick={() => setNoteOpen(true)}>
@@ -577,6 +586,7 @@ export default function PersonBlock({
           <div className="fieldbody">
             <input
               data-field
+              ref={noteInput}
               autoFocus={noteOpen && !person.note}
               value={person.note}
               onChange={(e) => set({ note: e.target.value })}

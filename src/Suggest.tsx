@@ -4,7 +4,7 @@ import { focusNextField, scrollInList, toScanNo } from "./focus";
 import { report } from "./errors";
 import { splitPlaceLabel, stripPlaceType, typedCase } from "./names";
 
-export type Item = { value: string; tier: number; count: number; volost?: string };
+export type Item = { value: string; tier: number; count: number; area?: string };
 
 type Props = {
   label: string;
@@ -333,7 +333,8 @@ const Suggest = forwardRef<HTMLInputElement, Props>(function Suggest(
             >
               <span className="val">
                 {placeShown(it.value)}
-                {it.volost && <span className="sub placevolost" data-volost> · {it.volost} вол.</span>}
+                {/* Тип, волость, уезд, губерния — второй строкой (Роман 16.11.2026, П1). */}
+                {it.area && <span className="sub placewhere" data-place-where title={it.area}>{it.area}</span>}
               </span>
               <span className={`tier t${it.tier}`}>{TIER_TITLE[it.tier]}</span>
             </li>

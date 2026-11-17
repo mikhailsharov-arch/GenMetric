@@ -1737,6 +1737,14 @@ def join_parishes(driver, wait):
         "window.__TAURI_INTERNALS__.invoke('merge_take', {reviewId: 999999}).then((r) => done({ok: r}), (e) => done({error: String(e)}));")
     check("merge_take отвечает: строки списка нет — понятный отказ",
           isinstance(taken, dict) and "уже нет" in str(taken.get("error", "")), str(taken)[:300])
+    # Правка по полю во многих строках (17.11.2026, п. 157): строки нет — в отказы, не падение.
+    many = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('merge_piece_many', {reviewIds: [999999], key: 'НП: «а» → «б»', take: false, backup: false})"
+        ".then((r) => done({ok: r}), (e) => done({error: String(e)}));")
+    check("merge_piece_many отвечает: строки нет — в отказах, остальное не тронуто",
+          isinstance(many, dict) and isinstance(many.get("ok"), dict) and len(many["ok"].get("failed", [])) == 1,
+          str(many)[:300])
     if not driver.find_elements(By.XPATH, PARISH):
         open_parishes(driver, wait)
     click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")

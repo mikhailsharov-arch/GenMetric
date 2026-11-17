@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::records::{save_entry_in_tx, PersonInput};
+use crate::records::{parse_iof_in, save_entry_in_tx, PersonInput};
 use crate::statement;
 use crate::text::normalize;
 
@@ -19,9 +19,10 @@ fn s<E: std::fmt::Display>(e: E) -> String {
 }
 
 /// Поля, которые можно искать и заменять: звание, причина смерти, родство,
-/// фамилия. Имя и отчество — нет: у них современная форма из словаря, и
-/// замена написания её бы рассогласовала.
-pub const FIELDS: [&str; 4] = ["rank", "death_cause", "kinship", "surname"];
+/// фамилия, имя и отчество (с 17.11.2026, П3: у Олега «владимир» со строчной
+/// — искал среди 749 записей вручную). У имени и отчества замена ставит и
+/// современное написание из словаря — как при правке в форме.
+pub const FIELDS: [&str; 6] = ["rank", "death_cause", "kinship", "surname", "first_name", "patronymic"];
 
 fn check_field(field: &str) -> Result<(), String> {
     if FIELDS.contains(&field) { Ok(()) } else { Err(format!("поле «{field}» заменять нельзя")) }
@@ -89,8 +90,25 @@ fn slot<'a>(p: &'a mut PersonInput, field: &str) -> &'a mut Option<String> {
         "rank" => &mut p.rank,
         "death_cause" => &mut p.death_cause,
         "kinship" => &mut p.kinship,
+        "first_name" => &mut p.first_name,
+        "patronymic" => &mut p.patronymic,
         _ => &mut p.surname,
     }
+}
+
+/// Современное написание нового имени или отчества — по словарю, тем же
+/// разбором, что у поля ИОФ. Словарь его не знает — замены нет: форма в
+/// таком случае открыла бы окно сверки, а молча записать имя без
+/// современного написания нельзя.
+fn modern_of(conn: &Connection, field: &str, new: &str) -> Result<Option<String>, String> {
+    let found = match field {
+        "first_name" => parse_iof_in(conn, new)?.first_name_modern.filter(|_| !new.contains(char::is_whitespace)),
+        "patronymic" => parse_iof_in(conn, &format!("Иван {new}"))?.patronymic_modern,
+        _ => return Ok(None),
+    };
+    found.map(Some).ok_or_else(|| format!(
+        "«{new}» нет в словаре {} — замените его в одной записи через форму: откроется окно сверки",
+        if field == "first_name" { "имён" } else { "отчеств" }))
 }
 
 /// Заменить значение во всех записях одной транзакцией. Возвращает число
@@ -104,6 +122,7 @@ pub fn replace(conn: &Connection, field: &str, old: &str, new: &str) -> Result<u
     if old == new {
         return Ok(0);
     }
+    let modern = modern_of(conn, field, new)?;
     let mut ids: Vec<i64> = hits(conn, field, old)?.into_iter().map(|h| h.entry_id).collect();
     ids.dedup();
     let tx = conn.unchecked_transaction().map_err(s)?;
@@ -111,24 +130,16 @@ pub fn replace(conn: &Connection, field: &str, old: &str, new: &str) -> Result<u
     for id in ids {
         let Some(mut entry) = crate::merge::entry_input(&tx, id)? else { continue };
         let mut changed = false;
-        // Звание, причину и родство сохранение только прибавляет в частоты
-        // (`forget_entry` снимает имена и фамилии), — прежнее значение
-        // снимается здесь, иначе опечатка осталась бы в подсказке.
-        let mut unbump: Vec<&'static str> = Vec::new();
         for p in &mut entry.persons {
-            let kind = match field {
-                "rank" if p.role_code.starts_with("clergy") => Some("rank_clergy"),
-                "rank" if p.gender.as_deref() == Some("Ж") => Some("rank_f"),
-                "rank" => Some("rank_m"),
-                "death_cause" => Some("death_cause"),
-                "kinship" => Some("kinship"),
-                _ => None,
-            };
             let v = slot(p, field);
             if v.as_deref().map(str::trim) == Some(old) {
                 *v = Some(new.to_string());
                 changed = true;
-                unbump.extend(kind);
+                match field {
+                    "first_name" => p.first_name_modern = modern.clone(),
+                    "patronymic" => p.patronymic_modern = modern.clone(),
+                    _ => {}
+                }
                 // Фамилия в современном написании — та же, если совпадала и
                 // новое написание современное (без «ъ» на конце).
                 if field == "surname" && p.surname_modern.as_deref().map(str::trim) == Some(old)
@@ -148,15 +159,6 @@ pub fn replace(conn: &Connection, field: &str, old: &str, new: &str) -> Result<u
                        |r| r.get::<_, Option<String>>(0))
             .map_err(s)?.unwrap_or_default();
         save_entry_in_tx(&tx, &entry, &parish)?;
-        for kind in unbump {
-            for (scope, key) in [("case", entry.case_id.to_string()), ("parish", parish.clone()), ("global", String::new())] {
-                tx.execute(&statement("usage_unbump")?, rusqlite::named_params! {
-                    ":kind": kind, ":scope": scope, ":scope_key": key, ":value": old,
-                }).map_err(s)?;
-            }
-            tx.execute(&statement("usage_drop_empty")?, rusqlite::named_params! { ":kind": kind, ":value": old }).map_err(s)?;
-            tx.execute(&statement("lookup_drop_orphan")?, rusqlite::named_params! { ":kind": kind, ":value": old }).map_err(s)?;
-        }
         done += 1;
     }
     tx.commit().map_err(s)?;
@@ -212,7 +214,15 @@ mod tests {
         assert_eq!((used("головая боль"), used("головная боль")), (0, 2), "память подсказок — за записями");
         assert_eq!(replace(&conn, "surname", "попов", "Попов").unwrap(), 1);
         assert_eq!(spellings(&conn, "surname", "попов").unwrap(), vec![Spelling { value: "Попов".into(), entries: 2 }]);
-        assert!(replace(&conn, "first_name", "Иван", "Иоанн").is_err(), "имя не заменяется");
+        // П3 (17.11.2026): имя — по введённому написанию, современное — из словаря.
+        save_entry(&conn, &death("владимир", "старость", "Попов")).unwrap();
+        let names = spellings(&conn, "first_name", "Владимир").unwrap();
+        assert_eq!(names, vec![Spelling { value: "владимир".into(), entries: 1 }]);
+        assert_eq!(replace(&conn, "first_name", "владимир", "Владимир").unwrap(), 1);
+        let modern: String = conn.query_row("SELECT first_name_modern FROM person_mention WHERE first_name = 'Владимир'", [], |r| r.get(0)).unwrap();
+        assert_eq!(modern, "Владимир");
+        assert!(replace(&conn, "first_name", "Владимир", "Блаблабла").is_err(), "имени нет в словаре — отказ, записи прежние");
+        assert_eq!(hits(&conn, "first_name", "Владимир").unwrap().len(), 1);
         std::mem::drop(conn);
         let _ = std::fs::remove_file(path);
     }

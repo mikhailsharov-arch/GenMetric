@@ -587,7 +587,8 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
       ["умершего", d], ["родственника", r], ...ws.map((w) => ["свидетеля", w] as [string, Person]),
       ...cl.map((c) => ["причта", c] as [string, Person]),
     ];
-    const unknown = named.find(([, p]) => p.iof.trim() && p.parsed && !p.parsed.known_name);
+    // Без имени сверять нечего — «Имя причта «null»» (п. 164, 16.11.2026).
+    const unknown = named.find(([, p]) => p.iof.trim() && p.parsed?.first_name && !p.parsed.known_name);
     if (unknown) {
       warn(`Имя ${unknown[0]} «${unknown[1].parsed?.first_name}» не сверено со справочником`,
            unknown[0] === "причта"
@@ -894,7 +895,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
     if (editingId === null && illegitimate && deadSex) setIllegitimate(true);
   }, [deadSex]);
   const illegitBox = (
-    <label className="unknownbox" title="Ставит пометку «незаконнорожденный» в примечание умершего">
+    <label className="unknownbox" title="Открывает «Прим.» умершего с пометкой «незаконнорожденный» — её можно стереть и написать своё примечание">
       <input type="checkbox" checked={illegitimate} tabIndex={-1} data-illegitimate
              onChange={(e) => setIllegitimate(e.target.checked)} />
       незаконнорожд./прим.
@@ -1045,7 +1046,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
                      {...common} extra={deadExtra}
                      // Полное ИОФ младенца по родственнику «отец» — только показ.
                      modernOverride={fullDead}
-                     noIof={nameless} titleAfter={<>{illegitBox}{namelessBox}</>} rankAuto={rankCleared} />
+                     noIof={nameless} titleAfter={<>{illegitBox}{namelessBox}</>} noNoteLink rankAuto={rankCleared} />
         {relFolded && (
           <FoldLine block="death_relative" title="Родственник" summary={foldSummary([rel])} onOpen={() => foldRel(false)} />
         )}

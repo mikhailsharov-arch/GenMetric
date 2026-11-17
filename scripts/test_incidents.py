@@ -1893,6 +1893,51 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261117_sprint_150_164():
+    """
+    17.11.2026, ответ Романа на сборку 14.11 (intent/2026-11-16-…): 106 записей
+    с той же правкой «с.Горелое» → «Горелое» не брались разом (п. 157), окно
+    сверки без хода, итога и закреплённых кнопок (пп. 152–156); полоса «Имя
+    причта «null»» (п. 164); кнопка «Да, удалить» красным на красном (п. 161);
+    обрезанный список в окне объединения пунктов (п. 160); аудит 15.11 —
+    пересохранение завышало частоты подсказок (п. 150).
+    """
+    rec = read("src-tauri/core/src/records.rs")
+    check("п. 150: правка и удаление записи снимают из частот всё, что прибавило сохранение",
+          'kinds.push(("death_cause", v))' in rec and 'kinds.push(("place", v))' in rec
+          and "fn resave_keeps_counts()" in rec and "fn rank_canonical(" in rec)
+    sql = read("db/statements.sql")
+    check("п. 151: запросы записи — в statements.sql, не в Rust",
+          "-- @entry_place_in_book" in sql and '"SELECT section, case_id FROM entry' not in rec
+          and '"SELECT case_id, coalesce(rite_year, event_year) FROM entry' not in rec)
+    merge = read("src-tauri/core/src/merge.rs")
+    review = read("src/ReviewDialog.tsx")
+    check("п. 157: одна правка берётся во всех записях, где она есть, — только её поля",
+          "fn take_piece(" in merge and "copy_person_field(to, from, x.field)" in merge and "fn one_edit_in_many()" in merge
+          and "kept        TEXT" in read("db/schema.sql"))
+    check("пп. 152–156: ход, итог плашкой с именем копии, кнопки и шапка на месте, записи группы внутри блока, строка по полям",
+          "data-review-progress" in review and "data-review-result" in review and "fileName(result.copy)" in review
+          and ".reviewscroll { flex: 1 1 auto;" in read("src/styles.css") and "data-review-group-items" in review
+          and "data-review-edit" in review and "и ещё отличий" not in review)
+    forms = [read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm")]
+    check("п. 164: человек без имени не останавливает сохранение отказом «Имя причта «null»»",
+          all("first_name && !" in f for f in forms))
+    css = read("src/styles.css")
+    check("п. 161: «Да, удалить» в окне «Приходы» — светлым на красном",
+          "button.toggle.danger { border-color: #a93226; color: #fff; background: #c0392b; }" in css
+          and ">Да, удалить</button>" in read("src/ParishDialog.tsx"))
+    check("п. 160: окно объединения пунктов не обрезает список подсказки",
+          '.modal[data-modal="place-merge"] { overflow: visible; }' in css)
+    check("п. 162: у умершего нет «+ примечание» — примечание открывает флажок",
+          "noNoteLink rankAuto={rankCleared}" in read("src/DeathForm.tsx") and "noteInput.current" in read("src/PersonBlock.tsx"))
+    check("п. 163: мать из подсказки — «законная жена его»",
+          "{ ...hint, rank: MOTHER_RANK }" in read("src/BirthForm.tsx"))
+    check("П2: смена губернии очищает уезд и волость, уезда — волость",
+          "function leftLevel(level: 0 | 1, value: string)" in read("src/PlaceCard.tsx"))
+    check("П3: «Найти в записях» — имя и отчество, современное — по словарю",
+          '"first_name", "patronymic"]' in read("src-tauri/core/src/replace.rs") and "fn modern_of(" in read("src-tauri/core/src/replace.rs"))
+
+
 def incident_20261113_sprint_139_149():
     """
     13.11.2026, ответ Романа на сборку 11.11 вечер (intent/2026-11-12-…):
@@ -1906,8 +1951,8 @@ def incident_20261113_sprint_139_149():
     blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
     spread = strip_comments(blocks.get("case_spread_parish", ""))
     rec = read("src-tauri/core/src/records.rs")
-    check("п. 139: «Сохранить дело» не разносит церковь на дела других лет; частоты идут за ключом прихода",
-          "church" not in spread and "parish_key = :parish_key" in spread
+    check("пп. 139, 158: «Сохранить дело» не разносит церковь, село, уезд, губернию на дела других лет; частоты — за ключом прихода",
+          "church" not in spread and "village" not in spread and "guberniya" not in spread and "parish_key = :parish_key" in spread
           and "move_parish_stats(conn, old, &parish)" in rec and "fn church_stays_with_its_year()" in rec)
     parish = read("src-tauri/core/src/parish.rs")
     reveal = read("src-tauri/src/export.rs")
@@ -1932,9 +1977,9 @@ def incident_20261113_sprint_139_149():
           and "(e.ctrlKey || e.metaKey) && softList" in iof)
     lib = read("src-tauri/core/src/lib.rs")
     main = read("src-tauri/src/main.rs")
-    check("п. 144: подсказка НП — название без приставки «г.», «с.» первым",
-          "pub fn place_name_first<T>" in lib and "place_name_first(out, &prefix" in main
-          and "fn place_name_first_skips_type()" in lib)
+    check("п. 144: подсказка НП — название без приставки «г.», «с.» первым (п. 159 — внутри по частоте)",
+          "pub fn place_order<T>" in lib and "place_order(out, &prefix" in main
+          and "fn place_order_by_count()" in lib)
     exp = read("src-tauri/core/src/export.rs")
     check("п. 148: выгрузка Familio — шаблон ver.2026-10c, согласие в B29–B31, без согласия — отказ",
           'pub const CONSENT_CELLS: [&str; 3] = ["B29", "B30", "B31"];' in exp and "if !about.consent {" in exp
@@ -1946,20 +1991,20 @@ def incident_20261113_sprint_139_149():
           and "ребёнок только по смерти" in read("scripts/test_dossier.mjs"))
     merge = read("src-tauri/core/src/merge.rs")
     review = read("src/ReviewDialog.tsx")
-    check("массовая сверка: однотипные правки помощника — группой, «во всех» одной кнопкой",
-          "pub fn edit_group(text: &str) -> Option<String>" in merge and "fn edit_groups()" in merge
-          and '"merge_take_many"' in review and '"review_done_many"' in review)
+    check("массовая сверка: одна правка помощника — группой, «во всех» одной кнопкой (с 17.11 — по полю)",
+          "pub fn piece_many(" in merge and "fn one_edit_in_many()" in merge
+          and '"merge_piece_many"' in review and "data-review-take-all" in review)
     # Находки ревьюера 13.11.2026 (до выкладки).
     check("«Взять правку во всех»: копия прихода, второе нажатие, правка сверяется заново (запись могли поправить)",
-          "genmetric_core::db::TAKE_MARK" in main and "group_now(conn, *id, &roles)?.as_deref() != Some(group)" in merge
-          and "Да, взять в ${g.length} записях" in review and 'line.starts_with("у помощника нет ")' in merge)
+          "genmetric_core::db::TAKE_MARK" in main and "в записи этой правки уже нет" in merge
+          and "Да, взять в ${g.length} записях" in review and 'other.push(format!("у помощника нет {who}' in merge)
     check("слияние: новое дело года — с церковью помощника и общим ключом прихода (п. 139 и в слиянии)",
           "new.church = keep(&t.church, &base.church);" in merge and "key.unwrap_or_else(|| c.parish_key())" in merge)
     check("«Сохранить дело» — одной точкой сохранения, частоты всех ключей прихода — под общий",
           'conn.execute_batch("SAVEPOINT save_case")' in rec and 'statement("case_parish_keys")' in rec)
     rep = read("src-tauri/core/src/replace.rs")
     check("найти и заменить в записях: пересохранение записи, старое значение уходит из частот, копия прихода",
-          "save_entry_in_tx(&tx, &entry, &parish)?;" in rep and '"usage_unbump"' in rep
+          "save_entry_in_tx(&tx, &entry, &parish)?;" in rep and 'kinds.push(("death_cause", v))' in rec
           and "fn typo_found_and_replaced()" in rep and "REPLACE_MARK" in main)
     clean = read("src-tauri/core/src/cleanup.rs")
     check("очистка: звания и причины смерти из поставки — без отметки; убранное обновление не возвращает",
@@ -2004,7 +2049,8 @@ def incident_20261111_sprint_131_138():
     check("удаление записи: только в записи на правке, с подтверждением; запись — в журнал перед удалением",
           all("<DeleteEntry id={editingId}" in read(f"src/{f}.tsx") for f in ("BirthForm", "MarriageForm", "DeathForm"))
           and "безвозвратно" in read("src/DeleteEntry.tsx") and "Удалена запись № {id}: {snapshot}" in main)
-    check("волость в подсказке НП", "-- @place_volost" in read("db/statements.sql") and "data-volost" in read("src/Suggest.tsx"))
+    check("волость в подсказке НП (с 17.11 — второй строкой с типом, уездом и губернией)",
+          "-- @place_where" in read("db/statements.sql") and "data-place-where" in read("src/Suggest.tsx"))
     # Находки ревьюера 11.11.2026 (до выкладки).
     check("удаление записи с ждущей правкой помощника — следующее слияние говорит «у вас удалено»",
           "UPDATE merge_origin SET entry_id = NULL, pending = NULL, pending_fp = NULL WHERE entry_id = :id;" in read("db/statements.sql")
@@ -2467,6 +2513,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261117_sprint_150_164,
     incident_20261113_sprint_139_149,
     incident_20261111_sprint_131_138,
     incident_20261110_sliyanie_prihodov,

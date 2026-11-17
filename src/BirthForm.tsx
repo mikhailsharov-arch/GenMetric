@@ -731,7 +731,9 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
       ["причта", clergy1.iof.trim() ? clergy1.parsed : null],
       ["причта", clergy2.iof.trim() ? clergy2.parsed : null],
       ["причта", clergy3.iof.trim() ? clergy3.parsed : null],
-    ].find(([, p]) => p && !(p as Parsed).known_name) as [string, Parsed] | undefined;
+      // Без имени (одна фамилия, только звание) сверять нечего: отказ писал
+      // «Имя причта «null»» и молча не давал сохранить (Нинель 16.11.2026, п. 164).
+    ].find(([, p]) => p && (p as Parsed).first_name && !(p as Parsed).known_name) as [string, Parsed] | undefined;
     if (unknown) {
       warn(`Имя ${unknown[0]} «${unknown[1].first_name}» не сверено со справочником`,
              unknown[0] === "причта"
@@ -1254,7 +1256,13 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
         enterToEmpty
         keepWifeRank
         onIofLeave={motherLeft}
-        onPickPerson={pickInto(setMother)}
+        onPickPerson={(hint) => {
+          // Мать из подсказки — «законная жена его», а не звание из её
+          // прежней записи («крестьянская жена»; Роман 16.11.2026). Только в
+          // новой записи и при отце: без отца это звание стирали (23.09).
+          const wife = editingId === null && !!latestFather.current.iof.trim();
+          pickInto(setMother)(wife ? { ...hint, rank: MOTHER_RANK } : hint);
+        }}
         titleAfter={<FoldLink block="birth_mother" onFold={() => foldMother(true)} />}
       />
       </div>
