@@ -1,6 +1,6 @@
 [package]
 name = "genmetric"
-version = "0.1.0"
+version = "1.0.0"
 description = "Индексатор метрических книг"
 authors = ["GenMetric"]
 license = "GPL-3.0-or-later"

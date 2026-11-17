@@ -1,6 +1,6 @@
 [package]
 name = "genmetric-core"
-version = "0.1.0"
+version = "1.0.0"
 description = "GenMetric: логика без окна — запросы, нормализация, выгрузка в xlsx"
 license = "GPL-3.0-or-later"
 edition = "2021"
