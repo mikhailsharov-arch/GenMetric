@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 48, ошибок 0» (слова досье персоны, блок «Семья» — и дети по смерти, своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 554, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 560, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет
@@ -232,6 +232,11 @@ openpyxl и Numbers открывали её чисто.
 `~/.cargo/bin` не попал в PATH (rustup подключает его через `~/.cargo/env`).
 `Cargo.lock` лежит в репозитории: сборка у того, кто получит исходники, должна
 взять те же версии крейтов, что и наша.
+
+**Rust закреплён** (с 18.11.2026, п. 169): `rust-toolchain.toml` и оба шага
+`dtolnay/rust-toolchain@…` в `build.yml` — одной версии; менять вместе.
+Сборка `main` не отменяется следующим пушем (п. 170): иначе отмена между
+удалением и созданием `latest-test` оставляла выпуск пустым.
 
 Python: быстрая проверка в конвейере идёт на 3.14 (он строже), база для
 установщика собирается на 3.12. Проверки обязаны проходить на обоих.

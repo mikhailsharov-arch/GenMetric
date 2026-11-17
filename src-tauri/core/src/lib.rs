@@ -81,12 +81,15 @@ pub fn suggest_sql(kind: &str) -> Result<(String, bool), String> {
 
 /// Шаблон «набранное в середине» для подсказки званий и населённых пунктов:
 /// из шаблона «с начала» (`от%`, уже нормализованного и экранированного) —
-/// `%от%`. None — другой перечень или набрано меньше двух букв: тогда ищем
+/// `%от%`. None — другой перечень или звание меньше двух букв: тогда ищем
 /// только с начала. Пункты — с 06.11.2026 (п. 127, Роман: «Черн» не находил
-/// «с.Черняное» — с 03.11 название хранится с приставкой типа).
+/// «с.Черняное» — с 03.11 название хранится с приставкой типа), с 18.11.2026
+/// (п. 167) — с одной буквы: на «Г» частое «с.Горелое» иначе не попадало,
+/// а список пунктов всё равно режется после сортировки по частоте.
 pub fn rank_inside_pattern(kind: &str, prefix_pattern: &str) -> Option<String> {
     let typed = prefix_pattern.strip_suffix('%')?;
-    if !(kind.starts_with("rank") || kind == "place") || typed.chars().count() < 2 {
+    let least = if kind == "place" { 1 } else { 2 };
+    if !(kind.starts_with("rank") || kind == "place") || typed.chars().count() < least {
         return None;
     }
     Some(format!("%{typed}%"))
@@ -346,7 +349,8 @@ mod tests {
         assert_eq!(rank_inside_pattern("rank_m", "о%"), None, "одна буква — только с начала");
         assert_eq!(rank_inside_pattern("surname", "от%"), None, "фамилии — только с начала");
         assert_eq!(rank_inside_pattern("place", "черн%"), Some("%черн%".to_string()), "пункты — и по вхождению (п. 127)");
-        assert_eq!(rank_inside_pattern("place", "ч%"), None);
+        assert_eq!(rank_inside_pattern("place", "ч%"), Some("%ч%".to_string()), "пункты — с одной буквы (п. 167)");
+        assert_eq!(rank_inside_pattern("place", "%"), None);
         add("rank_m", "сын-отрок", 2);
         add("rank_m", "отставной рядовой", 5);
         let ranks = |pattern: &str| -> Vec<String> {

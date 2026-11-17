@@ -58,9 +58,14 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
   const [busyForm, setBusyForm] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
 
+  // review_list асинхронный (п. 165): ответы могут прийти не по порядку —
+  // берём только ответ на последний запрос.
+  const loads = useRef(0);
   function load(done: boolean) {
+    const my = ++loads.current;
     invoke<Item[]>("review_list", { done })
       .then((rows) => {
+        if (my !== loads.current) return;
         // Всё сверено — сразу показать сделанное: окно открыли кнопкой
         // «Список на сверку…», чтобы к нему вернуться (п. 125, 06.11.2026).
         if (!done && rows.length === 0 && !askedDone.current) {

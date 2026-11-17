@@ -123,6 +123,9 @@ function PlaceForm({ name, similar, defaults, existing, lastVolost, last, defaul
   const seen = useRef([guberniya, uyezd]);
   const [cleared, setCleared] = useState([false, false, false]);
   function leftLevel(level: 0 | 1, value: string) {
+    // Стёрли, чтобы набрать заново, — не смена (п. 168): уезд и волость
+    // остаются, а прежнее значение помним — новое сравнится с ним.
+    if (!value.trim()) return;
     const was = seen.current[level].trim();
     seen.current[level] = value;
     // Вписали впервые (было пусто) — это не смена: уезд из импорта или от

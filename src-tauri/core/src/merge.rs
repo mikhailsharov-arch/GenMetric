@@ -1393,6 +1393,12 @@ mod tests {
         assert_eq!(v.head, "Рождение 1914, № 2, стр. 35. Петр, отец Василий Родионов Аксенов, мать Мария Ивановна");
         assert_eq!(v.pieces.iter().map(|p| (p.key.as_str(), p.who.join(", "))).collect::<Vec<_>>(),
                    vec![("страница: «35» → «35об»", String::new()), (key, "отец, мать".to_string())]);
+        // П. 166: пункт помощника у нас объединён с нашим — отличия НП нет.
+        ours.execute("INSERT INTO place_merged (old_norm, into_norm) VALUES (?1, ?2)",
+                     [normalize("Горелое"), normalize("с.Горелое")]).unwrap();
+        let v = edit_view(&ours, ids[1], &roles).unwrap().unwrap();
+        assert_eq!(v.pieces.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["страница: «35» → «35об»"], "объединённый пункт");
+        ours.execute("DELETE FROM place_merged", []).unwrap();
         let many = piece_many(&ours, &ids, key, true).unwrap();
         assert_eq!((many.closed, many.left, many.failed.len()), (1, 1, 0), "{many:?}");
         assert_eq!(num(&ours, "SELECT count(*) FROM person_mention m JOIN place p ON p.id = m.place_id WHERE p.name = 'Горелое'"), 4);
@@ -1403,6 +1409,11 @@ mod tests {
         assert_eq!(kept.closed, 1);
         assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 0);
         assert_eq!(num(&ours, "SELECT count(*) FROM entry WHERE page = '35'"), 1, "оставлена наша страница");
+        // П. 166: «Вернуть в список» снова показывает оставленную правку.
+        ours.execute(&statement("review_done").unwrap(), rusqlite::named_params! { ":id": ids[1], ":done": 0 }).unwrap();
+        let v = edit_view(&ours, ids[1], &roles).unwrap().unwrap();
+        assert_eq!(v.pieces.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["страница: «35» → «35об»"], "вернулась в список");
+        assert_eq!(num(&ours, "SELECT count(*) FROM review_item WHERE kind = 'merge_edit' AND done = 0"), 1);
         for (path, conn) in [(ours_path, ours), (theirs_path, theirs)] {
             std::mem::drop(conn);
             let _ = std::fs::remove_file(path);

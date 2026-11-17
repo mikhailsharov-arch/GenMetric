@@ -1893,6 +1893,33 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261118_sprint_165_170():
+    """
+    18.11.2026, находки ревью и аудита спринта 17.11: окно сверки замирало на
+    1760 строках (п. 165), починки слияния без проверки (п. 166), на одну
+    букву «Г» частое «с.Горелое» не находилось (п. 167), стёртая губерния
+    стирала уезд и волость (п. 168), сборка брала свежий Rust (п. 169), второй
+    пуш в main оставлял latest-test пустым (п. 170).
+    """
+    main = read("src-tauri/src/main.rs")
+    check("п. 165: список на сверку собирается не в главном потоке окна",
+          "#[tauri::command(async)]\nfn review_list(" in main)
+    merge = read("src-tauri/core/src/merge.rs")
+    check("п. 166: объединённый пункт и «Вернуть в список» — под тестом",
+          '"объединённый пункт"' in merge and '"вернулась в список"' in merge)
+    check("п. 167: пункты по вхождению — с одной буквы",
+          'let least = if kind == "place" { 1 } else { 2 };' in read("src-tauri/core/src/lib.rs"))
+    check("п. 168: стёртая губерния — не смена, уезд и волость остаются",
+          "if (!value.trim()) return;\n    const was = seen.current[level].trim();" in read("src/PlaceCard.tsx"))
+    build = read(".github/workflows/build.yml")
+    tool = read("rust-toolchain.toml")
+    check("п. 169: Rust закреплён — rust-toolchain.toml и build.yml одной версии",
+          "@stable" not in build and re.search(r'channel = "([\d.]+)"', tool) is not None
+          and build.count("dtolnay/rust-toolchain@" + re.search(r'channel = "([\d.]+)"', tool).group(1)) == 2)
+    check("п. 170: сборка main не отменяется посреди выпуска latest-test",
+          "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}" in build)
+
+
 def incident_20261117_sprint_150_164():
     """
     17.11.2026, ответ Романа на сборку 14.11 (intent/2026-11-16-…): 106 записей
@@ -2513,6 +2540,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261118_sprint_165_170,
     incident_20261117_sprint_150_164,
     incident_20261113_sprint_139_149,
     incident_20261111_sprint_131_138,

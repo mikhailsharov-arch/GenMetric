@@ -471,6 +471,9 @@ fn suggest(
 
         // Пункты — с запасом: порядок решается ниже, по частоте, и нужные
         // строки не должны выпасть из первой выборки (пп. 144, 159).
+        // shortcut: с одной буквы по вхождению (п. 167) SQL режет 200 строк по
+        // частоте до place_order — ни разу не набранный пункт может выпасть,
+        // если в справочнике больше 200 пунктов с этой буквой (у Романа 197).
         let first_limit = if kind == "place" { 200 } else { limit };
         let mut out = merge_case_twins(suggest_rows(conn, &sql, &kind, &pattern, first_limit, gendered, &gender)?);
         // Звания — ещё и по вхождению (Роман 12.10.2026: набрал «от» и хочет
@@ -1763,7 +1766,9 @@ struct ReviewItem {
     view: Option<genmetric_core::merge::EditView>,
 }
 
-#[tauri::command]
+/// `async` (п. 165): с 17.11 разбирает правки каждой строки по полям — на
+/// 1760 строках Романа главный поток окна замирал.
+#[tauri::command(async)]
 fn review_list(app: State<App>, done: bool) -> Result<Vec<ReviewItem>, String> {
     with_conn(&app, "Список на сверку", |conn| {
         let mut stmt = conn.prepare(&statement("review_list")?).map_err(|e| e.to_string())?;

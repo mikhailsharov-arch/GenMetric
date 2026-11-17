@@ -34,7 +34,9 @@ env:
 
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # main не отменяется (п. 170): отмена между удалением и созданием latest-test
+  # оставляла ссылку тестировщиков пустой до конца новой сборки.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check:
@@ -135,7 +137,7 @@ jobs:
       # Запросы, нормализация, заполнение xlsx — без Tauri, поэтому собирается
       # на Linux за пару минут. 01.10.2026 ошибку «Excel просит восстановить
       # файл» ловил тест этого кода, но шёл он только у разработчика.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -211,7 +213,7 @@ jobs:
         run: npm ci
 
       # --- сборка приложения ------------------------------------------------
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
