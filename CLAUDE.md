@@ -25,7 +25,7 @@
 
     python3 db/build_seed.py src-tauri/resources/seed.sqlite   # собрать базу поставки
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
-    python3 db/test_upgrade.py                                  # → «Итог: успешно 94, ошибок 0»
+    python3 db/test_upgrade.py                                  # → «Итог: успешно 95, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 138, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»

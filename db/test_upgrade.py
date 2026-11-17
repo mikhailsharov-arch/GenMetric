@@ -370,6 +370,8 @@ def main() -> int:
         check("память слияния приходов появилась (схема 13): таблица и колонка строки списка на сверку",
               one("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'merge_origin'") == 1
               and "origin_id" in [r[1] for r in db.execute("PRAGMA table_info(review_item)").fetchall()])
+        check("у строки списка на сверку — оставленные правки помощника (17.11.2026, п. 157)",
+              "kept" in [r[1] for r in db.execute("PRAGMA table_info(review_item)").fetchall()])
         check("метки прихода обновление не заводит и из поставки не берёт (её ставит программа при открытии)",
               one("SELECT count(*) FROM setting WHERE key = 'parish_uid'") == 0)
         check("память объединённых пунктов появилась (схема 12)",

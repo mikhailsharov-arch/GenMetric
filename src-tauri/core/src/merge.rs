@@ -1185,7 +1185,14 @@ fn pending_pair(conn: &Connection, review_id: i64) -> Result<Option<(i64, i64, S
                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .optional().map_err(s)?;
     let Some((_, Some(our_id), Some(pending), Some(print))) = origin else { return Ok(None) };
-    let theirs: EntryInput = serde_json::from_str(&pending).map_err(|e| format!("запись помощника не читается: {e}"))?;
+    let mut theirs: EntryInput = serde_json::from_str(&pending).map_err(|e| format!("запись помощника не читается: {e}"))?;
+    // Пункт, объединённый у нас, пока правка ждала, — под оставшимся
+    // названием: иначе отличие «НП» не уходило бы никогда (ревьюер 17.11.2026).
+    for p in &mut theirs.persons {
+        if let Some(name) = p.place.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string) {
+            p.place = Some(our_place(conn, &name)?);
+        }
+    }
     let Some(ours) = entry_input(conn, our_id)? else { return Ok(None) };
     Ok(Some((origin_id, our_id, print, ours, theirs)))
 }
@@ -1247,12 +1254,6 @@ fn take_piece(conn: &Connection, review_id: i64, key: &str, roles: &HashMap<Stri
                 let to = ours.persons.iter_mut().filter(|p| &p.role_code == code).nth(*n);
                 if let (Some(to), Some(from)) = (to, from) {
                     copy_person_field(to, from, x.field);
-                    // Пункт, объединённый у нас, пока правка ждала, — под оставшимся названием.
-                    if x.field == "НП" {
-                        if let Some(name) = to.place.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string) {
-                            to.place = Some(our_place(&tx, &name)?);
-                        }
-                    }
                 }
             }
         }

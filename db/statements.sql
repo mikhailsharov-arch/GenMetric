@@ -1177,7 +1177,7 @@ SELECT c.id, c.archive, c.fond, c.opis, c.delo, c.church, c.village, c.uyezd, c.
 SELECT id, case_id, section, page, no_male, no_female, event_day, event_month, event_year,
        rite_day, rite_month, rite_year, note, uncertain, scan_file
   FROM entry
- WHERE (:id IS NULL OR id = :id)
+ WHERE id BETWEEN coalesce(:id, -9223372036854775808) AND coalesce(:id, 9223372036854775807)
  ORDER BY id;
 
 -- @merge_mentions
@@ -1189,7 +1189,9 @@ SELECT m.entry_id, m.role_code, m.sort_order, m.surname, m.first_name, m.patrony
        m.note, m.uncertain, m.age_years, m.marriage_order, m.kinship,
        m.age_months, m.age_weeks, m.age_days, m.age_text, m.death_cause
   FROM person_mention m
- WHERE (:id IS NULL OR m.entry_id = :id)
+ -- Диапазоном, а не «:id IS NULL OR …»: с OR SQLite не берёт индекс, и
+ -- окно сверки (запись за записью, 17.11.2026) перебирало бы все упоминания.
+ WHERE m.entry_id BETWEEN coalesce(:id, -9223372036854775808) AND coalesce(:id, 9223372036854775807)
  ORDER BY m.entry_id, m.sort_order, m.id;
 
 -- @merge_places
@@ -1320,7 +1322,9 @@ SELECT kept FROM review_item WHERE id = :id;
 UPDATE review_item SET kept = :kept WHERE id = :id;
 
 -- @review_done
-UPDATE review_item SET done = :done WHERE id = :id;
+-- «Вернуть в список» — и правки, оставленные своими по одной, снова на сверке
+-- (ревьюер 17.11.2026: иначе строка возвращалась пустой).
+UPDATE review_item SET done = :done, kept = CASE WHEN :done = 0 THEN NULL ELSE kept END WHERE id = :id;
 
 -- @clergy_remember
 -- Причт запоминается, чтобы его можно было выбирать, а не набирать. Заказчик

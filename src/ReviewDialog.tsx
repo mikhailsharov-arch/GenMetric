@@ -131,6 +131,7 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
     setResult(null);
     const ids = rows.map((r) => r.id);
     const sum: ManyDone = { closed: 0, left: 0, failed: [], copy: null };
+    let stopped = false;
     // Ход — только если действие идёт дольше полсекунды (Роман: «Оставить
     // мою» мгновенное, индикатор ему не нужен).
     const slow = window.setTimeout(() => setProgress((p) => p ?? { key, done: 0, total: ids.length, take }), 500);
@@ -143,6 +144,7 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
         setProgress((p) => p && { ...p, done });
       }
     } catch (e) {
+      stopped = true;
       report(take ? "Не удалось взять правки помощника" : "Не удалось оставить ваши записи", e);
     } finally {
       window.clearTimeout(slow);
@@ -153,7 +155,9 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
     const failed = sum.failed.length
       ? ` Не вышло в ${sum.failed.length}: ${[...new Set(sum.failed)].slice(0, 2).join("; ")} — эти строки решите по одной.` : "";
     setResult({
-      text: (take ? `✓ Правка помощника взята в ${n} записях.` : `✓ Оставлена ваша версия в ${n} записях.`) +
+      // Сбой посередине — без галочки: сделанное до него сохранено, но не всё (ревьюер 17.11.2026).
+      text: (stopped ? `Остановлено на ${n} из ${ids.length}: ${take ? "правка взята" : "ваша версия оставлена"} в ${n} записях, остальные — ниже.`
+             : take ? `✓ Правка помощника взята в ${n} записях.` : `✓ Оставлена ваша версия в ${n} записях.`) +
             (sum.left ? ` В ${sum.left} из них помощник изменил и другие поля — они остались ниже, только с этими отличиями.` : "") + failed,
       copy: sum.copy,
     });
@@ -288,7 +292,7 @@ export default function ReviewDialog({ onClose, onOpenEntry }: {
                         <div data-review-edit>
                           <b>{i.view.head}</b>
                           {i.view.pieces.map((p) => (
-                            <div key={p.key}>{p.key}{p.who.length ? `: ${p.who.join(", ")}` : ""}</div>
+                            <div key={p.key}>{p.who.length === 1 ? `${p.who[0]} — ${p.key}` : `${p.key}${p.who.length ? `: ${p.who.join(", ")}` : ""}`}</div>
                           ))}
                           {i.view.other.map((o) => <div key={o}>{o}</div>)}
                         </div>

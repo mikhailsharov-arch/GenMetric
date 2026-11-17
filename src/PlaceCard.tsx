@@ -123,9 +123,11 @@ function PlaceForm({ name, similar, defaults, existing, lastVolost, last, defaul
   const seen = useRef([guberniya, uyezd]);
   const [cleared, setCleared] = useState([false, false, false]);
   function leftLevel(level: 0 | 1, value: string) {
-    const same = value.trim().toLowerCase() === seen.current[level].trim().toLowerCase();
+    const was = seen.current[level].trim();
     seen.current[level] = value;
-    if (same) return;
+    // Вписали впервые (было пусто) — это не смена: уезд из импорта или от
+    // прошлой карточки не стирается (ревьюер 17.11.2026).
+    if (!was || value.trim().toLowerCase() === was.toLowerCase()) return;
     if (level === 0 && uyezd.trim()) { setUyezd(""); seen.current[1] = ""; setCleared((c) => [c[0], true, c[2]]); }
     if (volost.trim()) { setVolost(""); setCleared((c) => [c[0], c[1], true]); }
   }
