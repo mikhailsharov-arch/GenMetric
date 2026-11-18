@@ -19,6 +19,7 @@
 """
 
 import re
+import json
 import sqlite3
 import sys
 import tempfile
@@ -479,7 +480,7 @@ def main() -> int:
         # Каждый ребёнок — своей строкой с родителем (Роман 30.09.2026): две
         # «Татьяны Никитичны» различаются отцом, свежая запись первой.
         iq = {"prefix": norm("Тать") + "%", "gender": None, "limit": 8, "year": None,
-              "name": None, "parent": None, "place": None}
+              "name": None, "parent": None, "place": None, "fathers": None}
         kids = db.execute(sql["infant_suggest"], iq).fetchall()
         check("infant_suggest: две строки на двух детей с одним именем",
               [k[0] for k in kids] == ["Татьяна Никитична"] * 2, str(kids))
@@ -521,6 +522,20 @@ def main() -> int:
                                                   "name": norm("Татьяна") + "%", "parent": norm("Ник") + "%"}).fetchall()
         check("«Татьяна Ник» — и по отчеству ребёнка, и по имени отца, без повторов",
               len(both) == 2 and len({k[3] for k in both}) == 2, str(both))
+        # Второе слово — отчество целиком (Роман 18.11.2026, п. 172): «Татьяна
+        # Никитина» (старая форма) — не начало ни ИОФ ребёнка, ни «Никиты»;
+        # отец находится по отчеству. Как в main.rs: отчество — всё после имени.
+        full = {**iq, "prefix": norm("Татьяна Никитина") + "%", "name": norm("Татьяна") + "%",
+                "parent": norm("Никитина") + "%"}
+        check("…без отчества родителя «Татьяна Никитина» никого не находит",
+              db.execute(sql["infant_suggest"], full).fetchall() == [])
+        typed = norm("Никитина")
+        fathers = sorted({r[0] for r in db.execute(sql["patronymic_forms"])
+                          if any(f and norm(f).startswith(typed) for f in r[1:])})
+        check("отчество «Никитина» по словарю — от имени «Никита»", "никита" in fathers, str(fathers))
+        by_patr = db.execute(sql["infant_suggest"], {**full, "fathers": json.dumps(fathers)}).fetchall()
+        check("второе слово — отчество: младенец с отцом Никитой находится (п. 172)",
+              "Никита Петров" in [k[3] for k in by_patr] and all(k[3].startswith("Никита") for k in by_patr), str(by_patr))
         check("отец по записи о рождении — в той же деревне",
               db.execute(sql["birth_father"], {"iof": "Татьяна Никитична", "year": None, "place": norm("Нигде")}).fetchone() is None)
         check("по полу: мальчиков с таким началом нет",

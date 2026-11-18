@@ -1893,6 +1893,33 @@ def incident_20261103_obedinenie_punktov():
     check("комментарий ушедшего пункта не теряется молча (проверяющий)", "комментарий «{}» у «{}» не перешёл" in merge)
 
 
+def incident_20261118_otvet_na_1_0():
+    """
+    18.11.2026, ответ Романа на 1.0 (intent/2026-11-18-…): в ИОФ умершего на
+    «Александр Васильев» пропали младенцы с отцом Василием (п. 172, регрессия
+    14.11: второе слово искалось только как начало имени отца, а с п. 145
+    список после выбора отчества открывается по полному слову). Ревью 18.11:
+    сбой между удалением и созданием latest-test оставлял ссылку пустой (п. 171).
+    """
+    blocks = dict(re.findall(r"-- @(\w+)\n(.*?)(?=\n-- @|\Z)", read("db/statements.sql"), re.S))
+    inf = strip_comments(blocks.get("infant_suggest", ""))
+    main = strip_comments(read("src-tauri/src/main.rs"))
+    check("п. 172: младенец — и по отчеству: имя отца из словаря по набранному отчеству",
+          ":fathers" in inf and "json_each(:fathers)" in inf and "patronymic_forms" in blocks
+          and '":fathers": fathers' in main and 'statement("patronymic_forms")' in main)
+    check("п. 172: поведение проверено в test_entry",
+          "второе слово — отчество: младенец с отцом Никитой находится" in read("db/test_entry.py"))
+    build = read(".github/workflows/build.yml")
+    step = build[build.index("name: Обновить выпуск latest-test"):build.index("name: Убедиться, что тестировщику")]
+    on_place = step[step.index("\n          fi\n"):]
+    check("п. 171: latest-test обновляется на месте; удаляется, только если его или тега нет",
+          "gh release delete latest-test" not in on_place and "--clobber" in on_place
+          and 'grep -c "HTTP 404"' in step and "gh release edit latest-test" in on_place
+          and '-F force=true >/dev/null \\\n            || echo "::warning::' in on_place)
+    check("п. 171: после обновления проверено, что в выпуске файлы этой сборки",
+          'grep -qxF "$(basename "$f")"' in build)
+
+
 def incident_20261118_sprint_165_170():
     """
     18.11.2026, находки ревью и аудита спринта 17.11: окно сверки замирало на
@@ -2540,6 +2567,7 @@ def incident_20261017_semya_celikom_1():
 
 
 ИНЦИДЕНТЫ = [
+    incident_20261118_otvet_na_1_0,
     incident_20261118_sprint_165_170,
     incident_20261117_sprint_150_164,
     incident_20261113_sprint_139_149,

@@ -1076,7 +1076,8 @@ SELECT iof, nullif(place, '') AS place, nullif(rank, '') AS rank, gender, uses, 
 -- форме смертей плюс 4 предыдущих года»);
 -- :place — НП умершего, если уже набран: только дети этой деревни (по НП
 -- отца, нет отца — матери); :name и :parent — второе слово в поле отбирает по
--- началу имени родителя («Евдокия Ив»).
+-- началу имени родителя («Евдокия Ив»), :fathers — отца по отчеству
+-- («Евдокия Иванова», п. 172).
 WITH kid AS (
     SELECT c.entry_id, c.gender, e.id AS eid, e.event_day, e.event_month, e.event_year,
            trim(coalesce(nullif(trim(c.first_name), ''), '') || coalesce(' ' || nullif(trim(c.patronymic), ''), '') || coalesce(' ' || nullif(trim(c.surname), ''), '')) AS iof
@@ -1105,12 +1106,28 @@ SELECT k.iof, k.gender,
         OR (:parent IS NOT NULL
             AND k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :name ESCAPE '\')
             AND CASE WHEN f.iof <> '' THEN f.iof ELSE m.iof END
-                IN (SELECT iof FROM person_index WHERE iof_norm LIKE :parent ESCAPE '\')))
+                IN (SELECT iof FROM person_index WHERE iof_norm LIKE :parent ESCAPE '\'))
+        -- Второе слово — отчество: «Александр Васильев» — отец Василий (Роман
+        -- 18.11.2026, п. 172). :fathers — JSON-массив имён (name_norm), от
+        -- которых образовано набранное отчество (main.rs, patronymic_forms).
+        -- Имя отца — первое слово его ИОФ: iof_norm «василий» или «василий …»
+        -- («!» — следующий за пробелом знак, так сравнение идёт по индексу).
+        OR (:fathers IS NOT NULL
+            AND k.iof IN (SELECT iof FROM person_index WHERE iof_norm LIKE :name ESCAPE '\')
+            AND f.iof IN (SELECT p.iof FROM person_index p, json_each(:fathers) j
+                           WHERE p.iof_norm = j.value
+                              OR (p.iof_norm > j.value || ' ' AND p.iof_norm < j.value || '!'))))
    AND (:gender IS NULL OR k.gender IS NULL OR k.gender = :gender)
    AND (:year IS NULL OR k.event_year IS NULL OR k.event_year BETWEEN :year - 4 AND :year)
    AND (:place IS NULL OR CASE WHEN f.iof <> '' THEN f.place_norm ELSE m.place_norm END = :place)
  ORDER BY k.event_year DESC, k.event_month DESC, k.event_day DESC, k.eid DESC
  LIMIT :limit;
+
+-- @patronymic_forms
+-- Отчества по именам словаря — для подсказки младенца по отчеству (п. 172):
+-- набранное сверяется в Rust (кириллица, см. грабли про lower()).
+SELECT DISTINCT name_norm, patr_old_m, patr_old_f, patr_m, patr_f FROM name_dict
+ WHERE coalesce(patr_old_m, patr_old_f, patr_m, patr_f, '') <> '';
 
 -- @birth_father
 -- Отец из записи о рождении ребёнка с этим ИОФ (Роман 28.09.2026: выбрали

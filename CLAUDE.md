@@ -27,7 +27,7 @@
     python3 db/verify_seed.py src-tauri/resources/seed.sqlite   # → «Итог: успешно 50, ошибок 0»
     python3 db/test_upgrade.py                                  # → «Итог: успешно 95, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
-    python3 db/test_entry.py                                    # → «Итог: успешно 138, ошибок 0»
+    python3 db/test_entry.py                                    # → «Итог: успешно 141, ошибок 0»
     python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
@@ -39,7 +39,7 @@
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 48, ошибок 0» (слова досье персоны, блок «Семья» — и дети по смерти, своё рождение)
     node --experimental-strip-types scripts/test_age.mjs        # → «Итог: успешно 25, ошибок 0» (возраст умершего)
     node --experimental-strip-types scripts/test_names.mjs      # → «Итог: успешно 163, ошибок 0» (заглавные буквы в ИОФ и НП, слово «имени нет», женская форма фамилии, звание по роли, название пункта с комментарием)
-    python3 scripts/test_incidents.py                           # → «Итог: успешно 560, ошибок 0»
+    python3 scripts/test_incidents.py                           # → «Итог: успешно 564, ошибок 0»
     python3 -m pyflakes scripts db                              # → молчит (нужен pip install pyflakes; сценарий e2e — без запуска на Windows)
     python3 scripts/check_styles.py                             # → «Итог: успешно 5, ошибок 0»
     npm run build                                               # → «✓ built in …», ошибок типов нет

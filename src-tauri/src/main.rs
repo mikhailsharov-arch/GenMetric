@@ -1045,11 +1045,31 @@ fn suggest_infant(app: State<App>, prefix: String, limit: Option<i64>,
     let place = place.as_deref().map(normalize).filter(|p| !p.is_empty());
     let limit = limit.unwrap_or(6).clamp(1, 50);
     with_conn(&app, &format!("Поиск младенца «{prefix}»"), |conn| {
+        // «Александр Васильев»: второе слово — отчество, отец — Василий (п. 172).
+        let fathers = match prefix.trim().split_once(char::is_whitespace) {
+            Some((_, rest)) if !rest.trim().is_empty() => {
+                // Отчество — второе слово: «Александр Васильев Ря» — тоже отец Василий.
+                let typed = normalize(rest.split_whitespace().next().unwrap_or_default());
+                let mut stmt = conn.prepare(&statement("patronymic_forms")?).map_err(|e| e.to_string())?;
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?,
+                        [r.get::<_, Option<String>>(1)?, r.get(2)?, r.get(3)?, r.get(4)?])))
+                    .map_err(|e| e.to_string())?;
+                let mut names: Vec<String> = Vec::new();
+                for row in rows {
+                    let (name, forms) = row.map_err(|e| e.to_string())?;
+                    if forms.iter().flatten().any(|f| normalize(f).starts_with(&typed)) && !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+                (!names.is_empty()).then(|| serde_json::to_string(&names).unwrap_or_default())
+            }
+            _ => None,
+        };
         let mut stmt = conn.prepare(&statement("infant_suggest")?).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::named_params! {
                 ":prefix": pattern, ":gender": gender, ":limit": limit, ":year": year,
-                ":name": name, ":parent": parent, ":place": place,
+                ":name": name, ":parent": parent, ":place": place, ":fathers": fathers,
             }, |r| {
                 let (d, mo, y): (Option<i64>, Option<i64>, Option<i64>) = (r.get(6)?, r.get(7)?, r.get(8)?);
                 let part = |v: Option<i64>| v.map(|n| format!("{n:02}")).unwrap_or_else(|| "??".into());

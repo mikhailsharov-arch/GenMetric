@@ -434,20 +434,42 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Тег перевыпускается, чтобы ссылка для тестировщиков не менялась.
-          # Удаление может не найти прежний выпуск — это нормально, но ошибку
-          # самого создания глотать нельзя, поэтому || true стоит только здесь.
-          gh release delete latest-test --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          # Выпуск не удаляется, а обновляется на месте (п. 171, 18.11.2026):
+          # прежде шаг удалял latest-test и создавал заново, и сбой сети или API
+          # между двумя командами оставлял ссылку тестировщиков пустой до
+          # следующей сборки. Теперь сбой оставляет прежние файлы и красит
+          # сборку; пропасть может только один файл того же имени (--clobber
+          # удаляет его перед загрузкой) — это ловит следующий шаг.
           NOTES="Собрано автоматически из коммита ${GITHUB_SHA:0:7} — $(date -u '+%d.%m.%Y %H:%M UTC').
 
           Установщики не подписаны цифровой подписью, поэтому Windows и macOS покажут предупреждение при запуске. Как его пройти — в инструкции: docs/установка.md
 
           Это сборка для проверки, а не рабочая версия."
-          gh release create latest-test out/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --prerelease \
-            --title "Сборка для тестирования" \
-            --notes "$NOTES"
+          R="$GITHUB_REPOSITORY"
+          # Выпуска нет или нет его тега (удалили руками) — беречь нечего:
+          # создать заново, как раньше. Сбой сети за «нет тега» не считается.
+          NO_TAG=$(gh api "repos/$R/git/refs/tags/latest-test" 2>&1 >/dev/null | grep -c "HTTP 404" || true)
+          if [ "$NO_TAG" != "0" ] || ! gh release view latest-test --repo "$R" >/dev/null 2>&1; then
+            gh release delete latest-test --yes --cleanup-tag --repo "$R" || true
+            gh release create latest-test out/* --repo "$R" --target "$GITHUB_SHA" \
+              --prerelease --title "Сборка для тестирования" --notes "$NOTES"
+            exit 0
+          fi
+          gh release upload latest-test out/* --clobber --repo "$R"
+          # Установщики прежней версии (другое имя файла) — убрать, уже загрузив
+          # новые. Список — в переменную: сбой gh здесь обрывает шаг (bash -e).
+          OLD=$(gh release view latest-test --repo "$R" --json assets --jq '.assets[].name')
+          for name in $OLD; do
+            [ -e "out/$name" ] || gh release delete-asset latest-test "$name" --yes --repo "$R"
+          done
+          gh release edit latest-test --repo "$R" --prerelease \
+            --title "Сборка для тестирования" --notes "$NOTES"
+          # Тег — на коммит сборки («Исходный код» на странице выпуска). Последним
+          # и не роняя шаг: токен сборки может не иметь права переводить тег на
+          # коммит, правящий .github/workflows (ревьюер 18.11), — тогда отстаёт
+          # только архив исходников, установщики и заметки уже новые.
+          gh api -X PATCH "repos/$R/git/refs/tags/latest-test" -f sha="$GITHUB_SHA" -F force=true >/dev/null \
+            || echo "::warning::Тег latest-test не переведён на ${GITHUB_SHA:0:7}; установщики обновлены"
 
       - name: Убедиться, что тестировщику есть что скачать
         env:
@@ -464,4 +486,9 @@ jobs:
             || { echo "::error::В выпуске latest-test нет установщика Windows"; exit 1; }
           echo "$ASSETS" | grep -q '\.dmg$' \
             || { echo "::error::В выпуске latest-test нет установщика macOS"; exit 1; }
+          # Выпуск обновляется на месте — проверить, что лежат файлы этой сборки.
+          for f in out/*; do
+            echo "$ASSETS" | grep -qxF "$(basename "$f")" \
+              || { echo "::error::В выпуске latest-test нет $(basename "$f")"; exit 1; }
+          done
           echo "Выпуск: https://github.com/$GITHUB_REPOSITORY/releases/tag/latest-test"
