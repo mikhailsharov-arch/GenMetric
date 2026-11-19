@@ -2264,7 +2264,7 @@ def parishes(driver, wait):
                     time.sleep(0.5)
                 open_parishes(driver, wait)
                 rows_now = driver.execute_script(
-                    "return [...document.querySelectorAll('table.parishes b')].map((b) => b.textContent);") or []
+                    "return [...document.querySelectorAll('[data-parish-list] b')].map((b) => b.textContent);") or []
                 check("в перечне — один «Никольское (из Familio)», прежний заменён",
                       sum(1 for r in rows_now if r == "Никольское (из Familio)") == 1, " | ".join(rows_now))
         # Долг п. 86: память «Поиска» отпускается и читается заново настоящим

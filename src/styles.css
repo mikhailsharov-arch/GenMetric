@@ -696,7 +696,7 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 .parishitem { display: flex; align-items: flex-start; gap: 0.55em; padding: 0.35em 0.5em; border-radius: 0.4em;
               cursor: pointer; text-align: left; line-height: 1.35; }
 .parishitem:hover { background: #f3f6fa; }
-.parishitem.picked { background: #e8f0f8; box-shadow: inset 0 0 0 0.0625em #b9cde2; }
+.parishitem.picked { background: #dceaf7; box-shadow: inset 0.1875em 0 0 var(--accent), inset 0 0 0 0.0625em #9fbad6; }
 .parishitem input[type="radio"] { flex: none; width: auto; margin: 0.25em 0 0; }
 .parishitem .fieldhint { display: block; }
 /* Панель действий выбранного прихода — под списком, кнопки словами. */

@@ -2162,7 +2162,7 @@ def incident_20261110_sliyanie_prihodov():
     # вместе с «-wal»), и окно говорит о ней.
     check("слияние: окно говорит, как помощнику получить файл — «Сохранить копию…» в «Приходах»",
           "data-merge-hint" in read("src/ParishDialog.tsx") and "нажимает «Сохранить копию…»" in read("src/ParishDialog.tsx")
-          and "VACUUM INTO" in read("src-tauri/core/src/parish.rs"))
+          and 'conn.execute("VACUUM INTO ?1"' in read("src-tauri/core/src/parish.rs"))
     main = read("src-tauri/src/main.rs")
     check("слияние: перед слиянием — копия прихода «-до-слияния-приходов-» (копии приходами не считаются), временный файл убирается",
           "genmetric_core::db::JOIN_MARK" in main and "name.contains(JOIN_MARK)" in read("src-tauri/core/src/db.rs")

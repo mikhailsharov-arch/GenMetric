@@ -90,8 +90,11 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     const box = document.querySelector<HTMLElement>('.modal[data-modal="parish"]');
     // Вид слияния сам называет, где стоять курсору: на «Назад» (не на
     // «Слить» — привычный Enter не должен сливать), после слияния — на «Готово».
-    (box?.querySelector<HTMLElement>("[data-autofocus]") ?? box?.querySelector<HTMLInputElement>("input[data-field]") ?? box)?.focus();
-  }, [mode, merged]);
+    // Список — на выбранную строку: стрелки ↑/↓ сразу меняют выбор (ревьюер
+    // 19.11.2026). Перечень приходит позже окна — поэтому и по rows.length.
+    (box?.querySelector<HTMLElement>("[data-autofocus]") ?? box?.querySelector<HTMLInputElement>("input[data-field]")
+      ?? box?.querySelector<HTMLInputElement>('input[name="parish-pick"]:checked') ?? box)?.focus();
+  }, [mode, merged, rows.length]);
   const [busy, setBusy] = useState<string | null>(null);
   /** Сколькими частями ушёл выбранный файл — для сквозной проверки. */
   const [parts, setParts] = useState(0);
@@ -209,6 +212,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
     setDeleting(null);
     setRenaming(null);
     setRefused(null);
+    // Сообщение о копии прежнего прихода рядом с панелью другого сбивало бы с толку.
+    if (exported) { setNotice(null); setExported(null); }
   }
 
   async function open(id: number) {
