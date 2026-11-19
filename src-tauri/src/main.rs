@@ -471,10 +471,13 @@ fn suggest(
 
         // Пункты — с запасом: порядок решается ниже, по частоте, и нужные
         // строки не должны выпасть из первой выборки (пп. 144, 159).
-        // shortcut: с одной буквы по вхождению (п. 167) SQL режет 200 строк по
-        // частоте до place_order — ни разу не набранный пункт может выпасть,
-        // если в справочнике больше 200 пунктов с этой буквой (у Романа 197).
-        let first_limit = if kind == "place" { 200 } else { limit };
+        // shortcut: с одной буквы по вхождению (п. 167) SQL режет строки по
+        // частоте до place_order — ни разу не набранный пункт выпал бы, будь в
+        // справочнике больше PLACE_FIRST_LIMIT пунктов с этой буквой. До
+        // 19.11.2026 предел был 200, а у Романа уже 197 пунктов (Бэклог р. 2,
+        // п. 1); 5000 — на порядок больше любого прихода. Копия — в шиме стенда.
+        const PLACE_FIRST_LIMIT: i64 = 5000;
+        let first_limit = if kind == "place" { PLACE_FIRST_LIMIT } else { limit };
         let mut out = merge_case_twins(suggest_rows(conn, &sql, &kind, &pattern, first_limit, gendered, &gender)?);
         // Звания — ещё и по вхождению (Роман 12.10.2026: набрал «от» и хочет
         // увидеть «сын-отрок», а не только «отставной рядовой»). Сначала всё,
@@ -731,6 +734,8 @@ struct EntryBrief {
     rite_year: Option<i64>,
     scan_file: Option<String>,
     rite_day: Option<i64>,
+    /// Пол умершего («М»/«Ж») — цвет строки в «Набрано» (задача 4, 19.11.2026).
+    deceased_gender: Option<String>,
 }
 
 /// Дело года (year) или текущее — дело последней записи. Дело — на год
@@ -1988,6 +1993,7 @@ fn entry_list(app: State<App>, section: i64, year: Option<i64>, last: Option<boo
                     clergy_noname: r.get::<_, i64>(10)? != 0,
                     groom: r.get(11)?, bride: r.get(12)?, deceased: r.get(13)?,
                     rite_year: r.get(14)?, scan_file: r.get(15)?, rite_day: r.get(16)?,
+                    deceased_gender: r.get(17)?,
                 }, r.get::<_, Option<String>>(17)?, r.get::<_, Option<String>>(18)?))
             })
             .map_err(|e| e.to_string())?;

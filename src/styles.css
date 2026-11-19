@@ -507,6 +507,11 @@ button.linkish {
 }
 .editbar .toggle { margin-left: auto; }
 .facts.saved { display: block; max-height: 14em; overflow-y: auto; }
+/* Цвет строки по полу (задача 4, Роман 21.10.2026): мужчины — голубые,
+   женщины — розовые; класс ставит rowSexClass (src/count.ts). Правило
+   «editing» — ниже: строка на правке остаётся жёлтой поверх цвета пола. */
+.facts.saved tr.sex-m td { background: #E3F2FD; }
+.facts.saved tr.sex-f td { background: #FCE4EC; }
 .facts.saved tr.editing td { background: #fff7e0; }
 /* Список — блок с прокруткой, ячейки сжаты по содержимому: без отступа
    «Вяткин» и «стр.» слипались (Роман 12.10.2026). */

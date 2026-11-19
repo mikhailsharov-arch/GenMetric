@@ -11,7 +11,7 @@ import ClergyBlock from "./ClergyBlock";
 import Suggest from "./Suggest";
 import { useFormClergy } from "./clergy";
 import { useFullIof } from "./FullIof";
-import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
+import { eventYearOf, nextCount, riteBeforeEvent, rowSexClass, splitCount, type Sex } from "./count";
 import { pageOverflow, turnPage } from "./page";
 import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { parseAge } from "./age";
@@ -71,6 +71,8 @@ type Brief = {
   event_day: number | null; event_month: number | null; event_year: number | null;
   rite_day?: number | null;
   rite_month: number | null; rite_year: number | null; deceased: string | null; clergy_noname: boolean;
+  // Пол умершего — цвет строки «Набрано» (задача 4, 19.11.2026).
+  deceased_gender?: string | null;
 };
 
 type MentionOut = {
@@ -673,7 +675,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
         setSaved((l) => [{ id: done.id, page, no_male: columns.no_male, no_female: columns.no_female,
                            event_day: deathDay, event_month: months.eventMonth, event_year: null,
                            rite_day: burialDay, rite_month: months.riteMonth, rite_year: year, deceased: d.iof.trim() || null,
-                           clergy_noname: false }, ...l]);
+                           clergy_noname: false, deceased_gender: sex }, ...l]);
       if (editingId !== null) restoreAfterEdit();
       else next();
       refresh();
@@ -1100,7 +1102,7 @@ export default function DeathForm({ mkCase, onSaved, workYear, openReq, onNewYea
           <table className="facts saved" ref={savedList}>
             <tbody>
               {saved.map((e) => (
-                <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
+                <tr key={e.id} className={[rowSexClass(e, e.deceased_gender), e.id === editingId ? "editing" : ""].filter(Boolean).join(" ")}>
                   <td>
                     {e.no_male !== null ? `№ м. ${e.no_male}` : e.no_female !== null ? `№ ж. ${e.no_female}` : "без №"}
                     {" · "}{dayMonth(e.event_day, e.event_month)} · {e.deceased || "личность не установлена"}

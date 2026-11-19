@@ -11,7 +11,7 @@ import PageField from "./PageField";
 import ClergyBlock from "./ClergyBlock";
 import NextYear from "./NextYear";
 import { useFormClergy } from "./clergy";
-import { eventYearOf, nextCount, riteBeforeEvent, splitCount, type Sex } from "./count";
+import { eventYearOf, nextCount, riteBeforeEvent, rowSexClass, splitCount, type Sex } from "./count";
 import { pageOverflow, turnPage } from "./page";
 import { bookMonth, eventMonthFrom, followEvent, monthOnYearChange, NO_WAIT, settleMonths } from "./month";
 import { AUTO_RANK_GODPARENT, useParishFlag } from "./flags";
@@ -1366,7 +1366,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
           <table className="facts saved" ref={savedList}>
             <tbody>
               {saved.map((e) => (
-                <tr key={e.id} className={e.id === editingId ? "editing" : ""}>
+                <tr key={e.id} className={[rowSexClass(e), e.id === editingId ? "editing" : ""].filter(Boolean).join(" ")}>
                   <td>
                     {/* Номер первым, как в браках и смертях (Роман 28.09.2026);
                         с колонкой — единственное место, где видно, что счёт лёг

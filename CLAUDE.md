@@ -29,12 +29,12 @@
     python3 db/test_upgrade.py                                  # → «Итог: успешно 95, ошибок 0»
     python3 db/test_settings.py                                 # → «Итог: успешно 6, ошибок 0»
     python3 db/test_entry.py                                    # → «Итог: успешно 141, ошибок 0»
-    python3 db/test_suggest.py                                  # → «Итого: 85 ок, 0 ошибок»
+    python3 db/test_suggest.py                                  # → «Итого: 87 ок, 0 ошибок»
     python3 db/test_parse.py                                    # → «Итог: успешно 74, ошибок 0» (сверка имён, карточка НП)
     python3 db/test_archive.py                                  # → «Итог: успешно 27, ошибок 0»
     python3 db/test_export.py                                   # → «Итог: успешно 142, ошибок 0» (выгрузка Familio и Excel)
     python3 db/test_parish.py                                   # → «Итог: успешно 46, ошибок 0» (приходы, общие справочники, объединение пунктов)
-    node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 22, ошибок 0» (счёт по полу)
+    node --experimental-strip-types scripts/test_count.mjs      # → «Итог: успешно 29, ошибок 0» (счёт по полу, цвет строк «Набрано»)
     node --experimental-strip-types scripts/test_page.mjs       # → «Итог: успешно 55, ошибок 0» (шаг страницы, листание скана, шаг Alt+стрелок, предохранитель, имя листа PDF)
     node --experimental-strip-types scripts/test_month.mjs      # → «Итог: успешно 75, ошибок 0» (месяц сам: по дню обряда, первая цифра дня, смена года)
     node --experimental-strip-types scripts/test_dossier.mjs    # → «Итог: успешно 48, ошибок 0» (слова досье персоны, блок «Семья» — и дети по смерти, своё рождение)

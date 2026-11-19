@@ -33,6 +33,25 @@ export function splitCount(count: number | null, sex: Sex | null): CountColumns 
 }
 
 /** Обряд через Новый год (28.09.2026) — см. NextYear.tsx. */
+/**
+ * Пол строки списка «Набрано» — для цвета (задача 4, 19.11.2026: мужчины
+ * голубые, женщины розовые). Сначала пол человека, если он известен
+ * (умерший), потом колонка номера: счёт ложится в неё по полу (splitCount).
+ * Нет ни того ни другого — null, строка без цвета.
+ */
+export function rowSex(row: Counted, gender?: string | null): Sex | null {
+  if (gender === "М" || gender === "Ж") return gender;
+  if (row.no_male !== null) return "М";
+  if (row.no_female !== null) return "Ж";
+  return null;
+}
+
+/** Класс строки «Набрано» по полу: sex-m, sex-f или пусто. */
+export function rowSexClass(row: Counted, gender?: string | null): string {
+  const s = rowSex(row, gender);
+  return s === "М" ? "sex-m" : s === "Ж" ? "sex-f" : "";
+}
+
 /** Показывать ли вопрос: месяц обряда раньше месяца события. */
 export function riteBeforeEvent(eventMonth: number | null, riteMonth: number | null): boolean {
   return eventMonth !== null && riteMonth !== null && riteMonth < eventMonth;

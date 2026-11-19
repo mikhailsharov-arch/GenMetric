@@ -9,7 +9,7 @@
  * Инцидент 13.09.2026: счёт всегда ложился в мужскую колонку. Половина
  * записей с неверным номером, на экране не видно.
  */
-import { eventYearOf, riteBeforeEvent, splitCount, nextCount } from "../src/count.ts";
+import { eventYearOf, riteBeforeEvent, splitCount, nextCount, rowSex, rowSexClass } from "../src/count.ts";
 
 let ok = 0, bad = 0;
 const check = (title, cond, detail = "") => {
@@ -63,6 +63,16 @@ check("добрали пропущенный № 2 после № 40 — сле�
   nextCount([{ no_male: 2, no_female: null }, { no_male: 40, no_female: null }], "М") === 41);
 check("то же, пока пол не известен: по полу последней записи, наибольший номер",
   nextCount([{ no_male: 2, no_female: null }, { no_male: null, no_female: 9 }, { no_male: 40, no_female: null }], null) === 41);
+
+console.log("\nЦвет строки «Набрано» по полу (задача 4, 19.11.2026)\n");
+check("рождение № м. → мальчик", rowSex({ no_male: 4, no_female: null }) === "М");
+check("рождение № ж. → девочка", rowSex({ no_male: null, no_female: 4 }) === "Ж");
+check("без номера и без пола → без цвета", rowSex({ no_male: null, no_female: null }) === null
+  && rowSexClass({ no_male: null, no_female: null }) === "");
+check("умершая «Ж» без номера → розовая", rowSexClass({ no_male: null, no_female: null }, "Ж") === "sex-f");
+check("пол умершего важнее колонки номера", rowSex({ no_male: 3, no_female: null }, "Ж") === "Ж");
+check("пол умершего не указан → по колонке номера", rowSexClass({ no_male: 3, no_female: null }, null) === "sex-m");
+check("непонятный пол → по колонке номера", rowSex({ no_male: null, no_female: 2 }, "?") === "Ж");
 
 console.log(`\nИтог: успешно ${ok}, ошибок ${bad}`);
 process.exit(bad ? 1 : 0);

@@ -410,6 +410,17 @@ def main() -> int:
 
         db.close()
 
+    # Первая выборка пунктов до place_order (Бэклог р. 2, п. 1, 19.11.2026):
+    # предел 200 при 197 пунктах у Романа — ни разу не набранный пункт выпал
+    # бы из подсказки на первую букву. Сам предел живёт в main.rs (команда
+    # окна), поэтому сверяем по тексту, как test_parse.py.
+    main_rs = (DB_DIR.parent / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+    m = re.search(r"const PLACE_FIRST_LIMIT: i64 = (\d+);", main_rs)
+    check("первая выборка пунктов — не меньше 5000 строк (было 200 при 197 пунктах)",
+          m is not None and int(m.group(1)) >= 5000, m.group(0) if m else "PLACE_FIRST_LIMIT не найден")
+    check("первая выборка пунктов идёт с этим пределом",
+          'if kind == "place" { PLACE_FIRST_LIMIT }' in main_rs)
+
     print(f"\nИтого: {ok_count} ок, {fail_count} ошибок")
     return 1 if fail_count else 0
 
