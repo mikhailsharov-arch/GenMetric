@@ -640,6 +640,8 @@ def main() -> int:
                           1887: ["ГА Костромской области", "56", "31", "19"]}, str(by_year))
         check("в базе пользователя временных таблиц нет",
               db.execute("SELECT count(*) FROM sqlite_master WHERE name LIKE 'x_%'").fetchone()[0] == 0)
+        # До выхода из временной папки: на Windows открытый файл не удаляется.
+        db.close()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

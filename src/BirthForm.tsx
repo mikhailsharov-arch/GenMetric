@@ -227,7 +227,7 @@ export default function BirthForm({ mkCase, onSaved, workYear, openReq, onNewYea
   // Пол из разбора имени важнее: он есть у 99,7% имён на данных Романа.
   const [childSexManual, setChildSexManual] = useState<Sex | null>(null);
   // Пытались сохранить, а пол ребёнка неизвестен: подсветить выбор у поля.
-  // Полоса ошибок для этого не годится — она говорит «пришлите текст Михаилу».
+  // Полоса ошибок для этого не годится — она просит прислать текст ошибки.
   const [askSex, setAskSex] = useState(false);
   const [fatherRaw, setFatherState] = useState<Person>(NEW_FATHER);
   const [motherRaw, setMother] = useState<Person>(NEW_MOTHER);

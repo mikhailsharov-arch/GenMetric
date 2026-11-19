@@ -298,7 +298,7 @@ export default function App() {
           <p className="path mono">{startup.db_path}</p>
           <p className="hint">Журнал ошибок:</p>
           <p className="path mono">{startup.log_path}</p>
-          <p>Пришлите Михаилу текст выше — по нему видно причину.</p>
+          <p>Пришлите текст выше Роману Чистову — по нему видно причину.</p>
         </section>
       </div>
     );

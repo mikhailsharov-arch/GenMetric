@@ -64,9 +64,9 @@ npm run tauri dev
 
 ## Готовые сборки
 
-**[Скачать последнюю версию](https://github.com/mikhailsharov-arch/GenMetric/releases/latest)** (1.0.1) — Windows 10 и 11, macOS на процессоре Apple.
+**[Скачать последнюю версию](https://github.com/romanchistov/GenMetric/releases/latest)** (1.0.1) — Windows 10 и 11, macOS на процессоре Apple.
 
-Тестовая сборка между версиями — по ссылке [latest-test](https://github.com/mikhailsharov-arch/GenMetric/releases/tag/latest-test): она обновляется автоматически после каждого изменения в коде. Как установить и что делать с предупреждением системы о неизвестном разработчике — в [инструкции](docs/установка.md).
+Тестовая сборка между версиями — по ссылке [latest-test](https://github.com/romanchistov/GenMetric/releases/tag/latest-test): она обновляется автоматически после каждого изменения в коде. Как установить и что делать с предупреждением системы о неизвестном разработчике — в [инструкции](docs/установка.md).
 
 Скомпилированные файлы в репозитории не хранятся — только в разделе выпусков, и собираются автоматически из исходного кода.
 

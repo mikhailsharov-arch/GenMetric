@@ -4,7 +4,7 @@
 # Готовые файлы из main складываются в выпуск с постоянным тегом latest-test,
 # чтобы ссылка для тестировщиков не менялась от сборки к сборке:
 #
-#   https://github.com/mikhailsharov-arch/GenMetric/releases/tag/latest-test
+#   https://github.com/romanchistov/GenMetric/releases/tag/latest-test
 #
 # Ветка test/… (п. 106, 02.11.2026): с 13.10 по 02.11 шесть сборок из
 # тринадцати упали в e2e на Windows уже в main, и каждая починка была ещё

@@ -379,6 +379,8 @@ def main() -> int:
                 "          (np_type IS NULL OR trim(np_type) = ''), (origin = 'archive'), id")
         check("place_get и place_find берут лучшую строку одним правилом (не из архива первой)",
               best in sql["place_get"] and best in sql["place_find"])
+        # До выхода из временной папки: на Windows открытый файл не удаляется.
+        db.close()
 
     print(f"\nИтог: успешно {ok_count}, ошибок {fail_count}")
     return 1 if fail_count else 0

@@ -672,6 +672,9 @@ mod tests {
         assert_eq!(back.id, 1);
         assert!(back.warning.is_some());
         assert!(list(&dir).unwrap()[1].missing);
+        // `back` держит подключённый общий файл; на Windows открытый файл не
+        // удаляется — закрыть до remove_file ниже (ПК Романа, 19.11.2026).
+        drop(back);
 
         // Общий файл пропал — приходы из папки возвращаются в перечень.
         let lost = create(&dir, &seed, "Потерянный").unwrap();

@@ -476,11 +476,15 @@ def main() -> int:
               and one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Галический'") == 1)
         check("уезд «Петровский», заведённый человеком и нигде не стоящий, убран (уборка 08.10.2026)",
               one("SELECT count(*) FROM lookup WHERE kind = 'uyezd' AND value = 'Петровский'") == 0)
+        # Соединение закрывается явно: на Windows открытый файл не удаляется,
+        # и выход из временной папки падал (ПК Романа, 19.11.2026).
+        seed_check = sqlite3.connect(seed)
         check("в самой поставке тестовых строк больше нет",
-              sqlite3.connect(seed).execute(
+              seed_check.execute(
                   "SELECT (SELECT count(*) FROM place WHERE name IN ('Лодзь', 'Котело')) + "
                   "(SELECT count(*) FROM lookup WHERE value IN ('Петровская', 'Лодзинский', 'Галический', 'Котельская'))"
               ).fetchone()[0] == 0)
+        seed_check.close()
         check("упоминаний без пункта после слияния нет",
               one("SELECT count(*) FROM person_mention m WHERE m.place_id IS NOT NULL "
                   "AND NOT EXISTS (SELECT 1 FROM place p WHERE p.id = m.place_id)") == 0)
