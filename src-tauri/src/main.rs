@@ -2488,6 +2488,43 @@ fn parish_delete(app: State<App>, id: i64) -> Result<String, String> {
     Ok(kept)
 }
 
+/// Копия прихода для помощника (задача 2, 19.11.2026): в понятное место, не в
+/// AppData. `path` пуст — окно «Сохранить как» (Рабочий стол, имя — приход и
+/// дата); отмена — `None`. Путь передан — без окна: так подставляют путь
+/// стенд и e2e (`window.__pickExportPath`). Асинхронно: копия большого
+/// прихода не держит главный поток окна.
+#[tauri::command(async)]
+fn parish_export(handle: tauri::AppHandle, app: State<App>, id: i64, path: Option<String>)
+    -> Result<Option<String>, String>
+{
+    let target = match path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => PathBuf::from(p.trim()),
+        None => {
+            use tauri_plugin_dialog::DialogExt;
+            let name = parish::list(&app.data_dir)?.into_iter().find(|r| r.id == id)
+                .map(|r| r.name).unwrap_or_default();
+            let date: String = rusqlite::Connection::open_in_memory()
+                .and_then(|c| c.query_row("SELECT strftime('%d.%m.%Y', 'now', 'localtime')", [], |r| r.get(0)))
+                .map_err(|e| e.to_string())?;
+            let mut dialog = handle.dialog().file()
+                .set_title("Сохранить копию прихода")
+                .set_file_name(parish::export_name(&name, &date))
+                .add_filter("Приход GenMetric", &["sqlite"]);
+            if let Ok(desktop) = handle.path().desktop_dir() {
+                dialog = dialog.set_directory(desktop);
+            }
+            let Some(picked) = dialog.blocking_save_file() else { return Ok(None) };
+            picked.into_path().map_err(|e| format!("Копия прихода: путь не прочитан ({e})"))?
+        }
+    };
+    let saved = parish::export_copy(&app.data_dir, id, &target).map_err(|e| {
+        write_log(&app.log_path, &format!("Копия прихода {id}: {e}"));
+        e
+    })?;
+    write_log(&app.log_path, &format!("Копия прихода {id} сохранена: {}", saved.display()));
+    Ok(Some(saved.to_string_lossy().to_string()))
+}
+
 // ----------------------------------------------------------------------------
 //  Импорт из Excel-индексатора (спека 2026-10-02, п. 4)
 // ----------------------------------------------------------------------------
@@ -3028,6 +3065,7 @@ fn main() {
             parish_create,
             parish_rename,
             parish_delete,
+            parish_export,
             import_chunk,
             import_inspect,
             import_run,

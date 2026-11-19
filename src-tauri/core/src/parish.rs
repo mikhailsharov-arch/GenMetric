@@ -569,6 +569,52 @@ pub fn setting_set(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
     .map_err(s)
 }
 
+/// Имя копии прихода по умолчанию (задача 2, 19.11.2026): «Борисоглебское —
+/// копия 19.11.2026.sqlite». Запрещённые в именах файлов знаки — «_».
+pub fn export_name(name: &str, date: &str) -> String {
+    let name = safe_name(name);
+    let name = if name.is_empty() { NO_NAME.to_string() } else { name };
+    format!("{name} — копия {}.sqlite", safe_name(date))
+}
+
+/// Копия прихода в файл `target` — для помощника (задача 2, 19.11.2026).
+///
+/// `VACUUM INTO` с отдельного соединения только для чтения: согласованный
+/// снимок вместе с тем, что у открытого прихода ещё лежит в «-wal» (простое
+/// копирование файла его теряло бы — п. 131). Метка прихода в копии та же:
+/// по ней слияние узнаёт копию (`merge_origin`). В папку данных копия не
+/// пишется — рядом с рабочими файлами её легко спутать или записать поверх.
+pub fn export_copy(dir: &Path, id: i64, target: &Path) -> Result<PathBuf, String> {
+    let common = open_common(dir)?;
+    let file: String = common
+        .query_row("SELECT file FROM parish WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+        .map_err(s)?
+        .ok_or_else(|| format!("прихода № {id} нет в перечне"))?;
+    drop(common);
+    let source = file_path(dir, &file);
+    if !source.exists() {
+        return Err(format!("файл прихода не найден: {}", source.display()));
+    }
+    // Сравнение — по полным путям: «.\» и регистр букв диска не обманут.
+    let full = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let parent = target.parent().filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| format!("не указана папка для копии: {}", target.display()))?;
+    if full(parent).starts_with(full(dir)) {
+        return Err("копию нельзя сохранить в папку данных программы — выберите, например, Рабочий стол".into());
+    }
+    // Окно «Сохранить как» уже спросило, заменить ли файл; VACUUM INTO пишет
+    // только в пустой путь.
+    if target.exists() {
+        std::fs::remove_file(target).map_err(|e| format!("не удалось заменить {}: {e}", target.display()))?;
+    }
+    let conn = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(s)?;
+    conn.execute("VACUUM INTO ?1", [target.to_string_lossy()])
+        .map_err(|e| format!("копия не сохранена: {e}"))?;
+    Ok(target.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     /// П. 140: путь файла прихода — без «/» посреди пути Windows.
@@ -593,6 +639,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Задача 2 (19.11.2026): имя копии — приход и дата, без запрещённых знаков.
+    #[test]
+    fn export_name_is_safe() {
+        assert_eq!(export_name("Борисоглебское", "19.11.2026"), "Борисоглебское — копия 19.11.2026.sqlite");
+        assert_eq!(export_name("Жары: 2/3", "19.11.2026"), "Жары_ 2_3 — копия 19.11.2026.sqlite");
+        assert_eq!(export_name("  ", "19.11.2026"), "Без названия — копия 19.11.2026.sqlite");
+    }
+
+    /// Задача 2 (19.11.2026): копия открытого прихода — с тем, что ещё в «-wal»,
+    /// с той же меткой; слияние её принимает; рабочий файл не меняется; в
+    /// папку данных — отказ; существующий файл заменяется.
+    #[test]
+    fn export_copy_of_open_parish() {
+        let Some(seed) = seed() else {
+            crate::seed_missing("тест копии прихода пропущен");
+            return;
+        };
+        let dir = temp_dir("export");
+        let out = temp_dir("export-out");
+        let first = open_current(&dir, &seed).unwrap();
+        // Строка, которая ещё не сброшена из «-wal» в файл прихода.
+        first.conn.execute(
+            "INSERT INTO place (name, name_norm, np_type, origin, updated_at)
+             VALUES ('Копийное', 'копийное', 'д.', 'user', datetime('now'))", []).unwrap();
+        assert!(dir.join(format!("{FIRST_FILE}-wal")).exists(), "проверка имеет смысл, только пока «-wal» не пуст");
+        let uid: String = first.conn.query_row("SELECT value FROM setting WHERE key = 'parish_uid'", [], |r| r.get(0)).unwrap();
+        let source = dir.join(FIRST_FILE);
+        let before = std::fs::metadata(&source).unwrap();
+
+        let target = out.join(export_name("Первый", "19.11.2026"));
+        std::fs::write(&target, b"old").unwrap();
+        assert_eq!(export_copy(&dir, 1, &target).unwrap(), target);
+        let after = std::fs::metadata(&source).unwrap();
+        assert_eq!((before.len(), before.modified().unwrap()), (after.len(), after.modified().unwrap()), "рабочий файл не тронут");
+
+        let copy = Connection::open(&target).unwrap();
+        let one = |sql: &str| -> String { copy.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(one("PRAGMA integrity_check"), "ok");
+        assert_eq!(one("SELECT name FROM place WHERE name_norm = 'копийное'"), "Копийное", "строка из «-wal» в копии");
+        assert_eq!(one("SELECT value FROM setting WHERE key = 'parish_uid'"), uid, "метка прихода та же");
+
+        // Слияние принимает копию: другой приход, та же схема, метка помощника.
+        drop(first);
+        let id = create(&dir, &seed, "Принимающий").unwrap();
+        let receiver = open(&dir, &seed, id).unwrap();
+        assert_eq!(crate::merge::check_source(&receiver.conn, &copy).unwrap(), uid);
+        drop(receiver);
+        drop(copy);
+
+        // В папку данных — отказ, файлы там не появляются.
+        let inside = dir.join("копия.sqlite");
+        assert!(export_copy(&dir, 1, &inside).unwrap_err().contains("папку данных"));
+        assert!(!inside.exists());
+        assert!(export_copy(&dir, 1, &dir.join(PARISH_DIR).join("копия.sqlite")).is_err(), "и в «приходы»");
+        assert!(export_copy(&dir, 99, &out.join("нет.sqlite")).is_err(), "нет такого прихода");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]

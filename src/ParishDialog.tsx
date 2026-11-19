@@ -124,6 +124,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const [renaming, setRenaming] = useState<{ id: number; name: string } | null>(null);
   const [deleting, setDeleting] = useState<ParishRow | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Куда легла копия прихода — для «Показать в папке» (задача 2, 19.11.2026).
+  const [exported, setExported] = useState<string | null>(null);
 
   /** Название поправили руками — новые файлы его не меняют. */
   const nameTouched = useRef(false);
@@ -236,6 +238,26 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
       setRefused(String(e));
     } finally {
       setDeleting(null);
+      setBusy(null);
+    }
+  }
+
+  /** Копия прихода для помощника (задача 2, 19.11.2026): окно «Сохранить как»
+   *  открывает Rust; стенд и e2e подставляют путь через __pickExportPath. */
+  async function exportCopy(row: ParishRow) {
+    setRefused(null); setNotice(null); setExported(null); setDeleting(null); setRenaming(null);
+    setBusy("export");
+    try {
+      const hook = (window as unknown as { __pickExportPath?: () => string | null }).__pickExportPath;
+      const path = hook ? hook() : null;
+      if (hook && !path) return;
+      const saved = await invoke<string | null>("parish_export", { id: row.id, path });
+      if (!saved) return;
+      setExported(saved);
+      setNotice(`Копия прихода «${row.name}» сохранена: ${saved}. Её можно переслать — рабочий файл не тронут.`);
+    } catch (e) {
+      setRefused(`Копия прихода «${row.name}» не сохранена: ${String(e)}`);
+    } finally {
       setBusy(null);
     }
   }
@@ -477,7 +499,20 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
           )}
         </p>
       )}
-      {notice && (mode === "list" || notice === clearedNotice.current) && <p className="hint" data-parish-notice>{notice}</p>}
+      {notice && (mode === "list" || notice === clearedNotice.current) && (
+        <p className="hint" data-parish-notice>
+          {notice}
+          {exported && mode === "list" && notice.includes(exported) && (
+            <>{" "}
+              <button type="button" className="toggle small" data-parish-export-show
+                      onClick={() => void invoke("reveal_path", { path: exported })
+                        .catch((e) => report("Не удалось показать копию прихода", e))}>
+                Показать в папке
+              </button>
+            </>
+          )}
+        </p>
+      )}
       {/* Вне вида «список»: «Добавить файлы…» в виде Familio выбирает через него же. */}
       <input ref={famPick} type="file" hidden multiple data-familio-file
              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -536,6 +571,11 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                         <button type="button" className="toggle small" disabled={busy !== null} data-parish-rename-button
                                 title="Переименовать приход" onClick={() => { setNotice(null); setDeleting(null); setRenaming({ id: r.id, name: r.name }); }}>
                           Переименовать
+                        </button>{" "}
+                        <button type="button" className="toggle small" disabled={r.missing || busy !== null} data-parish-export-button
+                                title="Сохранить копию прихода — например, на Рабочий стол, чтобы переслать помощнику"
+                                onClick={() => void exportCopy(r)}>
+                          Копия…
                         </button>
                         {/* Открытый и первый приход не удаляются (parish::remove);
                             кнопка есть и у них — нажатие объясняет почему (Роман

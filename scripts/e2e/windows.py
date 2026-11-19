@@ -1644,6 +1644,55 @@ def resumed(driver, wait):
 
     parishes(driver, wait)
     join_parishes(driver, wait)
+    export_copy(driver, wait)
+
+
+def export_copy(driver, wait):
+    """Копия прихода для помощника (задача 2, 19.11.2026): настоящая кнопка,
+    настоящий Rust пишет файл (VACUUM INTO). Окно «Сохранить как» роботу
+    недоступно — путь подставляет window.__pickExportPath, как сканы."""
+    import sqlite3
+    import tempfile
+    print("\n18. Копия прихода: кнопка «Копия…» пишет файл, он открывается")
+    target = Path(tempfile.mkdtemp(prefix="genmetric-export-")).resolve() / "Копия прихода.sqlite"
+    fresh_window(driver, wait)
+    open_parishes(driver, wait)
+    driver.execute_script("window.__pickExportPath = () => arguments[0];", str(target))
+    rows = driver.find_elements(By.XPATH, PARISH + "//table[contains(@class,'parishes')]//tr")
+    first = rows[0].find_element(By.XPATH, ".//b").text if rows else ""
+    buttons = rows[0].find_elements(By.CSS_SELECTOR, "[data-parish-export-button]") if rows else []
+    check("у прихода в перечне есть кнопка «Копия…»", bool(buttons), first or "перечень пуст")
+    if not buttons:
+        return
+    buttons[0].click()
+    note = lambda: " ".join(e.text for e in driver.find_elements(By.CSS_SELECTOR, "[data-parish-notice], .refused"))
+    wait_until(lambda: str(target) in note() or "не сохранена" in note(), 30)
+    check("программа сообщает, куда легла копия", str(target) in note(), note()[:300] + " | " + error_details(driver))
+    check("файл копии есть на диске", target.exists() and target.stat().st_size > 0, str(target))
+    if not target.exists():
+        return
+    driver.set_script_timeout(20)
+    listed = driver.execute_async_script(
+        "const done = arguments[arguments.length - 1];"
+        "window.__TAURI_INTERNALS__.invoke('parish_list').then((r) => done(r), (e) => done({error: String(e)}));")
+    want = next((r.get("entries") for r in listed if r.get("name") == first), None) if isinstance(listed, list) else None
+    copy = sqlite3.connect(str(target))
+    try:
+        integrity = copy.execute("PRAGMA integrity_check").fetchone()[0]
+        entries = copy.execute("SELECT count(*) FROM entry").fetchone()[0]
+        uid = copy.execute("SELECT value FROM setting WHERE key = 'parish_uid'").fetchone()
+    finally:
+        copy.close()
+    check("копия цела, записей столько же, сколько в приходе, метка прихода есть",
+          integrity == "ok" and want is not None and entries == want and uid is not None,
+          f"integrity={integrity}, записей {entries} из {want}, метка {uid}")
+    inside = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "копия.sqlite"
+    driver.execute_script("window.__pickExportPath = () => arguments[0];", str(inside))
+    rows = driver.find_elements(By.XPATH, PARISH + "//table[contains(@class,'parishes')]//tr")
+    rows[0].find_element(By.CSS_SELECTOR, "[data-parish-export-button]").click()
+    wait_until(lambda: "не сохранена" in note(), 10)
+    check("в папку данных копия не пишется — отказ словами", "папку данных" in note() and not inside.exists(), note()[:300])
+    driver.execute_script("delete window.__pickExportPath;")
 
 
 def join_parishes(driver, wait):
