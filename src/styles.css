@@ -700,16 +700,18 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 .parishitem input[type="radio"] { flex: none; width: auto; margin: 0.25em 0 0; }
 .parishitem .fieldhint { display: block; }
 /* Панель действий выбранного прихода — под списком, кнопки словами. */
-.parishpanel { margin: 0 0 0.6em; padding: 0.5em 0.6em; background: #f1f6fb; border: 0.0625em solid #c9d9ea; border-radius: 0.5em; }
+.parishpanel { margin: 0 0 0.6em; padding: 0.5em 0.45em; background: #f1f6fb; border: 0.0625em solid #c9d9ea; border-radius: 0.5em; }
 .parishpanel .parishpicked { margin: 0 0 0.45em; }
 .parishpanel [data-parish-confirm] { margin: 0; }
-.parishactions { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.3em; }
-.parishactions button.toggle.small { padding: 0.15em 0.5em; }
-.parishactions input[data-parish-rename] { flex: 1 1 14em; width: auto; font-weight: 600; }
+.parishactions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3em; }
+.parishactions button.toggle.small { padding: 0.15em 0.4em; }
+.parishactions input[data-parish-rename] { flex: 1 1 14em; min-width: 0; width: auto; font-weight: 600; }
 .parishactions button.toggle { width: auto; }
-/* «Удалить» — справа, отдельно от остальных: не нажать по ошибке. Кнопки
-   панели — в одну строку (Роман 19.11.2026: «кривое расположение»). */
-.parishactions .parishdelete { margin-left: auto; }
+/* «Удалить» — последней, отдельно от остальных: не нажать по ошибке. Не
+   прижата вправо: при крупном шрифте или узкой форме (скан рядом) кнопки
+   переносятся, и прижатая «Удалить» оставляла пустоту слева (Роман
+   19.11.2026: «кривое расположение»); ряд идёт слева направо без пустот. */
+.parishactions .parishdelete { margin-left: 0.45em; }
 /* Окно чуть шире общего (34em), когда есть место; обычно его ширину держит
    колонка формы (~470 точек) — под неё и рассчитаны кнопки панели. */
 .modal[data-modal="parish"] { max-width: 38em; }
