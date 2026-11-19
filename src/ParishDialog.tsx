@@ -583,9 +583,9 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                            if (e.key === "Enter") { e.preventDefault(); void rename(); }
                            if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); setRefused(null); }
                          }} />
-                  <button type="button" className="toggle" disabled={busy !== null} data-parish-rename-save
+                  <button type="button" className="toggle small" disabled={busy !== null} data-parish-rename-save
                           onClick={() => void rename()}>Сохранить</button>
-                  <button type="button" className="toggle" disabled={busy !== null}
+                  <button type="button" className="toggle small" disabled={busy !== null}
                           onClick={() => { setRenaming(null); setRefused(null); }}>Отмена</button>
                 </div>
               ) : (
@@ -593,17 +593,17 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                   <p className="parishpicked">Выбран: <b>{sel.name}</b>{sel.missing ? " — файл не найден" : ""}</p>
                   <div className="parishactions">
                     {!sel.current && (
-                      <button type="button" className="toggle" disabled={sel.missing || busy !== null} data-parish-open-button
+                      <button type="button" className="toggle small" disabled={sel.missing || busy !== null} data-parish-open-button
                               onClick={() => void open(sel.id)}>
                         Открыть
                       </button>
                     )}
-                    <button type="button" className="toggle" disabled={sel.missing || busy !== null} data-parish-export-button
+                    <button type="button" className="toggle small" disabled={sel.missing || busy !== null} data-parish-export-button
                             title="Сохранить копию прихода — например, на Рабочий стол, чтобы переслать помощнику"
                             onClick={() => void exportCopy(sel)}>
                       Сохранить копию…
                     </button>
-                    <button type="button" className="toggle" disabled={busy !== null} data-parish-rename-button
+                    <button type="button" className="toggle small" disabled={busy !== null} data-parish-rename-button
                             title="Переименовать приход" onClick={() => { setNotice(null); setDeleting(null); setRenaming({ id: sel.id, name: sel.name }); }}>
                       Переименовать
                     </button>
@@ -611,7 +611,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
                         кнопка есть и у них — нажатие объясняет почему (Роман
                         03.11.2026: «причину программа не сообщает, просто
                         отсутствует кнопка удаления»). Справа, отдельно. */}
-                    <button type="button" className="toggle parishdelete" disabled={busy !== null} data-parish-delete-button
+                    <button type="button" className="toggle small parishdelete" disabled={busy !== null} data-parish-delete-button
                             title={sel.current ? "Открытый приход не удаляется" : sel.id === 1 ? "Первый приход программы не удаляется" : "Убрать приход из перечня"}
                             onClick={() => {
                               setNotice(null); setRenaming(null);
@@ -629,7 +629,7 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
           <input ref={filePick} type="file" hidden data-import-file
                  accept=".xlsm,.xlsx,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void pick(f); }} />
-          <div className="modalbar">
+          <div className="modalbar parishbar">
             <button type="button" className="toggle" disabled={busy !== null}
                     onClick={() => { setRefused(null); setName(""); setMode("new"); }}>
               Новый приход…
