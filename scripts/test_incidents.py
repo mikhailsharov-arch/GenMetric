@@ -2156,8 +2156,13 @@ def incident_20261110_sliyanie_prihodov():
           "fn empty_case_is_not_left()" in m and "-- @merge_case_drop" in read("db/statements.sql"))
     check("слияние: роль, которой нет в нашей сборке, — отказ словами, а не «FOREIGN KEY»",
           "которой нет в вашей сборке GenMetric" in m)
-    check("слияние: окно говорит, где взять файл помощника и что копировать его надо при закрытой программе",
-          "data-merge-hint" in read("src/ParishDialog.tsx") and "при закрытой программе" in read("src/ParishDialog.tsx"))
+    # До 19.11.2026 помощник копировал файл прихода руками — только при
+    # закрытой программе (иначе записи оставались в «-wal»). С 19.11.2026
+    # копию делает «Сохранить копию…» (parish::export_copy, VACUUM INTO —
+    # вместе с «-wal»), и окно говорит о ней.
+    check("слияние: окно говорит, как помощнику получить файл — «Сохранить копию…» в «Приходах»",
+          "data-merge-hint" in read("src/ParishDialog.tsx") and "нажимает «Сохранить копию…»" in read("src/ParishDialog.tsx")
+          and "VACUUM INTO" in read("src-tauri/core/src/parish.rs"))
     main = read("src-tauri/src/main.rs")
     check("слияние: перед слиянием — копия прихода «-до-слияния-приходов-» (копии приходами не считаются), временный файл убирается",
           "genmetric_core::db::JOIN_MARK" in main and "name.contains(JOIN_MARK)" in read("src-tauri/core/src/db.rs")

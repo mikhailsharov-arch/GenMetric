@@ -689,8 +689,25 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
              font-size: 0.95rem; color: #4a3800; }
 .reviewbar b { font-weight: 700; }
 .reviewbar button.primary { width: auto; }
-.facts.parishes td { vertical-align: top; }
-.facts.parishes tr.editing td { background: #fff7e0; }
+.parishlist { display: flex; flex-direction: column; gap: 0.15em; margin: 0 0 0.6em; max-height: 22em; overflow-y: auto; }
+/* Строка прихода — кружок выбора, название и сведения; без кнопок (Роман
+   19.11.2026: «тесно в строке прихода… понятно домохозяйке»). Щелчок по любому
+   месту строки выбирает приход. */
+.parishitem { display: flex; align-items: flex-start; gap: 0.55em; padding: 0.35em 0.5em; border-radius: 0.4em;
+              cursor: pointer; text-align: left; line-height: 1.35; }
+.parishitem:hover { background: #f3f6fa; }
+.parishitem.picked { background: #e8f0f8; box-shadow: inset 0 0 0 0.0625em #b9cde2; }
+.parishitem input[type="radio"] { flex: none; width: auto; margin: 0.25em 0 0; }
+.parishitem .fieldhint { display: block; }
+/* Панель действий выбранного прихода — под списком, кнопки словами. */
+.parishpanel { margin: 0 0 0.6em; padding: 0.5em 0.6em; border: 0.0625em solid #dfe6ee; border-radius: 0.5em; }
+.parishpanel .parishpicked { margin: 0 0 0.45em; }
+.parishpanel [data-parish-confirm] { margin: 0; }
+.parishactions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em; }
+.parishactions input[data-parish-rename] { flex: 1 1 14em; width: auto; font-weight: 600; }
+.parishactions button.toggle { width: auto; }
+/* «Удалить» — справа, отдельно от остальных: не нажать по ошибке. */
+.parishactions .parishdelete { margin-left: auto; }
 .refused { margin: 0 0 0.5em; padding: 0.4em 0.6em; background: #fff7e0; border: 0.0625em solid #e6c766; border-radius: 0.4em; font-size: 0.85rem; }
 .importagain { margin: 0.4em 0; font-size: 0.88rem; }
 .importagain p { margin: 0 0 0.3em; }
@@ -709,7 +726,7 @@ h2 .ofyear { font-weight: normal; color: var(--muted, #666); }
 .facts.merge tr.dim td { color: #8a97a8; }
 .importnotes { margin: 0 0 0.5em 1.1em; padding: 0; font-size: 0.8rem; max-height: 9em; overflow-y: auto; }
 .modal:focus { outline: none; }
-.parishrow, .facts.parishes td, .modal p { overflow-wrap: anywhere; }
+.parishrow, .parishitem, .modal p { overflow-wrap: anywhere; }
 
 /* Сборка «Скорость набора» (03.10.2026). */
 button.toggle.small { width: auto; padding: 0.15em 0.7em; font-size: 0.82rem; }
@@ -721,11 +738,7 @@ button.toggle.small { width: auto; padding: 0.15em 0.7em; font-size: 0.82rem; }
 /* «Доводка набора», часть А (05.10.2026). */
 /* Кнопка не переносит слово: «Откр / ыть» в перечне приходов (снимок Романа). */
 button.toggle { white-space: nowrap; }
-.facts.parishes td:last-child { white-space: nowrap; padding-left: 0.6em; }
-/* Подтверждение удаления прихода — текстом, в несколько строк (02.11.2026). */
-.facts.parishes td [data-parish-confirm] { display: block; white-space: normal; max-width: 18em; text-align: left; }
-.facts.parishes td input[data-parish-rename] { width: 100%; font-weight: 600; }
-.facts.parishes .parishopen { color: var(--muted); margin-right: 0.3em; }
+.parishitem .parishopen { color: var(--muted); font-weight: 400; }
 /* Кнопка подтверждения — светлым на красном (п. 161: «Удалить» в окне
    «Приходы» была красной на красном, надпись не читалась). */
 button.toggle.danger { border-color: #a93226; color: #fff; background: #c0392b; }

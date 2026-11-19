@@ -126,6 +126,10 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
   // Куда легла копия прихода — для «Показать в папке» (задача 2, 19.11.2026).
   const [exported, setExported] = useState<string | null>(null);
+  // Выбранный в перечне приход — для панели действий под списком (Роман
+  // 19.11.2026: «тесно в строке прихода… понятно домохозяйке»). Пока не
+  // выбирали — открытый.
+  const [picked, setPicked] = useState<number | null>(null);
 
   /** Название поправили руками — новые файлы его не меняют. */
   const nameTouched = useRef(false);
@@ -194,6 +198,17 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
   /** Приход сменён — окно перечитывает всё заново. */
   function reload() {
     window.location.reload();
+  }
+
+  /** Выбранный приход: выбранный руками, иначе открытый, иначе первый. */
+  const sel = rows.find((r) => r.id === picked) ?? rows.find((r) => r.current) ?? rows[0];
+
+  /** Выбор другого прихода закрывает начатое удаление и переименование. */
+  function choose(id: number) {
+    setPicked(id);
+    setDeleting(null);
+    setRenaming(null);
+    setRefused(null);
   }
 
   async function open(id: number) {
@@ -523,82 +538,89 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
             Каждый приход — отдельный файл со своими записями. Справочники населённых
             пунктов и званий — общие. Открыт один приход; при смене окно перечитается.
           </p>
-          <table className="facts parishes">
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className={r.current ? "editing" : ""}>
-                  <td>
-                    {renaming?.id === r.id ? (
-                      <input autoFocus data-parish-rename value={renaming.name} maxLength={60}
-                             aria-label="Новое название прихода"
-                             onChange={(e) => setRenaming({ id: r.id, name: e.target.value })}
-                             onKeyDown={(e) => {
-                               if (e.key === "Enter") { e.preventDefault(); void rename(); }
-                               if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); setRefused(null); }
-                             }} />
-                    ) : <b>{r.name}</b>}
-                    <div className="fieldhint">
-                      {r.missing ? "файл не найден" : `записей: ${r.entries ?? "?"}`}
-                      {r.opened_at ? ` · открывали ${r.opened_at.slice(0, 16)}` : ""}
-                      {r.source_name ? ` · из ${r.source_name}` : ""}
-                    </div>
-                  </td>
-                  <td className="parishbuttons">
-                    {deleting?.id === r.id ? (
-                      <span data-parish-confirm>
-                        Удалить «{r.name}»{r.entries ? ` (записей: ${r.entries})` : ""}? Приход уйдёт из перечня;
-                        его файл не стирается — он остаётся в папке «Удалённые приходы».{" "}
-                        <button type="button" className="toggle small danger" disabled={busy !== null} data-parish-delete-yes
-                                onClick={() => void remove(r)}>Да, удалить</button>{" "}
-                        <button type="button" className="toggle small" disabled={busy !== null}
-                                onClick={() => setDeleting(null)}>Отмена</button>
-                      </span>
-                    ) : renaming?.id === r.id ? (
-                      <>
-                        <button type="button" className="toggle small" disabled={busy !== null} data-parish-rename-save
-                                onClick={() => void rename()}>Сохранить</button>{" "}
-                        <button type="button" className="toggle small" disabled={busy !== null}
-                                onClick={() => { setRenaming(null); setRefused(null); }}>Отмена</button>
-                      </>
-                    ) : (
-                      <>
-                        {r.current ? <span className="parishopen">открыт</span> : (
-                          <button type="button" className="toggle small" disabled={r.missing || busy !== null}
-                                  onClick={() => void open(r.id)}>
-                            Открыть
-                          </button>
-                        )}{" "}
-                        <button type="button" className="toggle small" disabled={busy !== null} data-parish-rename-button
-                                title="Переименовать приход" onClick={() => { setNotice(null); setDeleting(null); setRenaming({ id: r.id, name: r.name }); }}>
-                          Переименовать
-                        </button>{" "}
-                        <button type="button" className="toggle small" disabled={r.missing || busy !== null} data-parish-export-button
-                                title="Сохранить копию прихода — например, на Рабочий стол, чтобы переслать помощнику"
-                                onClick={() => void exportCopy(r)}>
-                          Копия…
-                        </button>
-                        {/* Открытый и первый приход не удаляются (parish::remove);
-                            кнопка есть и у них — нажатие объясняет почему (Роман
-                            03.11.2026: «причину программа не сообщает, просто
-                            отсутствует кнопка удаления»). */}
-                        {" "}
-                        <button type="button" className="toggle small" disabled={busy !== null} data-parish-delete-button
-                                title={r.current ? "Открытый приход не удаляется" : r.id === 1 ? "Первый приход программы не удаляется" : "Убрать приход из перечня"}
-                                onClick={() => {
-                                  setNotice(null); setRenaming(null);
-                                  if (r.current) setRefused(`«${r.name}» сейчас открыт — его удалить нельзя. Откройте другой приход, затем удалите этот.`);
-                                  else if (r.id === 1) setRefused(`«${r.name}» — первый приход программы, его удалить нельзя. Его можно переименовать.`);
-                                  else { setRefused(null); setDeleting(r); }
-                                }}>
-                          Удалить
-                        </button>
-                      </>
+          {/* Строка — только выбор и сведения; действия — одной панелью под
+              списком (Роман 19.11.2026). Радиогруппа: щелчок по строке и
+              стрелки ↑/↓ выбирают приход. */}
+          <div className="parishlist" role="radiogroup" aria-label="Приходы" data-parish-list>
+            {rows.map((r) => (
+              <label key={r.id} data-parish-row={r.id}
+                     className={"parishitem" + (sel?.id === r.id ? " picked" : "") + (r.current ? " current" : "")}>
+                <input type="radio" name="parish-pick" checked={sel?.id === r.id} disabled={busy !== null}
+                       onChange={() => choose(r.id)} />
+                <span>
+                  <b>{r.name}</b>{r.current && <span className="parishopen"> · открыт</span>}
+                  <span className="fieldhint">
+                    {r.missing ? "файл не найден" : `записей: ${r.entries ?? "?"}`}
+                    {r.opened_at ? ` · открывали ${r.opened_at.slice(0, 16)}` : ""}
+                    {r.source_name ? ` · из ${r.source_name}` : ""}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {sel && (
+            <div className="parishpanel" data-parish-panel>
+              {deleting?.id === sel.id ? (
+                <p data-parish-confirm>
+                  Удалить «{sel.name}»{sel.entries ? ` (записей: ${sel.entries})` : ""}? Приход уйдёт из перечня;
+                  его файл не стирается — он остаётся в папке «Удалённые приходы».{" "}
+                  <button type="button" className="toggle small danger" disabled={busy !== null} data-parish-delete-yes
+                          onClick={() => void remove(sel)}>Да, удалить</button>{" "}
+                  <button type="button" className="toggle small" disabled={busy !== null}
+                          onClick={() => setDeleting(null)}>Отмена</button>
+                </p>
+              ) : renaming?.id === sel.id ? (
+                <div className="parishactions">
+                  <input autoFocus data-parish-rename value={renaming.name} maxLength={60}
+                         aria-label="Новое название прихода"
+                         onChange={(e) => setRenaming({ id: sel.id, name: e.target.value })}
+                         onKeyDown={(e) => {
+                           if (e.key === "Enter") { e.preventDefault(); void rename(); }
+                           if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); setRefused(null); }
+                         }} />
+                  <button type="button" className="toggle" disabled={busy !== null} data-parish-rename-save
+                          onClick={() => void rename()}>Сохранить</button>
+                  <button type="button" className="toggle" disabled={busy !== null}
+                          onClick={() => { setRenaming(null); setRefused(null); }}>Отмена</button>
+                </div>
+              ) : (
+                <>
+                  <p className="parishpicked">Выбран: <b>{sel.name}</b>{sel.missing ? " — файл не найден" : ""}</p>
+                  <div className="parishactions">
+                    {!sel.current && (
+                      <button type="button" className="toggle" disabled={sel.missing || busy !== null} data-parish-open-button
+                              onClick={() => void open(sel.id)}>
+                        Открыть
+                      </button>
                     )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <button type="button" className="toggle" disabled={sel.missing || busy !== null} data-parish-export-button
+                            title="Сохранить копию прихода — например, на Рабочий стол, чтобы переслать помощнику"
+                            onClick={() => void exportCopy(sel)}>
+                      Сохранить копию…
+                    </button>
+                    <button type="button" className="toggle" disabled={busy !== null} data-parish-rename-button
+                            title="Переименовать приход" onClick={() => { setNotice(null); setDeleting(null); setRenaming({ id: sel.id, name: sel.name }); }}>
+                      Переименовать
+                    </button>
+                    {/* Открытый и первый приход не удаляются (parish::remove);
+                        кнопка есть и у них — нажатие объясняет почему (Роман
+                        03.11.2026: «причину программа не сообщает, просто
+                        отсутствует кнопка удаления»). Справа, отдельно. */}
+                    <button type="button" className="toggle parishdelete" disabled={busy !== null} data-parish-delete-button
+                            title={sel.current ? "Открытый приход не удаляется" : sel.id === 1 ? "Первый приход программы не удаляется" : "Убрать приход из перечня"}
+                            onClick={() => {
+                              setNotice(null); setRenaming(null);
+                              if (sel.current) setRefused(`«${sel.name}» сейчас открыт — его удалить нельзя. Откройте другой приход, затем удалите этот.`);
+                              else if (sel.id === 1) setRefused(`«${sel.name}» — первый приход программы, его удалить нельзя. Его можно переименовать.`);
+                              else { setRefused(null); setDeleting(sel); }
+                            }}>
+                      Удалить
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <input ref={filePick} type="file" hidden data-import-file
                  accept=".xlsm,.xlsx,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void pick(f); }} />
@@ -624,8 +646,8 @@ export default function ParishDialog({ onClose }: { onClose: () => void }) {
           </div>
           <p className="hint" data-merge-hint>
             «Слить с файлом помощника…» — записи из файла прихода, набранного в другой программе GenMetric, в открытый
-            приход. Файл прихода (.sqlite) помощник берёт из папки данных своей программы — путь показан на экране
-            «ⓘ О программе» — и копирует его при закрытой программе.
+            приход. Помощник выбирает у себя в этом окне свой приход, нажимает «Сохранить копию…» и присылает
+            сохранённый файл (.sqlite).
           </p>
           <input ref={mergePick} type="file" hidden data-merge-file accept=".sqlite,.db,application/x-sqlite3,application/vnd.sqlite3"
                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void pickMerge(f); }} />

@@ -32,7 +32,7 @@ Microsoft) и проходим путь Романа руками робота.
   16. импорт Excel-индексатора (db/fixtures/indexer.xlsx) через окно, список
       на сверку; свободный порядок на экране «Дело»;
   17. слияние приходов: файл помощника — в пустой приход;
-  18. «Копия…» прихода пишет файл вне папки данных, в папку данных — отказ.
+  18. «Сохранить копию…» прихода пишет файл вне папки данных, в папку данных — отказ.
 
 Запуск (в конвейере, см. .github/workflows/build.yml):
     python scripts/e2e/windows.py путь\\к\\genmetric.exe путь\\к\\архив.sqlite путь\\к\\msedgedriver.exe
@@ -1655,15 +1655,17 @@ def export_copy(driver, wait):
     недоступно — путь подставляет window.__pickExportPath, как сканы."""
     import sqlite3
     import tempfile
-    print("\n18. Копия прихода: кнопка «Копия…» пишет файл, он открывается")
+    print("\n18. Копия прихода: «Сохранить копию…» пишет файл, он открывается")
     target = Path(tempfile.mkdtemp(prefix="genmetric-export-")).resolve() / "Копия прихода.sqlite"
     fresh_window(driver, wait)
     open_parishes(driver, wait)
     driver.execute_script("window.__pickExportPath = () => arguments[0];", str(target))
-    rows = driver.find_elements(By.XPATH, PARISH + "//table[contains(@class,'parishes')]//tr")
+    rows = driver.find_elements(By.XPATH, PARISH_LIST + "//label")
     first = rows[0].find_element(By.XPATH, ".//b").text if rows else ""
-    buttons = rows[0].find_elements(By.CSS_SELECTOR, "[data-parish-export-button]") if rows else []
-    check("у прихода в перечне есть кнопка «Копия…»", bool(buttons), first or "перечень пуст")
+    if rows:
+        parish_pick(driver, first)
+    buttons = driver.find_elements(By.XPATH, PARISH + "//button[@data-parish-export-button]")
+    check("выбран приход — в панели есть «Сохранить копию…»", bool(buttons), first or "перечень пуст")
     if not buttons:
         return
     buttons[0].click()
@@ -1690,8 +1692,7 @@ def export_copy(driver, wait):
           f"integrity={integrity}, записей {entries} из {want}, метка {uid}")
     inside = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "копия.sqlite"
     driver.execute_script("window.__pickExportPath = () => arguments[0];", str(inside))
-    rows = driver.find_elements(By.XPATH, PARISH + "//table[contains(@class,'parishes')]//tr")
-    rows[0].find_element(By.CSS_SELECTOR, "[data-parish-export-button]").click()
+    driver.find_element(By.XPATH, PARISH + "//button[@data-parish-export-button]").click()
     wait_until(lambda: "не сохранена" in note(), 10)
     check("в папку данных копия не пишется — отказ словами", "папку данных" in note() and not inside.exists(), note()[:300])
     driver.execute_script("delete window.__pickExportPath;")
@@ -1798,7 +1799,7 @@ def join_parishes(driver, wait):
           str(many)[:300])
     if not driver.find_elements(By.XPATH, PARISH):
         open_parishes(driver, wait)
-    click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+    parish_open(driver, "Борисоглебское")
     reloaded(driver, wait, "Борисоглебское")
 
 
@@ -1848,9 +1849,23 @@ def open_parishes(driver, wait):
     # Перечень приходит отдельным запросом чуть позже окна: сборка 05.10
     # упала на том, что список прочитали раньше, чем он появился.
     try:
-        wait.until(EC.presence_of_element_located((By.XPATH, PARISH + "//table[contains(@class,'parishes')]//tr")))
+        wait.until(EC.presence_of_element_located((By.XPATH, PARISH_LIST + "//label")))
     except TimeoutException:
         pass
+
+
+# С 19.11.2026 строка прихода — только выбор; действия — панелью под списком
+# (Роман: «тесно в строке прихода»). Выбрать строку, затем кнопку панели.
+PARISH_LIST = "//div[@data-modal='parish']//div[@data-parish-list]"
+
+
+def parish_pick(driver, name):
+    click(driver, PARISH_LIST + f"//label[.//b[normalize-space()='{name}']]")
+
+
+def parish_open(driver, name):
+    parish_pick(driver, name)
+    click(driver, "//div[@data-modal='parish']//button[@data-parish-open-button]")
 
 
 def reloaded(driver, wait, name):
@@ -1994,7 +2009,7 @@ def parishes(driver, wait):
     listing = driver.find_element(By.XPATH, PARISH).text
     check("в перечне два прихода", "Борисоглебское" in listing and "Николо-Макарово" in listing,
           listing.replace("\n", " | ")[:300])
-    click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+    parish_open(driver, "Борисоглебское")
     reloaded(driver, wait, "Борисоглебское")
     tab(driver, 'Рождения')
     try:
@@ -2011,8 +2026,8 @@ def parishes(driver, wait):
     # открытый кем-то файл не переносится — это проверяет только настоящая
     # система. «Николо-Макарово» дальше не нужен.
     open_parishes(driver, wait)
-    row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово']]"
-    click(driver, row + "//button[@data-parish-rename-button]")
+    parish_pick(driver, "Николо-Макарово")
+    click(driver, PARISH + "//button[@data-parish-rename-button]")
     renamed = shown(driver, PARISH + "//input[@data-parish-rename]")
     # Значение — через React-совместимую установку: Ctrl+A на раннере
     # 02.11.2026 не выделил текст поля, и сохранять было нечего.
@@ -2025,13 +2040,13 @@ def parishes(driver, wait):
     listing = driver.find_element(By.XPATH, PARISH).text
     check("переименование: в перечне «Николо-Макарово проба»", "Николо-Макарово проба" in listing,
           f"в поле было «{typed}» | " + listing.replace("\n", " | ")[:300] + " | " + error_details(driver))
-    row = PARISH + "//tr[.//b[normalize-space()='Николо-Макарово проба']]"
-    click(driver, row + "//button[@data-parish-delete-button]")
-    click(driver, row + "//button[@data-parish-delete-yes]")
+    parish_pick(driver, "Николо-Макарово проба")
+    click(driver, PARISH + "//button[@data-parish-delete-button]")
+    click(driver, PARISH + "//button[@data-parish-delete-yes]")
     # Строки перечня, а не всё окно: название законно стоит в сообщении об удалении.
     gone = wait_until(lambda: "Николо-Макарово проба" not in driver.find_element(
-        By.XPATH, PARISH + "//table[contains(@class,'parishes')]").text)
-    listing = driver.find_element(By.XPATH, PARISH + "//table[contains(@class,'parishes')]").text
+        By.XPATH, PARISH_LIST).text)
+    listing = driver.find_element(By.XPATH, PARISH_LIST).text
     deleted = Path(os.environ.get("APPDATA", "")) / "org.genmetric.app" / "Удалённые приходы"
     moved = sorted(p.name for p in deleted.glob("*.sqlite")) if deleted.exists() else []
     check("удаление: строки в перечне нет, файл — в «Удалённые приходы»",
@@ -2161,7 +2176,7 @@ def parishes(driver, wait):
     check("повторный импорт: программа спрашивает — заменить или создать ещё один",
           "уже импортирован" in again and "заменить приход" in again, again.replace("\n", " | ")[:400])
     click(driver, PARISH + "//button[normalize-space()='Назад']")
-    click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+    parish_open(driver, "Борисоглебское")
     reloaded(driver, wait, "Борисоглебское")
 
     print("\n16а. Импорт из шаблона Familio — два файла разом в один приход (спека 2026-10-17)")
@@ -2274,7 +2289,7 @@ def parishes(driver, wait):
         # следующий щелчок упал бы исключением вместо понятной проверки (ревьюер 27.10.2026).
         if driver.find_elements(By.CSS_SELECTOR, "[data-familio-seen]"):
             click(driver, PARISH + "//button[normalize-space()='Назад']")
-        click(driver, PARISH + "//tr[.//b[normalize-space()='Борисоглебское']]//button[normalize-space()='Открыть']")
+        parish_open(driver, "Борисоглебское")
         reloaded(driver, wait, "Борисоглебское")
 
 
