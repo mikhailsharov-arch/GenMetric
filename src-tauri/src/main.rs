@@ -2501,14 +2501,12 @@ fn parish_export(handle: tauri::AppHandle, app: State<App>, id: i64, path: Optio
         Some(p) => PathBuf::from(p.trim()),
         None => {
             use tauri_plugin_dialog::DialogExt;
-            let name = parish::list(&app.data_dir)?.into_iter().find(|r| r.id == id)
-                .map(|r| r.name).unwrap_or_default();
             let date: String = rusqlite::Connection::open_in_memory()
                 .and_then(|c| c.query_row("SELECT strftime('%d.%m.%Y', 'now', 'localtime')", [], |r| r.get(0)))
                 .map_err(|e| e.to_string())?;
             let mut dialog = handle.dialog().file()
                 .set_title("Сохранить копию прихода")
-                .set_file_name(parish::export_name(&name, &date))
+                .set_file_name(parish::export_default_name(&app.data_dir, id, &date))
                 .add_filter("Приход GenMetric", &["sqlite"]);
             if let Ok(desktop) = handle.path().desktop_dir() {
                 dialog = dialog.set_directory(desktop);

@@ -577,13 +577,60 @@ pub fn export_name(name: &str, date: &str) -> String {
     format!("{name} — копия {}.sqlite", safe_name(date))
 }
 
+/// Название прихода для имени копии — из перечня, без открытия файлов прихода
+/// (ревьюер 19.11.2026: `list` открывал на запись каждый приход).
+pub fn export_default_name(dir: &Path, id: i64, date: &str) -> String {
+    let row: Option<(Option<String>, String)> = open_common(dir).ok().and_then(|c| {
+        c.query_row("SELECT name, file FROM parish WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional().ok().flatten()
+    });
+    // Без названия в перечне (первый приход) — по селу дела, как в перечне;
+    // открывается только этот приход.
+    let name = row.map(|(name, file)| match name.filter(|n| !n.trim().is_empty()) {
+        Some(n) => n,
+        None => display_name(None, open_existing(&file_path(dir, &file)).ok().as_ref()),
+    }).unwrap_or_default();
+    export_name(&name, date)
+}
+
+/// Открыть базу SQLite, не создавая файла и не оставляя «-wal»/«-shm» после
+/// закрытия: как в `list` (читатель без права записи их за собой не убирает —
+/// ревьюер 19.11.2026, грабля 10.10.2026). Записей не меняет.
+fn open_existing(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(s)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(s)?;
+    Ok(conn)
+}
+
+/// Метка прихода (`setting.parish_uid`) в файле, если это база GenMetric:
+/// `Some(Some(метка))` — приход, `Some(None)` — база GenMetric без метки
+/// (общий файл, старый приход), `None` — не база GenMetric.
+fn genmetric_uid(path: &Path) -> Option<Option<String>> {
+    let conn = open_existing(path).ok()?;
+    let ours: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('setting', 'parish', 'entry')",
+        [], |r| r.get(0)).ok()?;
+    if ours == 0 {
+        return None;
+    }
+    Some(conn.query_row("SELECT value FROM setting WHERE key = 'parish_uid'", [], |r| r.get(0)).optional().ok().flatten())
+}
+
 /// Копия прихода в файл `target` — для помощника (задача 2, 19.11.2026).
 ///
-/// `VACUUM INTO` с отдельного соединения только для чтения: согласованный
-/// снимок вместе с тем, что у открытого прихода ещё лежит в «-wal» (простое
-/// копирование файла его теряло бы — п. 131). Метка прихода в копии та же:
-/// по ней слияние узнаёт копию (`merge_origin`). В папку данных копия не
-/// пишется — рядом с рабочими файлами её легко спутать или записать поверх.
+/// `VACUUM INTO` с отдельного соединения: согласованный снимок вместе с тем,
+/// что у открытого прихода ещё лежит в «-wal» (простое копирование файла его
+/// теряло бы — п. 131). Метка прихода в копии та же: по ней слияние узнаёт
+/// копию (`merge_origin`).
+///
+/// Рабочие файлы не перезаписываются (ревьюер 19.11.2026):
+/// - в папку данных (и «Удалённые приходы» внутри неё) — отказ по пути;
+/// - путь можно обойти (сетевой путь на свою же папку, на Mac —
+///   `/System/Volumes/Data`), поэтому ещё и по содержимому: существующий
+///   файл заменяется, только если это не база GenMetric или копия этого же
+///   прихода (та же метка). Другой приход и общий файл — отказ;
+/// - копия пишется во временный файл рядом и заменяет `target` только
+///   готовой: сбой не оставляет человека без прежнего файла.
 pub fn export_copy(dir: &Path, id: i64, target: &Path) -> Result<PathBuf, String> {
     let common = open_common(dir)?;
     let file: String = common
@@ -596,22 +643,46 @@ pub fn export_copy(dir: &Path, id: i64, target: &Path) -> Result<PathBuf, String
     if !source.exists() {
         return Err(format!("файл прихода не найден: {}", source.display()));
     }
-    // Сравнение — по полным путям: «.\» и регистр букв диска не обманут.
+    // Сравнение — по полным путям: «.\», «..», регистр и ссылки не обманут.
     let full = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let parent = target.parent().filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| format!("не указана папка для копии: {}", target.display()))?;
+    if !parent.is_dir() {
+        return Err(format!("папки «{}» нет или она недоступна — выберите другую, например Рабочий стол", parent.display()));
+    }
     if full(parent).starts_with(full(dir)) {
         return Err("копию нельзя сохранить в папку данных программы — выберите, например, Рабочий стол".into());
     }
-    // Окно «Сохранить как» уже спросило, заменить ли файл; VACUUM INTO пишет
-    // только в пустой путь.
+    let conn = open_existing(&source)?;
+    let uid: Option<String> = conn
+        .query_row("SELECT value FROM setting WHERE key = 'parish_uid'", [], |r| r.get(0))
+        .optional().map_err(s)?;
     if target.exists() {
-        std::fs::remove_file(target).map_err(|e| format!("не удалось заменить {}: {e}", target.display()))?;
+        // Сам источник под другим путём: та же метка, размер и время записи
+        // (старая копия этого прихода записана в другое время).
+        let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+        let itself = stamp(target).is_some() && stamp(target) == stamp(&source);
+        match genmetric_uid(target) {
+            None => {}
+            Some(found) if found.is_some() && found == uid && !itself => {}
+            Some(_) => return Err(format!(
+                "файл «{}» — рабочий файл GenMetric (приход или общий файл); заменять его копией нельзя — выберите другое имя",
+                target.display())),
+        }
     }
-    let conn = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(s)?;
-    conn.execute("VACUUM INTO ?1", [target.to_string_lossy()])
-        .map_err(|e| format!("копия не сохранена: {e}"))?;
+    let name = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let temp = parent.join(format!("{name}.genmetric-tmp"));
+    let _ = std::fs::remove_file(&temp);
+    let written = conn.execute("VACUUM INTO ?1", [temp.to_string_lossy()]);
+    drop(conn);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("файл не записан ({e}) — проверьте, что папка доступна и на диске есть место"));
+    }
+    std::fs::rename(&temp, target).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("не удалось заменить «{}» ({e}) — возможно, он открыт другой программой", target.display())
+    })?;
     Ok(target.to_path_buf())
 }
 
@@ -696,6 +767,37 @@ mod tests {
         assert!(!inside.exists());
         assert!(export_copy(&dir, 1, &dir.join(PARISH_DIR).join("копия.sqlite")).is_err(), "и в «приходы»");
         assert!(export_copy(&dir, 99, &out.join("нет.sqlite")).is_err(), "нет такого прихода");
+
+        // Имя по умолчанию — из перечня; у первого прихода без села — «Без названия».
+        assert_eq!(export_default_name(&dir, id, "19.11.2026"), "Принимающий — копия 19.11.2026.sqlite");
+        assert_eq!(export_default_name(&dir, 1, "19.11.2026"), "Без названия — копия 19.11.2026.sqlite");
+
+        // Ревьюер 19.11.2026. Копия закрытого прихода не оставляет у него
+        // «-wal» и «-shm» (грабля 10.10.2026).
+        let closed = list(&dir).unwrap().into_iter().find(|r| r.id == id).unwrap().file;
+        let closed_path = file_path(&dir, &closed);
+        let tails = |p: &Path| ["-wal", "-shm"].iter().any(|t| Path::new(&format!("{}{t}", p.display())).exists());
+        assert!(!tails(&closed_path), "до копии хвостов нет");
+        export_copy(&dir, id, &out.join("закрытый.sqlite")).unwrap();
+        assert!(!tails(&closed_path), "после копии закрытого прихода хвостов нет");
+        // Чужой приход под любым именем вне папки данных (как сетевой путь на
+        // свою папку) — не заменяется: файл цел.
+        let foreign = out.join("чужой.sqlite");
+        std::fs::copy(&closed_path, &foreign).unwrap();
+        let before = std::fs::read(&foreign).unwrap();
+        assert!(export_copy(&dir, 1, &foreign).unwrap_err().contains("рабочий файл GenMetric"));
+        assert_eq!(std::fs::read(&foreign).unwrap(), before, "чужой приход не тронут");
+        // Старая копия того же прихода — заменяется.
+        assert_eq!(export_copy(&dir, 1, &target).unwrap(), target);
+        // Сам источник под другим путём (жёсткая ссылка) — не заменяется.
+        let alias = out.join("тот же файл.sqlite");
+        if std::fs::hard_link(&closed_path, &alias).is_ok() {
+            assert!(export_copy(&dir, id, &alias).is_err(), "сам источник под другим именем");
+        }
+        // Нет папки — понятный отказ; временных файлов не остаётся.
+        let why = export_copy(&dir, 1, &out.join("нет такой папки").join("к.sqlite")).unwrap_err();
+        assert!(why.contains("нет или она недоступна"), "{why}");
+        assert!(!std::fs::read_dir(&out).unwrap().any(|f| f.unwrap().file_name().to_string_lossy().ends_with(".genmetric-tmp")));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&out);
     }
