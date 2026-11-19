@@ -512,6 +512,8 @@ button.linkish {
    «editing» — ниже: строка на правке остаётся жёлтой поверх цвета пола. */
 .facts.saved tr.sex-m td { background: #E3F2FD; }
 .facts.saved tr.sex-f td { background: #FCE4EC; }
+/* Текст не прилипает к левому краю цветной полосы (ревьюер 19.11.2026). */
+.facts.saved td:first-child { padding-left: 0.4em; }
 .facts.saved tr.editing td { background: #fff7e0; }
 /* Список — блок с прокруткой, ячейки сжаты по содержимому: без отступа
    «Вяткин» и «стр.» слипались (Роман 12.10.2026). */

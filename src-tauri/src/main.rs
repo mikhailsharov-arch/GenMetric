@@ -489,9 +489,11 @@ fn suggest(
         // частое «с.Горелое» стояло ниже словарных «Гобино» и «Голчино».
         if let Some(inside) = genmetric_core::rank_inside_pattern(&kind, &pattern) {
             if kind == "place" || (out.len() as i64) < limit {
+                // Ключи уже набранных — один раз (ревьюер 19.11.2026: см. merge_case_twins).
+                let mut have: std::collections::HashSet<String> =
+                    out.iter().map(|r| genmetric_core::text::normalize(&r.value)).collect();
                 for row in suggest_rows(conn, &sql, &kind, &inside, first_limit, gendered, &gender)? {
-                    let key = genmetric_core::text::normalize(&row.value);
-                    if !out.iter().any(|have: &Suggestion| genmetric_core::text::normalize(&have.value) == key) {
+                    if have.insert(genmetric_core::text::normalize(&row.value)) {
                         out.push(row);
                     }
                 }
@@ -541,10 +543,13 @@ fn suggest_rows(conn: &rusqlite::Connection, sql: &str, kind: &str, pattern: &st
 /// различает (её строчные функции знают только латиницу), поэтому склейка — здесь: остаётся
 /// написание с заглавной, ярус — лучший, частота — сложенная.
 fn merge_case_twins(rows: Vec<Suggestion>) -> Vec<Suggestion> {
+    // Ключ — один раз на строку, поиск — по таблице (ревьюер 19.11.2026: перебор
+    // с normalize на каждое сравнение при 5000 пунктах шёл минутами).
     let mut out: Vec<Suggestion> = Vec::with_capacity(rows.len());
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::with_capacity(rows.len());
     for row in rows {
         let key = genmetric_core::text::normalize(&row.value);
-        match out.iter_mut().find(|have| genmetric_core::text::normalize(&have.value) == key) {
+        match seen.get(&key).map(|&i| &mut out[i]) {
             Some(have) => {
                 let upper = |v: &str| v.chars().next().is_some_and(char::is_uppercase);
                 if !upper(&have.value) && upper(&row.value) {
@@ -553,7 +558,10 @@ fn merge_case_twins(rows: Vec<Suggestion>) -> Vec<Suggestion> {
                 have.tier = have.tier.min(row.tier);
                 have.count += row.count;
             }
-            None => out.push(row),
+            None => {
+                seen.insert(key, out.len());
+                out.push(row);
+            }
         }
     }
     out

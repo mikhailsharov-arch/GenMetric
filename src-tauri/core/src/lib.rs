@@ -105,11 +105,12 @@ pub fn place_order<T>(rows: Vec<T>, typed: &str, name: impl Fn(&T) -> &str, coun
     let bare = |r: &T| text::normalize(text::strip_place_type(name(r)));
     let want = text::normalize(text::strip_place_type(typed));
     let mut rows = rows;
-    rows.sort_by(|a, b| {
-        let (ba, bb) = (bare(a), bare(b));
-        (!ba.starts_with(&want)).cmp(&!bb.starts_with(&want))
-            .then(count(b).cmp(&count(a)))
-            .then(ba.cmp(&bb))
+    // Ключ — один раз на строку (ревьюер 19.11.2026: normalize на каждое
+    // сравнение при тысячах пунктов — секунды на нажатие). Порядок тот же:
+    // с набранного — первыми, частота по убыванию, название без приставки.
+    rows.sort_by_cached_key(|r| {
+        let b = bare(r);
+        (!b.starts_with(&want), std::cmp::Reverse(count(r)), b)
     });
     rows
 }
